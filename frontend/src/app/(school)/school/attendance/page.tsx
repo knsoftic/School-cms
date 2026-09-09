@@ -43,11 +43,13 @@
  */
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
 import { Icon } from '@/components/icon';
+import { Tabs, TabPanel, useActiveTab } from '@/components/tabs';
+import type { TabDef } from '@/components/tabs';
 import {
   SearchField,
   FilterBar,
@@ -162,10 +164,39 @@ function formatTimestamp(value: string | null): string | null {
   return `${when.getUTCDate()} ${MONTHS[when.getUTCMonth()]} ${when.getUTCFullYear()}`;
 }
 
+/**
+ * A check-in or check-out as a **time of day**, in the viewer's zone.
+ *
+ * ## Why not UTC, when every other stamp on this screen is
+ *
+ * `formatTimestamp` above pins to UTC deliberately: a `DATEONLY` serialised as UTC midnight renders
+ * as the previous day west of Greenwich, so a calendar day must not be given a zone. That reasoning
+ * is about **days**. A check-in is a *time*, and the time that matters is the one on the clock in the
+ * corridor.
+ *
+ * Rendering 03:55 for a teacher who arrived at 08:55 would be worse than useless — it is a number
+ * nobody can reconcile with anything. So this renders in the viewer's zone, which is also the zone
+ * the value was **entered** in: the register's `datetime-local` control is viewer-zone by
+ * definition, and `isoInstant` converted from it on the way out. The value therefore round-trips to
+ * what was typed.
+ *
+ * The limit, stated rather than hidden: a viewer in a different zone from the school sees their own
+ * clock. `school_settings.timezone` exists and this screen does not read it, because doing so means
+ * a second request on every render of a list, and the reader of a school's own register is in the
+ * school's zone in every case that matters.
+ */
+const TIME_OF_DAY = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
+
+function formatTimeOfDay(value: string | null): string | null {
+  if (!value) return null;
+  const when = new Date(value);
+  return Number.isNaN(when.getTime()) ? null : TIME_OF_DAY.format(when);
+}
+
 /** `partially_paid` → `partially paid`, for a label a person reads. */
 const spell = (value: string) => value.replace(/_/g, ' ');
 
-export default function AttendancePage() {
+function StudentsPanel() {
   const { can } = useAuth();
   /* The key `POST /attendance/students` is mounted behind. */
   const canMark = can('attendance.mark');
@@ -371,40 +402,26 @@ export default function AttendancePage() {
   const filtered = Boolean(date || status);
 
   return (
-    <div>
+    <>
       {/*
-        * No action button.
+        * The action lives on the panel rather than the screen header, because the two registers are
+        * marked at different URLs and behind different keys — `attendance.mark` here,
+        * `attendance.teacher.mark` on the other tab. A single header button would have to pick one.
         *
-        * The brief named `attendance.manage`, and `backend/src/config/permissions.js` does not seed
-        * it: the module's five keys are `attendance.view`, `attendance.mark`,
-        * `attendance.teacher.view`, `attendance.teacher.mark` and `attendance.self.view` (lines
-        * 100-104). Guarding a button with a key nobody holds hides it from everyone including the
-        * Super Admin, which is a dead control that looks like a permissions bug.
-        *
-        * `attendance.mark` is the real write permission, and this button is now gated on it.
-        *
-        * It was deliberately absent until 2026-09-09, and the reason is worth keeping because it was
-        * the right call at the time: `POST /attendance/students` takes a class, a date and an
-        * `entries` array of up to 500 students, because FR-ATT-001 is "a teacher marks a section",
-        * not "a user adds a row". That is a register form and a screen of its own, and linking to a
-        * route that did not exist would have been worse than linking to nothing.
-        *
-        * `/school/attendance/mark` is that screen. Until it existed, §16 — a whole section of the
-        * source — was readable and not usable: nothing in the product could record a single day's
-        * attendance.
+        * The button was deliberately absent until 2026-09-09, and the reason is worth keeping
+        * because it was the right call at the time: `POST /attendance/students` takes a class, a
+        * date and an `entries` array of up to 500 students, because FR-ATT-001 is "a teacher marks a
+        * section", not "a user adds a row". That is a register form and a screen of its own, and
+        * linking to a route that did not exist would have been worse than linking to nothing.
         */}
-      <PageHeader
-        title="Attendance"
-        description="Student attendance records, most recent day first."
-        action={
-          canMark ? (
-            <Link href="/school/attendance/mark" className="btn btn-primary">
-              <Icon name="plus" size={15} />
-              Mark attendance
-            </Link>
-          ) : undefined
-        }
-      />
+      {canMark ? (
+        <div className="mb-4 flex justify-end">
+          <Link href="/school/attendance/mark" className="btn btn-primary">
+            <Icon name="plus" size={15} />
+            Mark student attendance
+          </Link>
+        </div>
+      ) : null}
 
       <FilterBar
         activeCount={[date, search, status].filter(Boolean).length}
@@ -496,6 +513,225 @@ export default function AttendancePage() {
           {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
         </>
       )}
+    </>
+  );
+}
+
+/* ─────────────────────────────── the teacher register ─────────────────────────────── */
+
+/**
+ * One row of `GET /attendance/teachers`.
+ *
+ * `attendance.controller.js` presents both registers the same way, which is deliberate — §16 asks
+ * for teacher attendance in the same terms as student attendance — so this row is the student shape
+ * with `teacher` in place of `student` and two timestamps the student register does not have.
+ */
+interface TeacherAttendanceRow {
+  id: number;
+  teacher_id: number;
+  attendance_date: string;
+  status: string;
+  late_minutes: number | null;
+  check_in_at: string | null;
+  check_out_at: string | null;
+  remarks: string | null;
+  teacher?: { id: number; employee_id: string; first_name: string; last_name: string | null } | null;
+}
+
+function TeachersPanel() {
+  const { can } = useAuth();
+  /* A different key from the student register — `attendance.teacher.mark`, not `attendance.mark`. */
+  const canMark = can('attendance.teacher.mark');
+
+  const [page, setPage] = useState(1);
+  const [date, setDate] = useState('');
+  const [status, setStatus] = useState('');
+
+  const query = useMemo(
+    () => ({
+      page,
+      limit: 20,
+      attendance_date: date || undefined,
+      status: status || undefined,
+    }),
+    [page, date, status]
+  );
+
+  const { rows, meta, loading, error, refusal, reload } = useCollection<TeacherAttendanceRow>(
+    '/attendance/teachers',
+    query
+  );
+
+  const columns = useMemo<Column<TeacherAttendanceRow>[]>(
+    () => [
+      {
+        key: 'date',
+        header: 'Day',
+        cell: (row) => <span className="whitespace-nowrap">{formatDateOnly(row.attendance_date)}</span>,
+      },
+      {
+        key: 'teacher',
+        header: 'Teacher',
+        primary: true,
+        cell: (row) =>
+          row.teacher ? (
+            <>
+              <span className="font-medium">
+                {[row.teacher.first_name, row.teacher.last_name].filter(Boolean).join(' ')}
+              </span>
+              <span className="block text-xs text-muted-soft">{row.teacher.employee_id}</span>
+            </>
+          ) : (
+            /* A LEFT JOIN, so the association is not guaranteed; the id is what is certain. */
+            <span className="text-muted-soft">teacher #{row.teacher_id}</span>
+          ),
+      },
+      { key: 'status', header: 'Status', cell: (row) => <StatusBadge status={row.status} /> },
+      {
+        key: 'late',
+        header: 'Late by',
+        numeric: true,
+        cell: (row) =>
+          row.late_minutes ? `${row.late_minutes} min` : <span className="text-muted-soft">—</span>,
+      },
+      {
+        /*
+         * The two columns the student register does not have. `check_in_at` and `check_out_at` are
+         * `DATE`, not `DATEONLY` — they are instants — so they go through `formatTimestamp`, which
+         * is the same helper the student panel uses for its own stamps.
+         */
+        key: 'in',
+        header: 'In',
+        hideOnMobile: true,
+        cell: (row) => formatTimeOfDay(row.check_in_at) ?? <span className="text-muted-soft">—</span>,
+      },
+      {
+        key: 'out',
+        header: 'Out',
+        hideOnMobile: true,
+        cell: (row) => formatTimeOfDay(row.check_out_at) ?? <span className="text-muted-soft">—</span>,
+      },
+      {
+        key: 'remarks',
+        header: 'Remarks',
+        hideOnMobile: true,
+        cell: (row) => row.remarks ?? <span className="text-muted-soft">—</span>,
+      },
+    ],
+    []
+  );
+
+  const filtered = Boolean(date || status);
+
+  return (
+    <>
+      {canMark ? (
+        <div className="mb-4 flex justify-end">
+          <Link href="/school/attendance/mark?register=teachers" className="btn btn-primary">
+            <Icon name="plus" size={15} />
+            Mark teacher attendance
+          </Link>
+        </div>
+      ) : null}
+
+      <FilterBar
+        activeCount={[date, status].filter(Boolean).length}
+        onClear={() => {
+          setDate('');
+          setStatus('');
+          setPage(1);
+        }}
+      >
+        <FilterDate
+          id="teacher-attendance-date"
+          label="Day"
+          value={date}
+          onChange={(value) => {
+            setDate(value);
+            setPage(1);
+          }}
+        />
+        <FilterSelect
+          id="teacher-attendance-status"
+          label="Attendance status"
+          value={status}
+          onChange={(value) => {
+            setStatus(value);
+            setPage(1);
+          }}
+        >
+          <option value="">Any status</option>
+          <option value="present">Present</option>
+          <option value="absent">Absent</option>
+          <option value="leave">Leave</option>
+          <option value="late">Late</option>
+        </FilterSelect>
+      </FilterBar>
+
+      {refusal ? (
+        <RefusalNotice refusal={refusal} />
+      ) : error ? (
+        <ErrorNotice message={error} onRetry={reload} />
+      ) : loading && rows.length === 0 ? (
+        <LoadingBlock />
+      ) : rows.length === 0 ? (
+        <EmptyNotice>
+          {filtered
+            ? 'No teacher attendance matches these filters.'
+            : 'No teacher attendance has been recorded yet.'}
+        </EmptyNotice>
+      ) : (
+        <>
+          <DataTable
+            columns={columns}
+            rows={rows}
+            rowKey={(row) => row.id}
+            caption="Teacher attendance"
+            busy={loading}
+          />
+          {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
+        </>
+      )}
+    </>
+  );
+}
+
+/* ─────────────────────────────── the screen ─────────────────────────────── */
+
+/**
+ * §33 names one Attendance screen; §16 defines two registers and the API has two collections.
+ *
+ * Tabs, on the precedent Library and Fees already set: splitting one of §33's screens in two would
+ * be rewriting the requirement, and leaving the teacher register unreachable was the alternative —
+ * `GET` and `POST /attendance/teachers` had no caller anywhere in the product.
+ */
+const TABS: TabDef[] = [
+  { key: 'students', label: 'Students' },
+  { key: 'teachers', label: 'Teachers' },
+];
+
+function AttendanceScreen() {
+  const [active, setActive] = useActiveTab(TABS);
+
+  return (
+    <div>
+      <PageHeader
+        title="Attendance"
+        description="Who was in, and who was not — for students and for staff."
+      />
+      <Tabs tabs={TABS} active={active} onChange={setActive} label="Attendance registers" />
+      <TabPanel tabKey={active}>
+        {active === 'students' ? <StudentsPanel /> : <TeachersPanel />}
+      </TabPanel>
     </div>
+  );
+}
+
+export default function AttendancePage() {
+  /* `useActiveTab` reads the query string, which cannot run during prerender. */
+  return (
+    <Suspense fallback={<LoadingBlock />}>
+      <AttendanceScreen />
+    </Suspense>
   );
 }
