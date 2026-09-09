@@ -1799,10 +1799,23 @@ async function verifyHttp() {
     );
 
     /*
-     * Backdated two days so the shift is a known quantity. §12's Paused is *"temporarily
-     * inactive"* and FR-SUB-010's resume line is *"resumes where it stopped"*, so the remaining
-     * period has to move forward by exactly the paused duration — including the trial end, or a
-     * school paused mid-trial would come back with less trial than it stopped with.
+     * Backdated two days so the shift is a known quantity: the remaining period moves forward by
+     * exactly the paused duration — including the trial end, or a school paused mid-trial would come
+     * back with less trial than it stopped with.
+     *
+     * **That rule is this module's reading, not the source's, and this comment used to say otherwise.**
+     * It attributed *"temporarily inactive"* to §12's Paused and *"resumes where it stopped"* to
+     * FR-SUB-010's resume line. Neither phrase is in the SRS: "Paused" appears exactly twice, at
+     * SRS:540 and SRS:576, both times as a bare item in a list of ten states, with no definition and
+     * no resume behaviour anywhere; the word "resume" does not occur in the document at all. The
+     * second phrase is this application's **own** response message
+     * (`subscriptions.controller.js:183`), quoted back as though the source had said it.
+     *
+     * Found by `verify-quotations.js`, which is Known Issues #31 made assertable — these were the
+     * fifth and sixth fabricated citations this project has found, and the first two it caught rather
+     * than stumbled on. What the source does fix is that Paused is a state a subscription may hold;
+     * everything below is the only reading that keeps a pause from costing the school time it paid
+     * for, and it is recorded as a decision rather than as a requirement.
      */
     const before = await db.Subscription.findByPk(sub.id);
     const periodEndBefore = before.current_period_end;

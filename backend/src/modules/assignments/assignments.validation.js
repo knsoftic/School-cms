@@ -24,7 +24,7 @@
  *
  * FR-ASG-001 names no upload for the teacher's assignment — only §20.2's homework says "Upload File".
  * And the six upload profiles include a `submission` one whose rules table cites *"§20.3 / FR-ASG-001 —
- * student Submit"* by name, with no assignment profile beside it. Both readings agree, so
+ * student “Submit” (format not specified)"* by name, with no assignment profile beside it. Both readings agree, so
  * `attachment_path` and `attachment_name` are refused on the assignment routes and written from
  * `req.file` on the submit route.
  */

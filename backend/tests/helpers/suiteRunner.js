@@ -11,7 +11,7 @@
  *
  * ## Why the suites are spawned rather than required
  *
- * All 39 scripts call `process.exit()` when they finish, and none guards on `require.main`. A
+ * All 40 scripts call `process.exit()` when they finish, and none guards on `require.main`. A
  * harness that `require()`d them would be killed by the first one, and would exit with *that
  * suite's* code — a green run that executed one thirty-eighth of the safety net. Spawning is not a
  * stylistic preference here; it is the only correct option.
@@ -21,7 +21,7 @@
  * A suite reports what happened in three independent ways, and this project has a measured example
  * of each disagreeing with the others:
  *
- *   1. **Exit code.** Reliable for a suite that ran, but 19 of the 39 catch a database-connect
+ *   1. **Exit code.** Reliable for a suite that ran, but 19 of the 40 catch a database-connect
  *      failure, skip the whole HTTP half, print "All pure … checks passed" and exit **0**.
  *   2. **FAIL lines.** Zero of them is not evidence of success — a suite that crashed before its
  *      first assertion also prints zero.
@@ -102,7 +102,7 @@ function discoverSuites() {
 /**
  * Split a suite's output into the three signals.
  *
- * The line format is stable across 38 of the 39 scripts — `PASS` or `FAIL`, two spaces, the label,
+ * The line format is stable across 39 of the 40 scripts — `PASS` or `FAIL`, two spaces, the label,
  * two spaces, `->`, two spaces, the JSON of the actual value. `verify-seed.js` is the exception and
  * is handled explicitly below rather than by a tolerant regex, because a tolerant regex is how the
  * count silently drifts.

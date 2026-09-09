@@ -241,8 +241,8 @@ part 43 alongside the measurement above.
 ## 6. Known issues still open
 
 `IMPLEMENTATION_PROGRESS.md` §5 is the register. **Session 28 closed the last three rows a patch could
-close** — 17, 21 and 32 — and opened one it found while re-measuring, #33. What is open is nine rows,
-eight of which are waiting on a decision, a credential or the environment rather than on engineering:
+close** — 17, 21, 31 and 32 — and opened one it found while re-measuring, #33. What is open is eight
+rows, none of them waiting on engineering:
 
 | # | Issue | Note |
 |---|---|---|
@@ -255,7 +255,7 @@ eight of which are waiting on a decision, a credential or the environment rather
 | 11 | `SUPER_ADMIN_PASSWORD` in `backend/.env` is still the example value | The seeder hard-refuses it under `NODE_ENV=production`. |
 | 25 | The `verify-*.js` suites are not safe to run concurrently | Procedural, and it bit during this session: overlapping runs produced two failures in a suite that passed twelve times alone. The harness holds `tests/.suite-run.lock` and says so. |
 | 33 | Runtime logs and an uploaded file were committed, and are still in the history | **Half fixed.** `.gitignore`'s `storage/logs/` was anchored to the repository root and never matched `backend/storage/logs/`, so eleven files were tracked. Patterns fixed, files untracked, and `verify-deploy.js` part 7 now asserts both the patterns and `git ls-files`. `.env` was never among them. **The history still contains them**, which needs a rewrite — the owner's call, not a thing to do unasked. |
-| 31 | Fabricated SRS quotations, and the class is not cleanly assertable | 207 backticked quotations sit next to an SRS reference and 45 are not verbatim in the source — almost all legitimately, because the same convention quotes model comments and MySQL error strings. A check failing on 45 correct lines is worse than no check. |
+| ~~31~~ | ~~Fabricated SRS quotations, and the class is not cleanly assertable~~ | **Closed.** `verify-quotations.js` — a quotation must be traceable to something this repository can point at, so the haystack is the SRS plus every `.js` file with quotation spans stripped out. 45 untraceable to 8, no invented convention. It found two more fabrications on its first run, both in `verify-subscriptions.js`, one of which was this application's own response message quoted back as the source. | 207 backticked quotations sit next to an SRS reference and 45 are not verbatim in the source — almost all legitimately, because the same convention quotes model comments and MySQL error strings. A check failing on 45 correct lines is worse than no check. |
 
 ## 7. What would close row 7.13
 

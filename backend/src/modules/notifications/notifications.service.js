@@ -170,7 +170,7 @@ function present(row) {
  *
  * Only `active` users are notified. An `inactive`, `suspended` or `pending` account has either not
  * confirmed it owns the address or has been stopped from using the system, and §23's outcome —
- * *"relevant users receive the notification"* — is not served by writing rows nobody will read or
+ * *"Relevant users … receive the notification"* — is not served by writing rows nobody will read or
  * mailing an address nobody has proved they hold.
  *
  * @param {Array<number>} userIds
@@ -557,8 +557,8 @@ async function markAllRead(req, body = {}) {
  * §23 names no human sender — its actor is `System` — so this route composes nothing: the title,
  * message and recipient are the ones the engine already chose, and a caller can only ask that they
  * be tried again. That is the narrowest reading of `notifications.send` that does any work, and it
- * serves FR-NOTIF-001's stated outcome directly: a row sitting at `failed` is one where *"relevant
- * users receive the notification"* is not yet true.
+ * serves FR-NOTIF-001's stated outcome directly: a row sitting at `failed` is one where *"Relevant
+ * users … receive the notification"* is not yet true.
  *
  * Restricted to `email` rows at `failed`. An `in_app` row was delivered by being written, so there is
  * nothing to retry, and a `sent` row would be a second copy rather than a repair — both are refused

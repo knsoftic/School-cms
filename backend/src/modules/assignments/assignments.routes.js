@@ -46,7 +46,7 @@
  *
  * FR-ASG-001 names no file for the teacher's assignment; only §20.2's FR-HW-001 says "Upload File". And
  * `middlewares/upload.js` carries a `submission` profile whose rules table cites *"§20.3 / FR-ASG-001 —
- * student Submit"* by name, with no assignment profile beside it. Both readings agree, so the multer
+ * student “Submit” (format not specified)"* by name, with no assignment profile beside it. Both readings agree, so the multer
  * chain is on `POST /:id/submissions` alone and `attachment_path`/`attachment_name` are `forbidden()`
  * in every schema in this module.
  *

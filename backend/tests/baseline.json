@@ -5,9 +5,9 @@
     "UPLOAD_DIR": "storage/uploads-test"
   },
   "database": "msms_test",
-  "suiteCount": 39,
-  "totalAssertions": 5484,
-  "totalPassLines": 5463,
+  "suiteCount": 40,
+  "totalAssertions": 5495,
+  "totalPassLines": 5474,
   "suites": {
     "verify-addons.js": {
       "assertions": 176,
@@ -120,6 +120,10 @@
     "verify-platform-modules.js": {
       "assertions": 313,
       "passLines": 313
+    },
+    "verify-quotations.js": {
+      "assertions": 11,
+      "passLines": 11
     },
     "verify-reports.js": {
       "assertions": 112,

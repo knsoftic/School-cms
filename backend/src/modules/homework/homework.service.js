@@ -10,7 +10,7 @@
  * ## The file, which is the first upload this application actually performs
  *
  * `middlewares/upload.js` has carried a `homework` profile since it was written — PDF/JPEG/PNG/WebP, one
- * file, cited in its own rules table to *"§20.2 / FR-HW-001 — Upload File (format not specified)"* — and
+ * file, cited in its own rules table to *"§20.2 / FR-HW-001 — “Upload File” (format not specified)"* — and
  * until now nothing called it. The payment screenshot was the only upload in the whole application. So
  * this module is the second caller, and it uses the profile that was reserved for it rather than adding
  * a seventh.

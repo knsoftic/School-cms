@@ -35,7 +35,7 @@ The six legend words are used with these specific meanings, so a row cannot be r
 | `Needs Fix` | Implemented, but a known defect makes it wrong |
 | `Will not be built` | Optional, and building it would mean inventing what §35 says this SRS does not decide. A terminal state, not a backlog entry — added in session 28 for row 3.S.1, which had sat at `Pending` while its own note said the work must not be done. A row here must name the §35 clause it rests on |
 
-"An executable check" means one of the thirty-nine `backend/scripts/verify-*.js` suites or
+"An executable check" means one of the forty `backend/scripts/verify-*.js` suites or
 `scripts/check-models.js`. As of **2026-09-03 (session 22)** they total **4,613 assertions, 0 failures, 0 skips**,
 every script exit 0, measured as one loop against live MariaDB:
 
@@ -68,6 +68,7 @@ every script exit 0, measured as one loop against live MariaDB:
 | `verify-pdf.js` | 20 |
 | `verify-performance.js` | 16 |
 | `verify-plans.js` | 178 |
+| `verify-quotations.js` | 11 |
 | `verify-platform-modules.js` | 313 |
 | `verify-reports.js` | 112 |
 | `verify-school-setup.js` | 168 |
@@ -80,7 +81,7 @@ every script exit 0, measured as one loop against live MariaDB:
 | `verify-timetable.js` | 115 |
 | `verify-users-roles.js` | 236 |
 | `verify-validate.js` | 35 |
-| **Total** | **5,484** |
+| **Total** | **5,495** |
 
 Regenerated from `backend/tests/baseline.json`, the manifest `npm test` checks each run
 against. The previous table listed **30** suites totalling **4,613** — stale by 8 suites and
@@ -868,8 +869,8 @@ was never true and never what anyone meant.
 
 Against the legend's own bar for `Completed` — *"the code exists **and** an executable check covers
 it **and** that check passes today"* — all fifteen qualify and did when they were written. Each row's
-Notes name the suite that covers it, all thirty-nine run under `npm test`, and the loop was measured
-at **5,484 assertions, 0 failures, 0 skips, every script exit 0** on 2026-09-09, re-recorded into
+Notes name the suite that covers it, all forty run under `npm test`, and the loop was measured
+at **5,495 assertions, 0 failures, 0 skips, every script exit 0** on 2026-09-10, re-recorded into
 `backend/tests/baseline.json` in the same run. **This sentence previously claimed 5,512 assertions over
 six consecutive serial runs, and that figure cannot be reproduced**: the baseline of the moment summed
 to 5,429 across thirty-eight suites, 5,440 across thirty-nine after `verify-concurrency.js` was added,
