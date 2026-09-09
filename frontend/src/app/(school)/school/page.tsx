@@ -43,6 +43,16 @@ export default function SchoolDashboard() {
      * requirements are real and their routes now have a caller; the nav is not the place to say so.
      */
     { href: '/school/settings', label: 'School settings', permission: 'school.settings.view', module: null },
+    /*
+     * Two more screens §33's seventeen do not list and whose requirements are real: §20.3's
+     * assignments, and §23's notification centre. The notification one is the starker case — the
+     * engine has been writing `in_app` rows since it was built and nothing could read them, so a
+     * delivery channel had no recipient.
+     */
+    { href: '/school/assignments', label: 'Assignments', permission: 'assignments.view', module: 'assignments' },
+    { href: '/school/notifications', label: 'Notifications', permission: 'notifications.view', module: null },
+    /* §21's workflow. Module-gated as well as permission-gated, like every other AI route. */
+    { href: '/school/ai', label: 'AI questions', permission: 'ai.generate', module: 'ai' },
   ].filter(
     (item) => can(item.permission) && (item.module === null || hasModule(item.module))
   );

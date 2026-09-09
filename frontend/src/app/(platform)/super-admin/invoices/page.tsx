@@ -44,6 +44,7 @@
  * opened to answer, and `draft` is deliberately outside it — a draft is not yet a demand.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
@@ -514,14 +515,33 @@ export default function InvoicesPage() {
            * FR-AUTH-009. "Generate" rather than "New": there is no free-form `POST /invoices`,
            * because FR-BILL-001's precondition is that a subscription exists and is being billed.
            */
-          can('invoices.manage') ? (
-            <a
-              href="/super-admin/invoices/new"
-              className="btn btn-primary"
-            >
-              Generate invoice
-            </a>
-          ) : null
+          <div className="flex flex-wrap gap-2">
+            {/*
+              * Taxes and quotations are reached from here, and not from the sidebar. §33 fixes the
+              * Super Admin nav at sixteen entries and `verify-frontend.js` asserts the count in both
+              * directions, so an eighteenth would be this product editing a list the source defines.
+              * Both belong beside invoices anyway: a tax is what an invoice is raised at, and a
+              * quotation is what becomes one.
+              */}
+            {can('quotations.view') ? (
+              <Link href="/super-admin/quotations" className="btn btn-secondary">
+                Quotations
+              </Link>
+            ) : null}
+            {can('taxes.view') ? (
+              <Link href="/super-admin/taxes" className="btn btn-secondary">
+                Taxes
+              </Link>
+            ) : null}
+            {can('invoices.manage') ? (
+              <a
+                href="/super-admin/invoices/new"
+                className="btn btn-primary"
+              >
+                Generate invoice
+              </a>
+            ) : null}
+          </div>
         }
       />
 

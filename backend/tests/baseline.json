@@ -6,8 +6,8 @@
   },
   "database": "msms_test",
   "suiteCount": 38,
-  "totalAssertions": 5402,
-  "totalPassLines": 5381,
+  "totalAssertions": 5425,
+  "totalPassLines": 5404,
   "suites": {
     "verify-addons.js": {
       "assertions": 169,
@@ -70,8 +70,8 @@
       "passLines": 163
     },
     "verify-frontend.js": {
-      "assertions": 256,
-      "passLines": 256
+      "assertions": 279,
+      "passLines": 279
     },
     "verify-homework.js": {
       "assertions": 109,

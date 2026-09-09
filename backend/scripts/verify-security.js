@@ -527,7 +527,23 @@ async function main() {
        * `includes('https?:')` stayed true when the guard itself was replaced by a denylist, and the
        * regression went unnoticed. Only the boolean test counts as a guard.
        */
-      return !/\^https\?:[^)]*\.test\(/.test(text);
+      const schemeAllowlist = /\^https\?:[^)]*\.test\(/.test(text);
+
+      /*
+       * ## The second shape of guard, added when a screen used the stronger one
+       *
+       * The notification centre renders `action_url` — free text on the model, written by §23's
+       * engine — and guards it with `startsWith('/')`, which admits **only** internal paths. That is
+       * strictly stronger than a scheme allowlist: `https://elsewhere.test` passes `^https?:` and
+       * fails this. Requiring the weaker guard would have forced that screen to widen what it
+       * accepts in order to satisfy a rule about not accepting too much.
+       *
+       * So either counts, and the rule's subject is unchanged: a screen may not turn a value that
+       * came over the wire into a link without deciding what it will accept.
+       */
+      const internalOnly = /startsWith\(\s*'\//.test(text);
+
+      return !schemeAllowlist && !internalOnly;
     });
     check('a screen linking to API data checks the scheme before it does',
       hrefFromData.map((file) => path.relative(frontendSrc, file)), []);

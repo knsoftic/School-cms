@@ -2060,6 +2060,45 @@ const UNREACHABLE = [
   ['PATCH', '/library/books/:id', 'a catalogue entry can be corrected (§20.4)'],
   ['PATCH', '/finance/incomes/:id', 'an income entry can be corrected (§18)'],
   ['PATCH', '/finance/expenses/:id', 'an expense entry can be corrected (§18)'],
+
+  /*
+   * The last five clusters, each of which §33's screen lists do not name and each of which is a
+   * stated requirement with a built, verified, module-gated API and no way in.
+   *
+   * That distinction is the whole of why they are built rather than left in the "needs a decision"
+   * column `docs/VERIFICATION.md` put them in: §33 fixes two *screen lists*, and a screen list is
+   * not the requirement. §20.3 requires assignments, §23 requires that a notification reach its
+   * recipient, §13 requires taxes and quotations, §21 describes a nine-step workflow. The platform
+   * Settings screen remains the counter-example and still has no form: there, §33 names the screen
+   * and nothing anywhere says what belongs on it.
+   */
+  ['POST', '/assignments', 'work can be set for a class (§20.3)'],
+  ['PATCH', '/assignments/:id', 'an assignment can be corrected (§20.3)'],
+  ['POST', '/assignments/:id/submissions', 'a student can hand work in (§20.3)'],
+  ['PATCH', '/assignments/submissions/:id/review', 'submitted work can be marked (§20.3)'],
+
+  ['POST', '/notifications/:id/read', 'a notification can be read (§23)'],
+  ['POST', '/notifications/read-all', 'every notification can be marked read (§23)'],
+  ['POST', '/notifications/:id/retry', 'a failed email notification can be sent again (§23)'],
+
+  ['POST', '/taxes', 'a tax can be defined (§13)'],
+  ['PATCH', '/taxes/:id', 'a tax can be corrected (§13)'],
+  ['DELETE', '/taxes/:id', 'an unused tax can be deleted (§13)'],
+  ['POST', '/taxes/:id/default', 'a tax can be made the default (§13)'],
+  ['POST', '/taxes/default/clear', 'the default tax can be cleared (§13)'],
+
+  ['POST', '/quotations', 'a quotation can be raised (§13)'],
+  ['PATCH', '/quotations/:id', 'a draft quotation can be corrected (§13)'],
+  ['POST', '/quotations/:id/send', 'a quotation can be sent (§13)'],
+  ['POST', '/quotations/:id/accept', 'an accepted quotation becomes an invoice (§13)'],
+  ['POST', '/quotations/:id/reject', 'a quotation can be rejected (§13)'],
+
+  ['POST', '/ai/banks', 'a source can be uploaded (FR-AI-001 step 1)'],
+  ['POST', '/ai/banks/:id/extract', 'its text can be extracted (FR-AI-001)'],
+  ['POST', '/ai/banks/:id/analyze', 'its topics can be analysed (FR-AI-001)'],
+  ['POST', '/ai/banks/:id/generate', 'questions can be generated (FR-AI-001, the metered step)'],
+  ['POST', '/ai/banks/:id/difficulty', 'a difficulty can be chosen (SRS:1160)'],
+  ['POST', '/ai/banks/:id/approve', 'generated questions can be reviewed (FR-AI-001)'],
 ];
 
 for (const [method, path, what] of UNREACHABLE) {
