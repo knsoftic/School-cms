@@ -11402,7 +11402,10 @@ Session 16 (2026-09-02, same calendar day) opened on that stop and found it alre
 373. Re-recorded and re-ran: **39 suites, 5,470 assertions, 0 FAIL, 0 SKIP, every script exit 0**;
      `npm test` **5,675 tests, exit 0**.
 
-### Next task — what is left, now that the queue is closed
+### Next task — what is left, and why each item is where it is
+
+**Read this first: nothing on this list is blocked on effort.** Session 28 closed the last three Known Issues rows that a patch could close — #21 (all four racing limit keys), #17 and #32. What remains is three checklist rows and five register rows, and **every one of them is waiting on something outside this repository**: an API key, a specification decision, a deployment, or a house-style choice. Each is named below with what it waits on, so the next session can tell in one read whether the thing it was waiting for has arrived.
+
 
 **The uncalled-write-route queue is closed** (§2an). `docs/VERIFICATION.md` sized it at 99; measured
 against the generated OpenAPI document the figure is now **149 of 150 write routes with a caller**,
