@@ -136,6 +136,20 @@ count errs toward *reachable*:
 
 > **142 write routes are mounted. 43 have a frontend caller. 99 do not.**
 
+**Closed in session 27.** Re-measured against the *generated OpenAPI document* — what the
+application mounts, rather than what the route files declare — the figures were **150 / 61 / 89**
+at the start of that session and are **150 / 149 / 1** at the end. The one route without a caller
+is `POST /auth/refresh`, and it is a false positive: `apiClient.ts:302` reaches it with a raw
+`fetch` because it *is* the refresh mechanism and cannot use the client that depends on it.
+
+Two corrections to what follows, both found by doing the work. **The *buildable / needs a
+decision* split was right to draw and wrong in its second half**: §33 fixes two *screen lists*,
+and a screen list is not the requirement — every cluster in that column was a stated requirement
+with a built, verified API and no way in, so all of them are built and reached from a dashboard or
+a sibling screen. And **the count errs in both directions**: eleven working routes were reported
+as uncalled because their screens built the path from a variable, which the collector cannot see.
+`IMPLEMENTATION_PROGRESS.md` §2an records both.
+
 Spot-checked rather than trusted: the **Attendance** screen contains no form and no write call of any
 kind, so §16's attendance cannot be marked from the product. `/plans` has nine write routes and one
 caller, so the Features, Limits and Modules sub-screens are read-only.

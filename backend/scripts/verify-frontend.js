@@ -418,11 +418,21 @@ function main() {
   );
   check('no screen references a column the API strips as secret',
     leaking.map((s2) => s2.file), []);
+  /*
+   * `user.extra_permissions` on a payload is the defect that screen was caught at in its first
+   * draft.
+   *
+   * The pattern carries no `\b`, deliberately. This assertion shipped with one, produced by a
+   * heredoc that turned `\\b` into a **backspace byte** — so the regex on disk matched a literal
+   * control character, could never fire, and the check passed while proving nothing. The harness's
+   * stray-control-character rule is what caught it, which is the second time that rule has earned
+   * its place on exactly this failure. A leading `.` is the whole of what separates a property read
+   * from the request-body keys, and needs no word boundary after it.
+   */
   check('  and the one exemption still only writes them, never reads one back',
-    /* `user.extra_permissions` on a payload is the defect that screen was caught at in its first draft. */
     screens
       .filter(({ file }) => isOverrideWriter(file))
-      .filter(({ body }) => /[.](extra|denied)_permissions/.test(body))
+      .filter(({ body }) => /\.(extra|denied)_permissions/.test(body))
       .map((s2) => s2.file),
     []);
 

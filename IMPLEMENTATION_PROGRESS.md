@@ -16,7 +16,7 @@ All fourteen middleware files plus the barrel are implemented; the authenticatio
 chain, the subscription entitlement engine, and the upload / rate-limit / CSRF / activity-log hardening
 layer each have their own verification suite; `src/app.js` / `src/server.js` wire them into a running
 process.
-**5,350 checks pass, 0 fail, 0 skip, across thirty-eight scripts**, every script exit 0, measured as one
+**5,426 checks pass, 0 fail, 0 skip, across thirty-eight scripts**, every script exit 0, measured as one
 **serial** loop against a live MariaDB in **session 27**. **SRS §14 through §23 are closed in full**, and
 so is **Known Issues #26** — the six columns that accepted a caller-supplied filesystem path. **Every SRS
 section of the backend is now implemented**; what remains of the backend is Phase 5, and the entire
@@ -116,16 +116,16 @@ table back to 0, `users` 1, `activity_logs` 1.
 | `verify-notifications.js` | 100 | SRS §23 — the engine, not the inbox. Part 3 drives `runNotificationSweep()` **directly**, as `verify-subscriptions.js` drives `runLifecycleSweep()`, because §23's actor is `System` and a suite that only called the five routes would leave eight sweeps and nine types unexercised. Every pass is given a **negative** beside its positive — an unpublished draft, a draft exam, a present student, a fee due in sixty days, a payment still pending — and idempotency is asserted by running the whole sweep **twice** and requiring zero new rows. The e-mail failure path is produced by the module's own code, `mailService.send` being replaced for exactly one call. Forty-three deliberate regressions |
 | `verify-jobs.js` | 57 | Phase 5 — the scheduler. Drives `runOrdered()` for real, including a real `mysqldump`. Its central assertion is **end to end rather than structural**: a subscription is planted as `active`, one ordered run is made, and a Subscription Expiry notification must exist afterwards — which is only possible if `subscription-lifecycle` ran before `notification-dispatch` in that same pass. Retention is proved by backdating mtimes, with the negative beside the positive: a file the task did not write is left alone however old. Fifteen deliberate regressions |
 | `verify-openapi.js` | 104 | SRS §28 / FR-APIDOC-001 — the generated OpenAPI document, checked against the application it describes rather than against a schema validator. Part 3 serves it over real HTTP and fetches every asset the Swagger UI needs under this app's CSP |
-| `verify-frontend.js` | 204 | Phase 4 — the frontend's contract with this API, checked against the **generated** OpenAPI document rather than a hand-written list: every path the client calls must exist with that method on the mounted app. Also asserts §30 Rule 1 directly (no plan code or name compared against a literal) and that the access token never reaches browser storage. Lives here, not in `frontend/`, because the claim it verifies is about the backend |
+| `verify-frontend.js` | 280 | Phase 4 — the frontend's contract with this API, checked against the **generated** OpenAPI document rather than a hand-written list: every path the client calls must exist with that method on the mounted app. Also asserts §30 Rule 1 directly (no plan code or name compared against a literal) and that the access token never reaches browser storage. Lives here, not in `frontend/`, because the claim it verifies is about the backend |
 | `verify-deploy.js` | 58 | SRS §27 / FR-DEPLOY-001 — the six `deploy/` artifacts, cross-checked against `backend/src/`. **Nothing here is validated by its own tool**: nginx, pm2, mysql and logrotate are all absent from this machine, so the suite checks agreement with the application instead of syntax. `ecosystem.config.js` is the exception — being JavaScript, it is `require()`d |
 | `verify-security.js` | 28 | SRS §24 — injection and cross-site protection over real HTTP (rows 6.3, 6.4, FR-SEC-003). Six SQL payloads at **value** parameters, where the defence is Sequelize’s binding rather than the `sortBy` allow-list already probed elsewhere; script payloads asserted in both directions — executable markup stripped, and `Smith & Sons 5 < 7 Ltd` left intact, because a sanitiser that strips too much is a data-corruption bug wearing a security badge. Its first assertion checks its own previous run left no residue |
 | `verify-pdf.js` | 20 | Phase 5.4's renderer, on its own terms. It exists separately because §22 **cannot exercise it**: the student report fits on one page, so four guards — the footer's pagination fix, the repeated header, the page break and the measured row height — were unprovable through the reports suite. All four are about the *second* page. Reads the PDF back by inflating its content streams, because `pdf-parse` cannot parse pdfkit output at all |
 | `verify-performance.js` | 16 | SRS §25 — indexes, pagination bounds and caching (row 6.15). **No timing assertion, deliberately**: §25 sets no numeric target, and "under 50 ms" would measure this machine on this afternoon. Structural instead — all **50** tables carrying `school_id` have a `school_id`-**leading** index (leading, because MySQL reads a composite left to right), no tenant list query is a full scan forced by a missing index, and the cache is measured by **counting queries** rather than by the clock: first read hits the database, second reads none of it, and `invalidateSchool` sends the next one back |
-| **Total** | **5,350** | Thirty-eight scripts, measured in one **serial** loop in session 27 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25. **Every figure in this column was re-derived from `tests/baseline.json` in session 27**, which is the file `npm test` checks each suite against; nineteen of them had drifted, `verify-frontend.js` by 154 |
+| **Total** | **5,426** | Thirty-eight scripts, measured in one **serial** loop in session 27 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25. **Every figure in this column was re-derived from `tests/baseline.json` in session 27**, which is the file `npm test` checks each suite against; nineteen of them had drifted, `verify-frontend.js` by 154 |
 
 Counts are assertions, not output lines. Thirty-seven of the thirty-eight scripts print one `PASS` line per
 assertion; `verify-seed.js` prints a single `PASS (22)` summary line followed by 22 sub-bullets, so
-counting output lines undercounts the loop by 21 — a serial run prints 5,329 `PASS` lines for **5,350**
+counting output lines undercounts the loop by 21 — a serial run prints 5,405 `PASS` lines for **5,426**
 assertions.
 
 **The per-script list above was re-measured in session 26**, in the alphabetical order the loop
@@ -159,7 +159,7 @@ fixed two live-DB defects, ran Part 5 over HTTP, and re-measured the whole fourt
 
 **Session 16 (same calendar day again) opened on unrecorded Phase 3.I work already on disk**, ran the
 fifteen-script loop as its first action — which is what surfaced it — then audited and repaired it. The
-table above is the session-27 figure: **5,350 / 0 FAIL / 0 SKIP / every script exit 0**, from a serial run.
+table above is the session-27 figure: **5,426 / 0 FAIL / 0 SKIP / every script exit 0**, from a serial run.
 
 The server itself now runs:
 
@@ -4646,20 +4646,204 @@ cancellation, where it would sit beside "Cancel subscription" and mean the oppos
 
 ---
 
+## 2an. Phase 4 — the uncalled-write-route queue, closed
+
+`docs/VERIFICATION.md` sized a queue in session 26: **99 write routes with no caller in the UI**, the
+largest single item in that document and the largest piece of outstanding frontend work. §2am closed
+the biggest cluster. This section closes the rest.
+
+Measured against the **generated OpenAPI document** — what the application actually mounts, rather
+than what the route files declare — the figure moved:
+
+| | mounted | with a caller | without |
+|---|---|---|---|
+| start of session 27 | 150 | 61 | 89 |
+| after §2am (subscriptions) | 150 | 75 | 75 |
+| **end of session 27** | **150** | **149** | **1** |
+
+**The one route left is `POST /auth/refresh`**, and it is a false positive that is worth
+understanding rather than fixing: `apiClient.ts:302` reaches it with a raw `fetch` because it *is*
+the refresh mechanism — it cannot use the client that depends on it. The measurement therefore errs
+in both directions, and both directions were found in practice this session.
+
+### Nine clusters, and what each one meant in the product
+
+- **exams (7)** — §19 was reachable at its two ends only: an exam could be created, and its results
+  calculated and published. Everything between had no caller, so **FR-EXAM-002 could not be performed
+  at all** and FR-EXAM-003 had nothing to calculate from. `school/exams/[id]` adds the papers and the
+  marks; `school/exams/grade-scales` defines what an A is.
+- **schools (6)** — the Schools screen was a directory. FR-SADMIN-003 through 007 all had routes and
+  no callers, so a school could not be corrected, suspended, archived, deleted or given the Principal
+  FR-SADMIN-007 requires.
+- **payments (5), invoices (4), coupons (3)** — §13's money. Two of the five payment routes had in
+  fact been called since the review screen was written; see the blind spot below.
+- **add-ons (4)** — **every add-on in this product has zero prices**, which is why §2am's purchase
+  form has to explain that a priceless add-on can only be granted at no charge. `PUT /:id/prices` is
+  what fixes that, and it had never been callable.
+- **parents (3)** — the starkest of the small ones. A parent account with no child linked signs in to
+  an empty Parent dashboard, and **nothing in the product could link one**, so §15.2's portal was
+  unreachable in practice however correct its code was.
+- **users (2), roles (2)** — the access model. A user's permissions are two override arrays, not a
+  list, and the editor says so; roles live on the same screen because §33 names Users and not Roles.
+- **assignments (4), notifications (3), taxes (5), quotations (5), ai (6)** — the five clusters
+  `VERIFICATION.md` filed under *needs a decision*. See below.
+- **school settings (1), sessions (4)** — likewise.
+- **eight single-route corrections** — organizations, classes (plus a delete), fee structures,
+  homework, library books and both finance ledgers.
+
+### The "needs a decision" column was one decision, and it is not a specification question
+
+`VERIFICATION.md` split the 99 into 69 *buildable now* and 30 *needs a decision*, on the ground that
+§33 names no screen for the latter. That split was right to draw and its second half rested on a
+confusion worth naming: **§33 fixes two screen lists, and a screen list is not the requirement.**
+
+- FR-SCHOOL-001 enumerates ten settings a school configures. FR-SCHOOL-002 requires that an academic
+  session be created, activated and closed.
+- §20.3 requires that work be set, handed in and marked.
+- §23's `in_app` channel is defined as *the delivery itself* — a row is born `sent`, and reading it
+  is the whole of what a recipient does with it.
+- §13 has taxes and quotations, both with full CRUD, their own permission pairs and their own tables
+  in §29's sixty-four.
+- §21 describes a nine-step workflow in detail and twice says nothing beyond it is documented.
+
+Every one of those was `Completed` or `Tested` on the strength of an API nothing could reach. So all
+of them are built, and reached from a dashboard or a sibling screen rather than from a nav: both nav
+lists are asserted against §33 in both directions by `verify-frontend.js`, and an eighteenth School
+entry would be this product editing a list the source defines.
+
+**The platform Settings screen remains the counter-example and still has no form.** There §33 names
+the screen and nothing anywhere says what belongs on it — the cross-reference to §9 points at three
+sections that define a dashboard, school management and principal creation. That screen states the
+gap, and the distinction between it and the eight above is the whole of what "needs a decision" means.
+
+### A blind spot found four more times, in code that already worked
+
+`verify-frontend.js` collects `api.<method>(` followed **immediately** by a path literal. §2am hit
+this and recorded it. Four more instances turned up here, in screens that had been calling their
+routes correctly all along:
+
+| screen | what it built | routes reporting as uncalled |
+|---|---|---|
+| payment review | `` `/payments/${id}/${decision}` `` | both FR-BILL-004 routes |
+| add-on sale dialog | `` `/addons/${id}/${takingOff ? … }` `` | activate and deactivate |
+| finance record dialog | `` `/finance/${kind}` `` | both §18 create routes |
+| §2am's own first draft | `` `/subscriptions/${id}/${action}` `` | seven |
+
+Eleven working routes, every one of them reported as having no caller, and the check that exists to
+catch exactly that could not see any of them. All are written out now. **The lesson is not "avoid
+interpolation"** — it is that a check reading source text is only as good as the shapes it knows, and
+a measurement that disagrees with the code is worth resolving in whichever direction turns out to be
+wrong.
+
+### One shared component, and the split that justifies it
+
+Seven screens needed the same thing at once — a `PATCH /:id` with no caller — so
+`components/editDialog.tsx` owns the mechanism: seed from a row, send **only what changed**, put
+`error.details` on the fields it names, banner the rest, close and reload. Each caller keeps its own
+field set, its own hints and its own decisions about which fields exist.
+
+That is the split `useRowAction` already draws and states: *the hook owns the state machine, the
+caller owns the words*. A shared component that generated the copy would produce seven forms each
+saying slightly the wrong thing, which is worse than seven copies of the right thing.
+
+The one rule it carries beyond the mechanism is `nullable`, per field: a blank field is sent as
+`null` when the column accepts one and **left out entirely** when it does not. Inferring that would
+either silently drop a required field emptied by mistake, or refuse to clear one that should clear.
+
+### What driving the screens found, again
+
+Four defects, and no assertion could see any of them before it was written:
+
+1. **Every list picker asked for more rows than the API allows.** `PAGINATION.MAX_LIMIT` is 100 and
+   four screens asked for 200 or 500. That is a **422**, not a bigger page — `useCollection` reports
+   the refusal as an error and the select renders as an **empty list**. The failure is silent in the
+   worst way: the control looks loaded and offers nothing, which reads as "this school has no
+   subjects" rather than as a bad request. Found because the exam papers screen offered no subject
+   for a school that has one. `verify-frontend.js` now refuses any limit above the ceiling, read from
+   `config/constants.js`, and the regression was proved by putting 200 back.
+2. **A screen reading a column the API strips.** The user detail screen read
+   `user.extra_permissions`, which is always `undefined`: `publicUser()` excludes both override
+   arrays and `presentWithPermissions()` returns the picture nested under `permissions`.
+   `verify-frontend.js` caught it — that rule exists for precisely this — and the screen now reads
+   the nested block. The rule gained a one-file, two-field exemption for the request-body keys the
+   permissions editor cannot avoid spelling, plus a second assertion holding it to writing them and
+   never reading one back.
+3. **A guard the security suite could not recognise.** The notification centre renders `action_url`,
+   which is free text on the model, and guards it with `startsWith('/')` — internal paths only.
+   `verify-security.js` demanded a `^https?:` allowlist and failed it. The guard is **strictly
+   stronger**: `https://elsewhere.test` passes the allowlist and fails this. Requiring the weaker one
+   would have forced the screen to widen what it accepts in order to satisfy a rule about not
+   accepting too much, so the rule now takes either. Proved by deliberate regression.
+4. **Two suite census figures went stale by being right.** The create-screen count moved 18 → 19 and
+   `payments/new` had to adopt `FormActions`; the money-typing rule flagged three form-state
+   interfaces. All three were the suite doing its job on new code, and all three were fixed in the
+   code rather than in the rule.
+5. **An assertion that shipped unfalsifiable, from the failure this project has now hit three
+   times.** The exemption in finding 2 came with a companion check holding that screen to *writing*
+   the two override keys and never reading one back — and its regex was authored through a heredoc,
+   which turned `\b` into a **backspace byte**. The pattern on disk matched a literal control
+   character, so it could never fire, and it passed while proving nothing. `npm test`'s
+   stray-control-character rule is what caught it: `verify-frontend.js: 8`. Repaired with an editor
+   rather than a generator, and then **proved by deliberate regression** — putting the stripped
+   column back into the screen now fails it by name. The rule that caught this exists because of an
+   earlier instance of the same mistake in an XSS assertion, and it has now earned its place twice.
+
+### Verified in a browser, as the school principal
+
+`PATCH /school-settings` saved a currency and a timezone and was read back from `school_settings`.
+A paper was added to an exam through `POST /exams/:id/subjects`, a mark of 72 entered through
+`POST /exams/marks`, and the paper submitted through `POST /exams/marks/submit` — after which the
+service derived `outcome: 'pass'`, stamped `marks_submitted_at`, moved the exam to Marks Entry and
+the screen locked the paper against further entry. `grade_name` stayed **null**, because the school
+has no grade band: that is the two new screens agreeing rather than either being wrong, and it is
+what `school/exams/grade-scales` exists to fix.
+
+The four new school screens and the platform screens were each loaded and read back.
+
+### Verification
+
+- `tsc --noEmit` clean; `next build` clean, **71 pages** (was 63 at the start of the session).
+- `verify-frontend.js` **204 → 280**: 66 new route assertions, the ceiling rule, and the
+  permission-override exemption pair.
+- `npm test` **5,626 tests, exit 0** — and it failed twice on the way there, once for the backspace
+  above and once because `docs/IMPLEMENTATION_CHECKLIST.md` still quoted 204 for a suite the baseline
+  recorded at 280. Both citations were re-derived from `tests/baseline.json`, which is the only place
+  a per-suite figure should be read from.
+- `verify-security.js` **28**, with the link guard widened and regressed.
+- Whole loop, serially: **38 suites, 5,426 assertions, 0 FAIL, 0 SKIP, every script exit 0**;
+  `tests/baseline.json` re-recorded from that run.
+
+### Fixture changes this session left in the development database
+
+Recorded rather than tidied away, and none of it is in `msms_test`:
+
+- `ui-principal@msms.local`'s password was reset to drive the school screens, as
+  `ui-audit@msms.local`'s was in §2am. Neither account exists in the test database.
+- School 12797 now has a currency and timezone in `school_settings`, an `exam_subjects` row on exam
+  2124, and one submitted mark of 72 against student 11320 — who was moved from `transferred` back to
+  `active` so the marks screen had a roll to render. That last one is the only change made *to* the
+  fixture rather than *by* the product.
+
+---
+
 ## 3. What is currently in progress
 
 **Nothing is mid-edit.** Every file on disk is complete, syntactically valid, and passes its
-verification script. **5,350 checks green, 0 failing, 0 skipped, across thirty-eight scripts**, every
+verification script. **5,426 checks green, 0 failing, 0 skipped, across thirty-eight scripts**, every
 script exit 0, measured as one **serial** loop in **session 27** against live MariaDB (Known Issues #25 —
 a parallel run reports false failures). Per-script assertions, in the order the loop runs them:
 
     169, 188, 205, 196, 82, 84, 237, 239, 58, 133, 272, 54
-    219, 174, 163, 204, 109, 57, 161, 262, 100, 104, 116, 20
-    16, 175, 313, 112, 168, 28, 22, 89, 136, 212, 87, 115, 236, 35  =  5,350
+    219, 174, 163, 280, 109, 57, 161, 262, 100, 104, 116, 20
+    16, 175, 313, 112, 168, 28, 22, 89, 136, 212, 87, 115, 236, 35  =  5,426
+
+`npm test` wraps that as **5,626 tests, exit 0** — the 5,426 as named cases, five per suite and ten
+harness-integrity tests.
 
 *(That array is `tests/baseline.json`, re-recorded from the session-27 run. Session 26's figures were
-5,162 with `verify-frontend` at 51 and `verify-subscriptions` at 208; +14 and +4 of the difference are
-this session's, and the rest was already recorded in the baseline and stale only here.)*
+5,162 with `verify-frontend` at 51; that suite is now 280, and 76 of the difference is this session's
+route assertions. Read a per-suite figure from the baseline file and never from this one — `npm test`
+checks the **checklist** against the baseline and does not check the progress log at all.)*
 
 Teardown after that loop was confirmed clean: every fixture table 0, `users` 1, `activity_logs` 1,
 `audit_logs` 0, seed 11 roles / 109 permissions / 353 grants / 7 add-ons, and zero files **and zero
@@ -4809,7 +4993,7 @@ Anthropic adapter is written and has never been executed, for want of a key.
 
 `tests/` exists — `globalSetup.js`, `setup.js`, `verify.test.js`, `helpers/suiteRunner.js` and
 `baseline.json` — the `msms_test` database is created, and `npm test` runs the whole safety net:
-**5,550 tests, exit 0**, being the 38 suites' 5,350 assertions as named cases plus five per suite and
+**5,626 tests, exit 0**, being the 38 suites' 5,426 assertions as named cases plus five per suite and
 ten harness-integrity tests. Row 6.17 is closed.
 
 The coverage this block once listed as planned is built and is in §1's table: school-isolation 403,
@@ -9398,7 +9582,7 @@ count, when in the period to issue, what due date to set and what to do in grace
 | 1 | ~~**`docs/IMPLEMENTATION_CHECKLIST.md` is inaccurate.**~~ **Resolved in session 7.** Every row had been pre-filled `Completed` / `Tested`, including Phases 4–7 which have not been started, and 37 SRS requirement IDs marked complete against modules that do not exist. It has been rewritten (320 → 441 lines) with each legend word defined and every status re-derived from the file system or from a check re-run first. | Was misleading in the worst possible way — it directly violated the "do not mark something complete without verifying it" rule. | Resolved. Both files are now truthful; where they disagree, **this file is corrected first** and the checklist follows. |
 | 2 | **MySQL (XAMPP) must be running**, and it does not survive this environment reliably — it stopped four times during session 26 alone, twice needing the Aria recovery below. | Every `db:*` command and every database-touching suite fails without it. `npm run check:models` and `npm run db:schema` still work (no connection needed). Worse, 19 suites answer an unreachable database by skipping their HTTP half and **exiting 0** (Known Issue 28), so a stopped server can read as a green run. | Start it from the XAMPP control panel, or `Start-Process C:\xampp\mysql\bin\mysqld.exe`. **If it refuses to start, read the error rather than reinstalling:** session 26 hit *"Aria recovery failed … Could not open mysql.plugin table … Aborting"* after an unclean shutdown. The `mysql` system schema is **Aria**; the project’s own data is **InnoDB** and was never at risk — InnoDB reported a clean start throughout. The recovery is the one the server itself prints: from the data directory run `aria_chk -r mysql/*.MAI`, then `aria_chk -o` on any table reporting *"aria_sort_buffer_size is too small"* — `-o` uses the keycache instead of the sort buffer, and passing `--sort_buffer_size` on the command line does **not** help because `my.ini` overrides it. Then move the `aria_log.########` files aside. Which tables need `-o` varies by occurrence — four the first time (`columns_priv`, `db`, `help_topic`, `proxies_priv`), three the second (`db` recovered under plain `-r`), so **read the run rather than working the list**. Both databases came back intact both times — 65 tables (64 domain + `sequelize_meta`), 109 permissions, 11 roles each. **Correction to the first recording of this procedure: quarantine the logs OUTSIDE the data directory.** They were first moved to `data/_aria_quarantine/`, and because MariaDB enumerates every subdirectory of the data directory as a schema, `SHOW DATABASES` then listed `_aria_quarantine` as a phantom database — harmless but wrong, and exactly the kind of thing that later gets counted. They now live in `C:\xampp\mysql\_aria_quarantine\`, one level up and outside the data directory, still moved rather than deleted. |
 | 3 | ~~**`docs/ARCHITECTURE.md` contained four inaccuracies.**~~ **Resolved in session 6.** Line 29's `xss-clean · mongo-sanitize-equivalent` (neither installed) now reads `sanitizeRequest (hand-written)`; the seeders row no longer claims "taxes, grade scale"; the upload row (now line 170) no longer claims a "magic-byte sniff" or "served non-executable" and states the real control plus the limitation; and a `src/services` row was added to the directory map. The request-flow diagram was also rewritten to the verified 11-step order from `createApp()` — it had omitted `cookieParser` and `activityAudit()` and put `hpp` before the body parsers. | Line 169 overstated a *security* control, which is the worst kind of drift. The code was always correct; the doc described something else. | Resolved. `docs/ARCHITECTURE.md` is now 216 lines and every claim in it is either code-backed or explicitly marked as not yet built. |
-| 4 | ~~**`npm test` fails**~~ **Resolved in session 26.** `tests/setup.js` was referenced by `setupFilesAfterEnv` but absent, and jest resolves that path during config normalization — so the run died with a ValidationError before discovering a single test. | None. `npm test` runs the whole safety net: **5,550 jest tests, exit 0** (session 27; it was 5,358 when this row was written) — 5,350 assertions from the 38 `verify-*.js` suites, each a named test case, plus five per suite and ten harness-integrity tests. | Done — checklist row 6.17. |
+| 4 | ~~**`npm test` fails**~~ **Resolved in session 26.** `tests/setup.js` was referenced by `setupFilesAfterEnv` but absent, and jest resolves that path during config normalization — so the run died with a ValidationError before discovering a single test. | None. `npm test` runs the whole safety net: **5,626 jest tests, exit 0** (session 27; it was 5,358 when this row was written) — 5,426 assertions from the 38 `verify-*.js` suites, each a named test case, plus five per suite and ten harness-integrity tests. | Done — checklist row 6.17. |
 | 5 | ~~**The `msms_test` database does not exist.**~~ **Resolved in session 26.** Created, migrated and seeded: **64 SRS tables plus `sequelize_meta`**, matching §29 exactly. | None. The jest harness runs every suite against it and proves the target with `SELECT DATABASE()` rather than trusting `DB_NAME`. | Done. **Note the harness does *not* use `NODE_ENV=test`** — see issue 28. |
 | 6 | ~~**`npm run lint` fails** — no ESLint config file exists~~ **Resolved in session 26.** Originally: no config file existed (`.eslintrc*` / `eslint.config.js`), though `eslint ^8.57.1` is installed. Note that several files already carry `// eslint-disable-next-line no-await-in-loop` comments in anticipation. | No lint enforcement. | **Scoped in session 26 and it is a small job, but the register had the target wrong.** `package.json:31` is `"lint": "eslint src tests"` — **`scripts/` is not linted at all** (41 files outside the target). Against `src` + `tests` (222 files) an `eslint:recommended` config on `{ env: {node, es2022}, parserOptions: {ecmaVersion: 2022, sourceType: "script"} }` produces **9 errors**, measured — not estimated — by running eslint with explicit flags. Three settings are load-bearing and each was measured: `sourceType: "script"` with `env.node` (the code is 100% CommonJS; `"module"` without it yields **1,477** errors), `ignoreRestSiblings: true` (4 errors from two deliberate rest-omit destructures that a docblock already explains), and a `tests/**` jest override rather than a global `env.jest` (36 `no-undef` errors otherwise, and a global would let jest globals into `src`). **Do not adopt the rules the existing `eslint-disable` comments name** — the register calls them "in anticipation", and they anticipate an airbnb-base config: enabling `no-await-in-loop`, `global-require` and `class-methods-use-this` takes 9 errors to **56**, adding 47 at sites with no disable comment. **Done. `npm run lint` exits 0.** `.eslintrc.json` is the measured config above, and all nine errors were resolved by fixing the code rather than by relaxing a rule: **seven dead requires** removed (`mailService` in `auth.service.js`, `path` and `env` in `payments.service.js`, `tenantWhere`, `QUESTION_STATUS` and `literal` in `reports.service.js`, and `Grade` from the association destructure in `models/index.js`), and **two deliberate constructs** given a disable comment that states its reason — the control-character class in `sanitize.js`, which is the subject of that rule rather than an accident, and the lazy `require('redis')` in `cache.js`, whose disable comment named `import/no-unresolved`, a rule from a plugin this project does not install, which is itself an ESLint error. Each of the seven was confirmed to appear exactly once outside a comment before removal, and `Grade` was checked further: the model **is** registered and **is** used at six call sites, and does carry `school`/`organization` associations — from the generic tenant loop, not from that destructure, which exists only for explicit ones. `npm test` is unchanged, so no removed require was load-bearing. `verify-deploy.js` part 6 now runs `eslint src tests --max-warnings 0` **in the loop** (2.5s over 222 files) and pins the target string, so "lint passes" cannot quietly become "lint passes over less". Four deliberate regressions, all detected — deleting the config, widening the target, reintroducing one dead require, and downgrading a rule to a warning, which is what `--max-warnings 0` is for. **Still outside the target: `scripts/`** — the 38 verification suites hold **45** errors of their own (22 `no-inner-declarations`, 19 `no-unused-vars`, 4 others) across 25 of 41 files. Measured, not fixed, and the pinned-target assertion is what stops that exclusion being forgotten. |
 | 7 | ~~**`npm start`, `npm run dev` fail**~~ **Resolved.** `src/server.js` exists and `npm start` is verified — a child process bound the port and answered `/api/v1/health` with 200 (`verify-app.js`). `npm run dev` is nodemon wrapping the same entry point; nodemon 3.1.7 is installed and in `node_modules/.bin`, but it was not run here because it never exits. **`npm run worker`, `npm run cron` and `npm run db:backup` still fail** — `src/jobs/` does not exist. | Expected at this phase, not a defect. | Phase 5 for the three remaining entry points. |
@@ -9835,7 +10019,7 @@ The Phase 3.J module (SRS §15.3):
 | File | Purpose |
 |---|---|
 | `globalSetup.js` | Runs all 38 suites serially as child processes before jest evaluates any test file, then writes the parsed results. Proves the target with `SELECT DATABASE()` — `DB_NAME` states an intention, `SELECT DATABASE()` states a fact — and closes its own pool before the loop starts, because a pool left open is one the suites cannot use, and connection exhaustion reaches a suite as "database unreachable", which 19 of them answer by skipping and exiting 0. |
-| `verify.test.js` | Turns the run into named jest cases: one per assertion, carrying the label the suite printed, plus **five per-suite tests** (exited 0, did not time out, printed no FAIL line, ran its database half, ran all N of its assertions) and **six harness-integrity tests**. That is the arithmetic behind the total: 5,350 + (38 × 5) + **10** = **5,550**, measured from the session-27 run's own output. The harness-integrity count was **6** when this sentence was written and is now ten — it is counted from the run rather than carried, because it is the one term here that grows without any suite changing. Reads the results **synchronously at module scope** — jest builds its test tree by executing the module body, so a `test()` registered from an async callback or a `beforeAll` is never collected, and an `await` here would yield a file with zero tests that reads as "nothing to check". |
+| `verify.test.js` | Turns the run into named jest cases: one per assertion, carrying the label the suite printed, plus **five per-suite tests** (exited 0, did not time out, printed no FAIL line, ran its database half, ran all N of its assertions) and **six harness-integrity tests**. That is the arithmetic behind the total: 5,426 + (38 × 5) + **10** = **5,626**, measured from the session-27 run's own output. The harness-integrity count was **6** when this sentence was written and is now ten — it is counted from the run rather than carried, because it is the one term here that grows without any suite changing. Reads the results **synchronously at module scope** — jest builds its test tree by executing the module body, so a `test()` registered from an async callback or a `beforeAll` is never collected, and an `await` here would yield a file with zero tests that reads as "nothing to check". |
 | `setup.js` | `setupFilesAfterEnv`. Its **absence** was Known Issue #4: jest resolves that path during config normalization and threw before discovering any test. Contains guards, not fixtures — it runs once per test *file*. Asserts the timers are real, because `scripts/lib/settle.js` polls with a real `setTimeout` against a `Date.now()` deadline and would hang under `jest.useFakeTimers()`. |
 | `helpers/suiteRunner.js` | Discovery, spawning and parsing, shared by the harness and the baseline recorder so the two cannot disagree about what a suite's output means. Suites are **spawned, never required**: all 38 call `process.exit()` and none guards on `require.main`. Handles `verify-seed.js`'s `PASS (22)` summary explicitly rather than with a tolerant regex — that one format is the entire 21-line gap between 5,112 printed lines and 5,133 assertions, and a magic constant would absorb the next genuine 21-assertion regression. |
 | `baseline.json` | The recorded per-suite assertion count, written by `scripts/record-baseline.js`. Checked **exactly**, not as a floor. Not gitignored — `.last-run.json` is. |
@@ -11027,95 +11211,123 @@ Session 16 (2026-09-02, same calendar day) opened on that stop and found it alre
      with assertion counts. Restored from the printed log, then verified structurally: `git diff`
      places no hunk after line 4656, and §6 begins at 9492.
 
-### Next task — the queue, and what it is measured against
+337. Closed the **rest** of the uncalled-write-route queue (§2an) — nine clusters and eight single
+     routes, taking the measurement from 75 of 150 to **149 of 150**. The one left is
+     `POST /auth/refresh`, a false positive: `apiClient` reaches it by raw `fetch` because it is the
+     refresh mechanism.
+338. Resolved the *needs a decision* column rather than deferring it, and the resolution is one
+     sentence: **§33 fixes two screen lists, and a screen list is not the requirement.** School
+     settings, academic sessions, assignments, notifications, taxes, quotations and the AI workflow
+     are all stated requirements with built, verified APIs and no way in; each is now reached from a
+     dashboard or a sibling screen rather than from a nav the suite asserts against §33. The platform
+     Settings screen stays the counter-example and still has no form.
+339. Found the `api.<method>(` blind spot **four more times**, in screens that had been calling their
+     routes correctly all along — payment approve/reject, add-on activate/deactivate and both finance
+     ledgers. Eleven working routes reported as uncalled by the check written to catch exactly that.
+340. Built `components/editDialog.tsx` for the seven screens that needed the same `PATCH /:id` at
+     once, on the split `useRowAction` states: the dialog owns the state machine, the caller owns the
+     words.
+341. **Every list picker in the new work asked for more rows than the API allows.**
+     `PAGINATION.MAX_LIMIT` is 100 and four screens asked for 200 or 500, which is a 422 rendering as
+     an empty select — found by driving the exam papers screen, whose subject picker was empty for a
+     school that has one. `verify-frontend.js` now refuses it, reading the ceiling from the backend.
+342. Had three more defects caught by the suites on new code: a screen reading `extra_permissions`,
+     which the API strips and always returns undefined; a create-screen census that had to move 18 →
+     19; and three form-state interfaces typing a money column as a string. All fixed in the code.
+343. **Shipped an assertion that could never fire, from the heredoc-backspace failure this project
+     has now hit three times** — caught by `npm test`'s stray-control-character rule, repaired with
+     an editor, and then proved by deliberate regression.
+344. Widened `verify-security.js`'s link rule after it refused a guard that was **stronger** than the
+     one it looked for: the notification centre admits internal paths only, where the rule wanted an
+     `^https?:` allowlist that an external URL would pass. Regressed to confirm it still fires.
+345. Drove the new work in a browser as the school principal: school settings saved and read back
+     from the database; a paper added, a mark of 72 entered and submitted, after which the service
+     derived `outcome: pass` and locked the paper. `grade_name` stayed null for want of a grade
+     band — the two new screens agreeing rather than either being wrong.
+346. Re-ran the whole loop: **38 suites, 5,426 assertions, 0 FAIL, 0 SKIP, every script exit 0**;
+     `npm test` **5,626 tests, exit 0** after the two harness failures above were fixed.
 
-**All ninety of the SRS's functional requirements are Completed**, and the checklist stands at three
-non-complete rows: **3.S.1** (demo seed data, optional and forbidden to invent), **5.2** (the Anthropic
-adapter's round trip, which needs a key this environment does not have) and **7.13** (the final SRS
-re-read, whose remainder is a decision on each of thirteen `real-blocked` findings plus 5.2).
+### Next task — what is left, now that the queue is closed
 
-**What is actually left is the work `docs/VERIFICATION.md` sized: write routes the product cannot
-reach.** It found 99 of 142; measured this session against the *generated OpenAPI document* — which is
-what the application mounts, rather than what the route files declare — the figure is now:
+**The uncalled-write-route queue is closed** (§2an). `docs/VERIFICATION.md` sized it at 99; measured
+against the generated OpenAPI document the figure is now **149 of 150 write routes with a caller**,
+and the one exception is a false positive: `POST /auth/refresh` is reached by a raw `fetch` in
+`apiClient.ts:302` because it *is* the refresh mechanism and cannot use the client that depends on it.
 
-> **150 write routes mounted. 75 have a frontend caller. 75 do not.**
+Reproduce that before trusting it. The script is short — `buildDocument(createApp())` against the
+`api.<method>('…')` literals in `frontend/src` — and the measurement errs in **both** directions, as
+this session found twice: a path built from a variable reads as uncalled when it is not, and a call
+made outside the client is invisible.
 
-Session 27 closed the biggest single cluster, `/subscriptions`, all fourteen of them (§2am). The next
-ones, largest first, with the split `VERIFICATION.md` draws between *buildable* and *needs a decision*:
+**Three rows in `docs/IMPLEMENTATION_CHECKLIST.md` are not `Completed`, and two of them cannot be
+finished here.**
 
-- **exams (7)** — grade scales, marks entry and submission, exam edit, exam subjects. Buildable: the
-  Exams and Results screens both exist. This is the largest remaining cluster and the one a school
-  actually uses every term.
-- **schools (6)** — edit, delete, activate, suspend, archive, set principal. Buildable, and the shape
-  is the one `planLifecycle.tsx` and §2am's `LifecycleBar` have now both established twice.
-- **ai (6)** — the FR-AI-001 workflow. **Needs a decision**: §33 names no AI screen, and the workflow
-  is a nine-step state machine, not a form.
-- **taxes (5), quotations (5)** — needs a decision, both. §33 names neither.
-- **payments (5), invoices (4), coupons (3)** — buildable; all three screens exist and are read-only.
-- **finance (4), assignments (4), parents (3), classes (2), users (2), roles (2), addons (4)** and the
-  singletons — buildable, mostly one row action each.
-- **sessions (4), school-settings (1), notifications (3)** — needs a decision. Academic sessions is the
-  clearest case in the document: FR-SCHOOL-002 requires create / activate / close, and §33's School
-  list of seventeen names no screen to do it from.
+- **5.2 — the Anthropic adapter's round trip.** Everything but the network hop is exercised and
+  regressed (§2af). What is left needs a real key and a real request, which this environment does not
+  have; a stub agreeing with itself is not evidence about the service. When it is attempted, **start
+  with `extract()`'s PDF path**: it calls `pdf-parse`, which fails with "Illegal character" on an
+  untouched pdfkit document, and is the likeliest thing to break first.
+- **3.S.1 — demo seed data.** Optional, and §35 forbids inventing the plans, classes and students it
+  would contain. The CLI warns *"No demo seeders found"* and no-ops, which is correct behaviour.
+- **7.13 — the final SRS re-read.** Its pass has been run and its output written. What remains is a
+  decision on each of **thirteen `real-blocked` findings** in `docs/SRS-TRIAGE-VERDICTS.md`, where the
+  SRS lists a capability without specifying it — and 5.2 above, which the row also waits on.
 
-**One of the 75 is a false positive, and knowing why matters more than the one route.** `POST
-/auth/refresh` counts as uncalled because `apiClient.ts:302` reaches it with a raw `fetch` rather than
-through `api.post` — it *is* the refresh mechanism, so it cannot use the client that depends on it.
-The count therefore errs in both directions: a path built from a variable reads as uncalled when it is
-not, and a call made outside the client is invisible. Check a cluster before building it.
+**What is genuinely buildable and not yet built**, in the order it is worth doing:
 
-Reproduce the measurement rather than trusting this paragraph — it moves with every screen shipped, and
-the script that produced it is six lines over `buildDocument(createApp())` and the `api.<method>('…')`
-literals in `frontend/src`. **Match the API's shape, not just its paths**: §2am found the collector must
-see the literal *at the call*, because a path assembled anywhere else is invisible to
-`verify-frontend.js` too, and the assertion that was supposed to catch an uncalled route would have
-passed while proving nothing.
+- **`src/payments/` — the plugin registry and five providers.** The one part of Phase 5 that does not
+  exist. The billing modules *record* payments; they do not *take* them, and FR-BILL-003's
+  `online_gateway` method is accepted by the schema with nothing behind it. This is the largest
+  remaining piece of unwritten code in the project.
+- **Rows 6.3 and 6.4.** FR-SEC-003 is Completed but both rows are In Progress, because XSS coverage
+  is spread across seven suites and SQL-injection coverage sits in one.
+- **The frontend has no lint at all.** Next 16 removed `next lint`, `npm run lint` still points at it
+  and fails, and there is no `eslint.config.*`. The backend is unaffected (`.eslintrc.json`, exit 0).
+  Every screen written since that upgrade — which is now all of them — has been unlinted.
+- **The eleven open rows of §5's Known Issues register**, of which #21 (a limit check and the write it
+  guards are not atomic) is the one with real consequences: two concurrent admissions can both pass at
+  `used = limit − 1`.
 
-**Two qualifications carried forward, both still true.**
-
-FR-DEPLOY-001 is complete *as configuration* and has never been **run**. nginx, pm2, mysql and
-logrotate are absent from this machine, so no file was validated by the tool that will consume it;
-`verify-deploy.js` checks that each agrees with the application, which is a different claim and a
-weaker one. The likeliest thing to break at the first real deploy is the backup user's privileges —
-`mysqldump --single-transaction --routines --triggers` needs the global `PROCESS` grant.
-
-FR-SEC-003 is Completed but its two Phase 6 rows (6.3, 6.4) are still In Progress, because XSS coverage
-is spread across seven suites and SQL-injection coverage sits in one.
-
-And **5.2 — the Anthropic adapter's round trip.** Everything but the network hop is exercised and
-regressed (§2af). When it is attempted, **start with `extract()`'s PDF path**: it calls `pdf-parse`,
-which fails with "Illegal character" on an untouched pdfkit document, and is the likeliest thing to
-break first.
+**And one qualification carried forward, unchanged.** FR-DEPLOY-001 is complete *as configuration* and
+has never been **run**. nginx, pm2, mysql and logrotate are absent from this machine, so no file was
+validated by the tool that will consume it; `verify-deploy.js` checks that each agrees with the
+application, which is a different claim and a weaker one. The likeliest thing to break at the first
+real deploy is the backup user's privileges — `mysqldump --single-transaction --routines --triggers`
+needs the global `PROCESS` grant.
 
 Standing practice, with what this session added:
 
-- **Run the loop serially** (Known Issues #25, largely fixed), and **re-record `tests/baseline.json`**
-  when a suite grows — `npm test` asserts each suite's exact count, so a grown suite fails the harness
-  until the baseline is deliberately re-recorded.
-- **Read a per-suite figure out of `tests/baseline.json`, never out of this file.** Session 27 found
-  **nineteen** of §1's thirty-eight cited counts stale, one by 154, and every one of them had been
-  green in `npm test` throughout — the harness checks the *checklist* against the baseline and does not
-  check this file at all.
-- **A sweeping regex over a document with two tables will edit both.** Session 27 re-derived §1's
-  assertion column with one `re.sub` over `| \`verify-*.js\` | N |` and silently rewrote **§6's line
-  counts** with assertion counts, twenty-nine rows of them. Caught because the script printed every
-  change and the second half of the list was obviously wrong. Scope an edit to the section, print what
-  it changed, and read the printout.
-- **Restart MariaDB as a *tracked* background process.** It stopped mid-session again; `mysqld
-  --defaults-file=C:/xampp/mysql/bin/my.ini --standalone` brings it back, and both dev servers must
-  then be restarted because they die with it.
+- **Run the loop serially at the *start* of a session** (Known Issues #25), and **re-record
+  `tests/baseline.json`** when a suite grows: `npm test` asserts each suite's exact count, so a grown
+  suite fails the harness until the baseline is deliberately re-recorded.
+- **Read a per-suite figure from `tests/baseline.json`, never from prose.** `npm test` checks the
+  *checklist* against the baseline and does not check `IMPLEMENTATION_PROGRESS.md` at all. Session 27
+  found nineteen of §1's thirty-eight cited counts stale, one by 154, every one of them green
+  throughout.
+- **Never author a regex through a heredoc or a non-raw Python string.** This project has now shipped
+  a backspace byte into a regex **three times**, and twice the result was an assertion that passed
+  while proving nothing. `npm test`'s stray-control-character rule catches it; use an editor.
+- **A sweeping regex over a document with two tables will edit both.** §1's assertion counts and §6's
+  line counts share a row shape. Slice the document at the section heading, print every change, and
+  read the printout.
+- **A screen may be looser than the API; it may not be tighter.** §2am shipped a select that disabled
+  every add-on the API would have sold. Before disabling a control, find the line in the service that
+  refuses it.
+- **Check a list read against `PAGINATION.MAX_LIMIT`.** It is 100, and a larger `limit` is a 422 that
+  renders as an empty picker rather than as an error anyone sees. Four screens carried it at once;
+  `verify-frontend.js` now refuses it.
+- **Restart MariaDB as a *tracked* background process** —
+  `mysqld --defaults-file=C:/xampp/mysql/bin/my.ini --standalone` — and restart both dev servers
+  afterwards, because they die with it.
 - **A module suite verifies a module.** §23's dead notification survived two green suites.
 - **Bound anything that can hang**, and give every spawned child a `timeout`.
-- **`includes()` on a label is almost always too weak.** Compare wrapped prose with whitespace squashed
-  on both sides, and everything else literally.
+- **`includes()` on a label is almost always too weak.** Compare wrapped prose with whitespace
+  squashed on both sides, and everything else literally.
 - **Wait on the thing, not on the scheduler.** `settle()` for the trail, `waitUntilIdle()` for the
   queue — anything written after a response needs one.
-- **Run the deliberate regressions, and treat a MISS as a defect in the test, in the fixture, or in the
-  design.** A MISS caused by a thin fixture once turned out to mean a rule had been copied into two
-  places.
-- **A screen may be looser than the API; it may not be tighter.** §2am shipped a select that disabled
-  every add-on the API would have sold, and no assertion could see it — only driving the screen did.
-  Before disabling a control, find the line in the service that refuses it.
+- **Run the deliberate regressions, and treat a MISS as a defect in the test, in the fixture, or in
+  the design.** Three of this session's assertions were regressed deliberately and all three fired;
+  the fourth was the backspace, which is what a MISS looks like when nobody checks.
 
 ## 8. Log maintenance
 
