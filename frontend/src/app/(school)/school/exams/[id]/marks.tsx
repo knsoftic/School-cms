@@ -123,14 +123,15 @@ export function MarksPanel({
     try {
       const [marked, roll] = await Promise.all([
         api.page<MarkRow[]>('/exams/marks', {
-          query: { exam_subject_id: paper.id, limit: 500 },
+          /* `PAGINATION.MAX_LIMIT` is 100; a larger limit is a 422, not a bigger page. */
+          query: { exam_subject_id: paper.id, limit: 100 },
         }),
         api.page<StudentOption[]>('/students', {
           query: {
             class_id: exam.class_id,
             ...(exam.section_id ? { section_id: exam.section_id } : {}),
             status: 'active',
-            limit: 500,
+            limit: 100,
           },
         }),
       ]);

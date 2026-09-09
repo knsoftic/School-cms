@@ -134,8 +134,15 @@ export function PapersPanel({
 }) {
   const { success } = useToast();
 
-  const catalogue = useCollection<SubjectOption>('/subjects', { limit: 200 });
-  const teachers = useCollection<TeacherOption>('/teachers', { limit: 200, is_active: 'true' });
+  /*
+   * 100, because `PAGINATION.MAX_LIMIT` is 100 and `validate()` refuses anything larger with a
+   * 422 — which `useCollection` reports as an error and the select renders as **empty**. Found by
+   * driving this screen: the subject picker offered nothing for a school that has subjects.
+   * A school with more than a hundred subjects or teachers would need a searchable picker rather
+   * than a bigger number, and the ceiling is the API's to raise.
+   */
+  const catalogue = useCollection<SubjectOption>('/subjects', { limit: 100 });
+  const teachers = useCollection<TeacherOption>('/teachers', { limit: 100, is_active: 'true' });
 
   const [editing, setEditing] = useState<ExamSubjectRow | null>(null);
   const [adding, setAdding] = useState(false);

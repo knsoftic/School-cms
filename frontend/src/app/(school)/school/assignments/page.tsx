@@ -123,7 +123,8 @@ export default function AssignmentsPage() {
     [page, status]
   );
   const list = useCollection<Assignment>('/assignments', query);
-  const classes = useCollection<ClassOption>('/classes', useMemo(() => ({ limit: 200 }), []));
+  /* 100 is `PAGINATION.MAX_LIMIT`; anything above it is a 422 and renders as an empty select. */
+  const classes = useCollection<ClassOption>('/classes', useMemo(() => ({ limit: 100 }), []));
 
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Assignment | null>(null);

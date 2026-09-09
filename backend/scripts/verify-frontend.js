@@ -1833,6 +1833,42 @@ const handRolledSubmits = sourceFiles(APP)
 check('  and no screen hand-rolls a submit button around that guard', handRolledSubmits, []);
 
 
+/* ─────────────────── every list read stays inside the API's own ceiling ─────────────────── */
+
+/*
+ * A `limit` above `PAGINATION.MAX_LIMIT` is a **422**, not a bigger page.
+ *
+ * `middlewares/validate.js` builds every list schema with `.max(PAGINATION.MAX_LIMIT)`, so a screen
+ * asking for 200 rows to fill a picker does not get 100 — it gets nothing, and `useCollection`
+ * reports the refusal as an error the select renders as an empty list. The failure is silent in the
+ * worst way: the control looks loaded and offers no options, which reads as "this school has no
+ * subjects" rather than as a bad request.
+ *
+ * Found by driving the exam papers screen, where the subject picker was empty for a school that has
+ * subjects. Four screens carried the same mistake — `limit: 200` and `limit: 500` — every one of
+ * them written to make a picker "big enough" without checking what big enough is.
+ *
+ * The ceiling is read from the backend rather than written here, so raising it there raises it here
+ * and this assertion keeps meaning the same thing.
+ */
+{
+  const { PAGINATION } = require('../src/config/constants');
+  const overLimit = [];
+
+  for (const file of sourceFiles(FRONTEND)) {
+    const source = code(fs.readFileSync(file, 'utf8'));
+    const pattern = /\blimit:\s*(\d+)/g;
+    for (let m = pattern.exec(source); m; m = pattern.exec(source)) {
+      const asked = Number(m[1]);
+      if (asked > PAGINATION.MAX_LIMIT) overLimit.push(`${relative(file)} limit: ${asked}`);
+    }
+  }
+
+  check(`no screen asks for more rows than the API's ceiling of ${PAGINATION.MAX_LIMIT}`,
+    overLimit.sort(), []);
+}
+
+
 /* ──────────────────── the endpoints that had no caller in the UI ──────────────────── */
 
 /*

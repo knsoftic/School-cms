@@ -222,7 +222,8 @@ export default function ParentsPage() {
     try {
       const [linked, roll] = await Promise.all([
         api.get<{ children: LinkedChild[] }>(`/parents/${parent.id}/children`),
-        api.page<StudentOption[]>('/students', { query: { status: 'active', limit: 500 } }),
+        /* 100 is the API's ceiling; above it the request is refused and the picker is empty. */
+        api.page<StudentOption[]>('/students', { query: { status: 'active', limit: 100 } }),
       ]);
       setChildren(linked.children);
       setStudents(roll.data);
