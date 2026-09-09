@@ -34,6 +34,7 @@
  * filter sends to the API, where it is data in a query string rather than a branch.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
@@ -166,7 +167,19 @@ export default function UsersPage() {
 
   const columns = useMemo<Column<UserRow>[]>(
     () => [
-      { key: 'name', header: 'Name', cell: (row) => <span className="font-medium">{row.name}</span> },
+      {
+        key: 'name',
+        header: 'Name',
+        /* Into the account's own screen: its editable fields, its permission overrides, its role. */
+        cell: (row) => (
+          <Link
+            href={`/super-admin/users/${row.id}`}
+            className="font-medium underline-offset-2 hover:underline focus-visible:underline"
+          >
+            {row.name}
+          </Link>
+        ),
+      },
       {
         key: 'username',
         /*

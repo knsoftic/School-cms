@@ -45,6 +45,7 @@ import {
   FilterSelect,
   focusFirstInvalidField,
 } from '@/components/form';
+import { EditDialog } from '@/components/editDialog';
 import { Modal } from '@/components/overlay';
 import { useToast } from '@/components/toast';
 import {
@@ -157,6 +158,17 @@ function StructuresPanel() {
   const canManage = can('fees.manage');
   const [assigning, setAssigning] = useState<Structure | null>(null);
 
+  /*
+   * Correcting a structure — `PATCH /fees/structures/:id`, which had no caller. A structure could be
+   * defined and then never fixed: an amount typed wrong stayed wrong, and the only way to stop
+   * charging it was to leave it and define another.
+   *
+   * `class_id` and `academic_session_id` are accepted by the schema and not offered, for the reason
+   * the classes editor gives: both take a numeric id. Moving a structure between classes is also not
+   * a correction — the assignments already made from it point at students of the old class.
+   */
+  const [editing, setEditing] = useState<Structure | null>(null);
+
   const columns = useMemo<Column<Structure>[]>(() => {
     const base: Column<Structure>[] = [
       { key: 'name', header: 'Name', cell: (row) => <span className="font-medium">{row.name}</span> },
@@ -192,20 +204,26 @@ function StructuresPanel() {
       {
         key: 'actions',
         header: 'Actions',
-        cell: (row) =>
-          row.is_active ? (
-            <button
-              type="button"
-              onClick={() => setAssigning(row)}
-              className="btn btn-ghost btn-sm"
-            >
-              Assign
+        cell: (row) => (
+          <div className="flex gap-1">
+            {row.is_active ? (
+              <button
+                type="button"
+                onClick={() => setAssigning(row)}
+                className="btn btn-ghost btn-sm"
+              >
+                Assign
+              </button>
+            ) : (
+              /* An inactive structure is one the school has stopped charging; assigning it would
+                 create a live debt from a retired rule. */
+              <span className="text-muted-soft">—</span>
+            )}
+            <button type="button" onClick={() => setEditing(row)} className="btn btn-sm btn-secondary">
+              Edit
             </button>
-          ) : (
-            /* An inactive structure is one the school has stopped charging; assigning it would
-               create a live debt from a retired rule. */
-            <span className="text-muted-soft">—</span>
-          ),
+          </div>
+        ),
       },
     ];
   }, [canManage]);
@@ -245,6 +263,57 @@ function StructuresPanel() {
             {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
           </>
         )}
+
+      <EditDialog
+        row={editing}
+        title={editing ? `Edit ${editing.name}` : ''}
+        description="What this structure charges. Changing it does not change any assignment already made — those carry the amount they were charged at."
+        success="Fee structure updated"
+        onClose={() => setEditing(null)}
+        onSaved={reload}
+        save={(row, body) => api.patch(`/fees/structures/${row.id}`, body)}
+        initial={(row) => ({
+          name: row.name,
+          amount: String(row.amount),
+          currency: row.currency,
+          is_recurring: row.is_recurring,
+          due_day: row.due_day === null ? '' : String(row.due_day),
+          is_active: row.is_active,
+        })}
+        fields={[
+          { name: 'name', label: 'Name', required: true },
+          {
+            name: 'amount',
+            label: 'Amount',
+            kind: 'number',
+            step: '0.01',
+            min: 0,
+            hint: 'Charged per assignment. Assignments already made keep the amount they were charged at.',
+          },
+          { name: 'currency', label: 'Currency', hint: 'Three-letter code.' },
+          {
+            name: 'is_recurring',
+            kind: 'checkbox',
+            label: 'Charged every month',
+            hint: 'A one-off structure is charged once per assignment.',
+          },
+          {
+            name: 'due_day',
+            label: 'Due on day',
+            kind: 'number',
+            min: 1,
+            max: 31,
+            nullable: true,
+            hint: 'Day of the month a recurring charge falls due. Blank leaves it unset.',
+          },
+          {
+            name: 'is_active',
+            kind: 'checkbox',
+            label: 'In use',
+            hint: 'A retired structure keeps its history and can no longer be assigned.',
+          },
+        ]}
+      />
 
       <AssignDialog
         structure={assigning}

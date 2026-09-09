@@ -52,10 +52,18 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
+import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { EditDialog } from '@/components/editDialog';
+import { Modal } from '@/components/overlay';
+import { useToast } from '@/components/toast';
 import { useCollection } from '@/lib/useCollection';
 import {
+  Field,
+  Notice,
   SearchField,
+  SelectField,
+  SubmitButton,
   FilterBar,
   FilterSelect,
 } from '@/components/form';
@@ -95,8 +103,56 @@ interface Parent {
   is_active: boolean;
 }
 
+/** One `student_parents` link, as `GET /parents/:id/children` returns it. */
+interface LinkedChild {
+  id: number;
+  student_id: number;
+  relation: string | null;
+  is_primary_guardian: boolean;
+  student: {
+    id: number;
+    student_id: string | null;
+    roll_number: string | null;
+    first_name: string;
+    last_name: string;
+    status: string;
+  } | null;
+}
+
+/** One row of `GET /students`, for the picker. */
+interface StudentOption {
+  id: number;
+  student_id: string | null;
+  first_name: string;
+  last_name: string;
+}
+
 export default function ParentsPage() {
   const { can } = useAuth();
+  const { success } = useToast();
+
+  /*
+   * Editing a parent, and the two ends of the link to a child — `PATCH /parents/:id`,
+   * `POST /parents/:id/children` and `DELETE /parents/:id/children/:linkId`, none of which had a
+   * caller. §15.2 is about the link above all: a parent account with no child attached signs in to
+   * an empty Parent dashboard, and nothing in the product could attach one.
+   *
+   * `email` and `username` are refused by the update schema **by name**, with a message saying they
+   * belong to the account rather than the profile and are changed on the Users screen. Neither is
+   * offered here; `parents.email` — the contact address, a different column — is.
+   *
+   * The unlink route takes a `student_parents.id`, not a `students.id`. A parent may be linked to
+   * several children and the rows are what distinguish them, so the button passes `link.id`.
+   */
+  const [editing, setEditing] = useState<Parent | null>(null);
+  const [linking, setLinking] = useState<Parent | null>(null);
+  const [children, setChildren] = useState<LinkedChild[]>([]);
+  const [students, setStudents] = useState<StudentOption[]>([]);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [studentId, setStudentId] = useState('');
+  const [relation, setRelation] = useState('');
+  const [isPrimary, setIsPrimary] = useState(false);
 
   /*
    * Read once, outside the column memo and outside every cell. `can()` inside a cell would run per
@@ -154,6 +210,81 @@ export default function ParentsPage() {
 
   const { rows, meta, loading, error, refusal, reload } = useCollection<Parent>('/parents', query);
 
+  /** Open the children dialog for a parent, loading both the links and the roll to pick from. */
+  async function openLinking(parent: Parent) {
+    setLinking(parent);
+    setChildren([]);
+    setStudentId('');
+    setRelation('');
+    setIsPrimary(false);
+    setLinkError(null);
+    setLinkBusy(true);
+    try {
+      const [linked, roll] = await Promise.all([
+        api.get<{ children: LinkedChild[] }>(`/parents/${parent.id}/children`),
+        api.page<StudentOption[]>('/students', { query: { status: 'active', limit: 500 } }),
+      ]);
+      setChildren(linked.children);
+      setStudents(roll.data);
+    } catch (caught) {
+      setLinkError(
+        caught instanceof ApiError
+          ? caught.message
+          : 'Could not load this parent’s children.'
+      );
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  async function linkChild() {
+    if (!linking || !studentId || linkBusy) return;
+    setLinkBusy(true);
+    setLinkError(null);
+    try {
+      await api.post(`/parents/${linking.id}/children`, {
+        student_id: Number(studentId),
+        relation: relation.trim() || undefined,
+        is_primary_guardian: isPrimary,
+      });
+      success('Child linked');
+      const linked = await api.get<{ children: LinkedChild[] }>(`/parents/${linking.id}/children`);
+      setChildren(linked.children);
+      setStudentId('');
+      setRelation('');
+      setIsPrimary(false);
+      reload();
+    } catch (caught) {
+      setLinkError(
+        caught instanceof ApiError
+          ? caught.message
+          : 'Could not reach the server. Check your connection and try again.'
+      );
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  async function unlinkChild(link: LinkedChild) {
+    if (!linking || linkBusy) return;
+    setLinkBusy(true);
+    setLinkError(null);
+    try {
+      await api.delete(`/parents/${linking.id}/children/${link.id}`);
+      success('Child unlinked');
+      setChildren((current) => current.filter((row) => row.id !== link.id));
+      reload();
+    } catch (caught) {
+      setLinkError(
+        caught instanceof ApiError
+          ? caught.message
+          : 'Could not reach the server. Check your connection and try again.'
+      );
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
   const columns = useMemo<Column<Parent>[]>(
     () => [
       { key: 'name', header: 'Parent', cell: (row) => <span className="font-medium">{row.name}</span> },
@@ -201,8 +332,34 @@ export default function ParentsPage() {
          */
         cell: (row) => <StatusBadge status={row.is_active ? 'active' : 'inactive'} />,
       },
+      ...(can('parents.manage')
+        ? [
+            {
+              key: 'actions',
+              header: 'Actions',
+              cell: (row: Parent) => (
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => setEditing(row)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => void openLinking(row)}
+                  >
+                    Children
+                  </button>
+                </div>
+              ),
+            } as Column<Parent>,
+          ]
+        : []),
     ],
-    []
+    [can]
   );
 
   return (
@@ -293,6 +450,150 @@ export default function ParentsPage() {
           {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
         </>
       )}
+
+      <EditDialog
+        row={editing}
+        title={editing ? `Edit ${editing.name}` : ''}
+        description="The parent's profile. Their sign-in address and username belong to the account and are changed on the Users screen — the API refuses them here and says so."
+        success="Parent updated"
+        onClose={() => setEditing(null)}
+        onSaved={reload}
+        save={(row, body) => api.patch(`/parents/${row.id}`, body)}
+        initial={(row) => ({
+          name: row.name,
+          relation: row.relation ?? '',
+          phone: row.phone ?? '',
+          national_id: row.national_id ?? '',
+          is_active: row.is_active,
+        })}
+        fields={[
+          { name: 'name', label: 'Name', required: true },
+          {
+            name: 'relation',
+            label: 'Relation',
+            nullable: true,
+            hint: 'Free text — father, mother, guardian. The model fixes no vocabulary.',
+          },
+          { name: 'phone', label: 'Phone', kind: 'tel', nullable: true },
+          { name: 'national_id', label: 'National ID', nullable: true },
+          {
+            name: 'is_active',
+            kind: 'checkbox',
+            label: 'Active',
+            hint: 'An inactive parent keeps their links and their history.',
+          },
+        ]}
+      />
+
+      <Modal
+        open={linking !== null}
+        onClose={() => {
+          if (!linkBusy) setLinking(null);
+        }}
+        title={linking ? `${linking.name}’s children` : ''}
+        description="A parent sees exactly the children linked here — the Parent dashboard has nothing else to show. Linking does not change the student's record."
+        size="lg"
+        busy={linkBusy}
+        footer={
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={linkBusy}
+            onClick={() => setLinking(null)}
+          >
+            Close
+          </button>
+        }
+      >
+        <div className="space-y-5">
+          {linkError ? <Notice tone="error">{linkError}</Notice> : null}
+
+          {children.length === 0 ? (
+            <p className="text-sm text-muted">
+              No child is linked. This parent’s dashboard is empty until one is.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {children.map((link) => (
+                <li
+                  key={link.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2 text-sm"
+                >
+                  <span>
+                    {link.student
+                      ? `${link.student.first_name} ${link.student.last_name}`
+                      : `Student #${link.student_id}`}
+                    {link.relation ? (
+                      <span className="text-muted-soft"> · {link.relation}</span>
+                    ) : null}
+                    {link.is_primary_guardian ? (
+                      <span className="text-success"> · primary guardian</span>
+                    ) : null}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger-ghost"
+                    disabled={linkBusy}
+                    onClick={() => void unlinkChild(link)}
+                  >
+                    Unlink
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <form
+            className="space-y-3 border-t border-border-soft pt-4"
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault();
+              void linkChild();
+            }}
+          >
+            <SelectField
+              id="link-student"
+              label="Link a child"
+              value={studentId}
+              onChange={(event) => setStudentId(event.target.value)}
+              hint="Active students of this school. The API refuses a student already linked to this parent."
+            >
+              <option value="">Choose a student…</option>
+              {students
+                .filter((student) => !children.some((link) => link.student_id === student.id))
+                .map((student) => (
+                  <option key={student.id} value={student.id}>
+                    {student.first_name} {student.last_name}
+                    {student.student_id ? ` (${student.student_id})` : ''}
+                  </option>
+                ))}
+            </SelectField>
+
+            <Field
+              id="link-relation"
+              label="Relation"
+              value={relation}
+              onChange={(event) => setRelation(event.target.value)}
+              hint="How this parent relates to this child, if it differs from their profile."
+            />
+
+            <div className="flex items-center gap-2 text-sm">
+              <input
+                id="link-primary"
+                type="checkbox"
+                className="size-4"
+                checked={isPrimary}
+                onChange={(event) => setIsPrimary(event.target.checked)}
+              />
+              <label htmlFor="link-primary">Primary guardian for this child</label>
+            </div>
+
+            <SubmitButton busy={linkBusy} busyLabel="Linking…" fullWidth={false} disabled={!studentId}>
+              Link child
+            </SubmitButton>
+          </form>
+        </div>
+      </Modal>
     </div>
   );
 }

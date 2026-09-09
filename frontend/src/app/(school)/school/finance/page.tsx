@@ -34,6 +34,7 @@ import { Suspense, useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { EditDialog } from '@/components/editDialog';
 import { EXPLAINED_CODES, useCollection } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
 import {
@@ -123,6 +124,17 @@ function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRec
   const [category, setCategory] = useState('');
   const [recording, setRecording] = useState(false);
 
+  /*
+   * Correcting an entry — `PATCH /finance/incomes/:id` and `PATCH /finance/expenses/:id`, neither of
+   * which had a caller. A ledger is exactly where a typo has to be fixable: an amount entered wrong
+   * feeds every §18 total and every §22 expense report until it is corrected, and there was no way
+   * to correct it.
+   *
+   * §18 gives no delete on either ledger, deliberately — a correction is recorded, a deletion is
+   * not — so this dialog is the whole of what can be done to an entry after it is written.
+   */
+  const [editing, setEditing] = useState<Entry | null>(null);
+
   const query = useMemo(
     () => ({ page, limit: 20, q: search || undefined, category: category || undefined }),
     [page, search, category]
@@ -166,8 +178,21 @@ function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRec
         cell: (row) => row.payment_method?.replace(/_/g, ' ') ?? <span className="text-muted-soft">—</span>,
       },
       { key: 'amount', header: 'Amount', numeric: true, cell: (row) => money(row.amount, row.currency) },
+      ...(can('finance.manage')
+        ? [
+            {
+              key: 'actions',
+              header: 'Actions',
+              cell: (row: Entry) => (
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setEditing(row)}>
+                  Edit
+                </button>
+              ),
+            } as Column<Entry>,
+          ]
+        : []),
     ],
-    [isIncome]
+    [isIncome, can]
   );
 
   return (
@@ -265,6 +290,64 @@ function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRec
           {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
         </>
       )}
+
+      <EditDialog
+        row={editing}
+        title={editing ? `Edit ${editing.title}` : ''}
+        description={
+          isIncome
+            ? 'Correcting an income entry. It feeds the §18 totals and the expense report, so the correction is what those read next.'
+            : 'Correcting an expense entry. It feeds the §18 totals and the expense report, so the correction is what those read next.'
+        }
+        success={isIncome ? 'Income updated' : 'Expense updated'}
+        onClose={() => setEditing(null)}
+        onSaved={() => {
+          reload();
+          /* The ledger and the totals are two reads; a corrected amount staled both. */
+          onRecorded();
+        }}
+        /*
+         * The two routes written out rather than one interpolated path — the blind spot this file
+         * already hit once on the create side, recorded in `RecordEntryDialog`.
+         */
+        save={(row, body) =>
+          isIncome
+            ? api.patch(`/finance/incomes/${row.id}`, body)
+            : api.patch(`/finance/expenses/${row.id}`, body)
+        }
+        initial={(row) => ({
+          title: row.title,
+          amount: String(row.amount),
+          category: row.category,
+          subcategory: row.subcategory ?? '',
+          reference: row.reference ?? '',
+          [isIncome ? 'received_from' : 'paid_to']:
+            (isIncome ? row.received_from : row.paid_to) ?? '',
+          [isIncome ? 'income_date' : 'expense_date']:
+            ((isIncome ? row.income_date : row.expense_date) ?? '').slice(0, 10),
+        })}
+        fields={[
+          { name: 'title', label: 'Title', required: true },
+          { name: 'amount', label: 'Amount', kind: 'number', step: '0.01', min: 0 },
+          {
+            name: 'category',
+            label: 'Category',
+            hint: 'One of the categories §18 fixes for this ledger — the API refuses anything else.',
+          },
+          { name: 'subcategory', label: 'Subcategory', nullable: true },
+          {
+            name: isIncome ? 'received_from' : 'paid_to',
+            label: isIncome ? 'Received from' : 'Paid to',
+            nullable: true,
+          },
+          {
+            name: isIncome ? 'income_date' : 'expense_date',
+            label: 'Date',
+            kind: 'date',
+          },
+          { name: 'reference', label: 'Reference', nullable: true },
+        ]}
+      />
 
       <RecordEntryDialog
         kind={kind}

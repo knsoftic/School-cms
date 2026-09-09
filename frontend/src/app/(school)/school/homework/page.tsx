@@ -36,7 +36,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
+import { api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { EditDialog } from '@/components/editDialog';
 import { useCollection } from '@/lib/useCollection';
 import {
   SearchField,
@@ -210,6 +212,18 @@ export default function HomeworkPage() {
 
   const { rows, meta, loading, error, refusal, reload } = useCollection<Homework>('/homework', query);
 
+  /*
+   * Correcting homework — `PATCH /homework/:id`, which had no caller. It could be set and never
+   * fixed: a wrong due date stood, and there was no way to publish a draft or unpublish something
+   * set by mistake.
+   *
+   * `class_id`, `section_id`, `subject_id` and `teacher_id` are accepted and not offered: each is a
+   * numeric id, and moving homework to another class after it has been published is not a
+   * correction. The attachment is likewise not here — `POST /homework` takes it as multipart, and
+   * there is no route that replaces one.
+   */
+  const [editing, setEditing] = useState<Homework | null>(null);
+
   const columns = useMemo<Column<Homework>[]>(
     () => [
       {
@@ -332,8 +346,21 @@ export default function HomeworkPage() {
             <span className="text-muted-soft">—</span>
           ),
       },
+      ...(can('homework.manage')
+        ? [
+            {
+              key: 'actions',
+              header: 'Actions',
+              cell: (row: Homework) => (
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setEditing(row)}>
+                  Edit
+                </button>
+              ),
+            } as Column<Homework>,
+          ]
+        : []),
     ],
-    []
+    [can]
   );
 
   /* Named once so the empty message and nothing else has to re-derive "a filter is on". */
@@ -469,6 +496,34 @@ export default function HomeworkPage() {
           {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
         </>
       )}
+
+      <EditDialog
+        row={editing}
+        title={editing ? `Edit ${editing.title}` : ''}
+        description="The title, the dates and whether students can see it. Which class it belongs to is fixed once it is set."
+        success="Homework updated"
+        onClose={() => setEditing(null)}
+        onSaved={reload}
+        save={(row, body) => api.patch(`/homework/${row.id}`, body)}
+        initial={(row) => ({
+          title: row.title,
+          /* DATEONLY columns; the input wants the day and the API sends it as one. */
+          assigned_date: row.assigned_date,
+          due_date: row.due_date,
+          is_published: row.is_published,
+        })}
+        fields={[
+          { name: 'title', label: 'Title', required: true },
+          { name: 'assigned_date', label: 'Set on', kind: 'date' },
+          { name: 'due_date', label: 'Due', kind: 'date' },
+          {
+            name: 'is_published',
+            kind: 'checkbox',
+            label: 'Published',
+            hint: 'Students and parents see published homework only. Unpublishing hides it again.',
+          },
+        ]}
+      />
     </div>
   );
 }

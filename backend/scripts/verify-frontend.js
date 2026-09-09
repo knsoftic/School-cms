@@ -394,9 +394,37 @@ function main() {
     'failed_login_attempts',
     'locked_until',
   ];
-  const leaking = screens.filter(({ body }) => SECRET_FIELDS.some((field) => body.includes(field)));
+  /*
+   * One screen names two of the eight, and names them as a **request body** rather than as a field
+   * it expects to read.
+   *
+   * `PUT /users/:id/permissions` takes `{ extra_permissions, denied_permissions }` — those are the
+   * schema's own key names, so the screen that writes the overrides cannot avoid spelling them. It
+   * does not *read* them: `presentWithPermissions()` returns the picture nested under `permissions`,
+   * and that screen reads it there. This exemption is one file and two fields wide, and it exists
+   * because the rule's subject is a screen believing a stripped column is available — which is
+   * precisely what the same screen was caught doing in its first draft, and what the assertion
+   * therefore still governs everywhere else including here.
+   */
+  const WRITES_PERMISSION_OVERRIDES = 'super-admin/users/[id]/page.tsx';
+  const isOverrideWriter = (file) => file.endsWith(WRITES_PERMISSION_OVERRIDES);
+  const leaking = screens.filter(({ file, body }) =>
+    SECRET_FIELDS.some((field) => {
+      if (!body.includes(field)) return false;
+      const exempt =
+        isOverrideWriter(file) && (field === 'extra_permissions' || field === 'denied_permissions');
+      return !exempt;
+    })
+  );
   check('no screen references a column the API strips as secret',
     leaking.map((s2) => s2.file), []);
+  check('  and the one exemption still only writes them, never reads one back',
+    /* `user.extra_permissions` on a payload is the defect that screen was caught at in its first draft. */
+    screens
+      .filter(({ file }) => isOverrideWriter(file))
+      .filter(({ body }) => /[.](extra|denied)_permissions/.test(body))
+      .map((s2) => s2.file),
+    []);
 
   /*
    * `screenshot_path` is the narrower case and has its own history: `payments.present()` used to
@@ -2010,6 +2038,28 @@ const UNREACHABLE = [
   ['PATCH', '/organizations/:id', 'an organization can be corrected (§9.1)'],
   ['PATCH', '/classes/:id', 'a class can be corrected (§14.3)'],
   ['DELETE', '/classes/:id', 'an empty class can be removed (§14.3)'],
+
+  /*
+   * §15.2's link, and the access model.
+   *
+   * The parent pair is the consequential one: a parent account with no child linked signs in to an
+   * empty dashboard, and until now nothing in the product could link one — which made the Parent
+   * portal unreachable in practice however correct its code was.
+   */
+  ['PATCH', '/parents/:id', 'a parent profile can be corrected (§15.2)'],
+  ['POST', '/parents/:id/children', 'a child can be linked to a parent (§15.2)'],
+  ['DELETE', '/parents/:id/children/:id', 'a child can be unlinked from a parent (§15.2)'],
+  ['PATCH', '/users/:id', 'an account can be corrected (§29)'],
+  ['PUT', '/users/:id/permissions', 'a user can be granted or denied a permission (§29)'],
+  ['PATCH', '/roles/:id', 'a role can be relabelled (§29)'],
+  ['PUT', '/roles/:id/permissions', 'what a role grants can be set (§29)'],
+
+  /* The last of the one-route corrections, each on the list screen that already shows the row. */
+  ['PATCH', '/fees/structures/:id', 'a fee structure can be corrected (§17)'],
+  ['PATCH', '/homework/:id', 'homework can be corrected (§20.2)'],
+  ['PATCH', '/library/books/:id', 'a catalogue entry can be corrected (§20.4)'],
+  ['PATCH', '/finance/incomes/:id', 'an income entry can be corrected (§18)'],
+  ['PATCH', '/finance/expenses/:id', 'an expense entry can be corrected (§18)'],
 ];
 
 for (const [method, path, what] of UNREACHABLE) {

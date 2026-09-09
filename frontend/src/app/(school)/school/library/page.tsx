@@ -25,6 +25,7 @@ import type { FormEvent } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { EditDialog } from '@/components/editDialog';
 import { useCollection } from '@/lib/useCollection';
 import { splitApiErrors } from '@/lib/formErrors';
 import {
@@ -130,6 +131,17 @@ function BooksPanel() {
   );
   const { rows, meta, loading, error, refusal, reload } = useCollection<Book>('/library/books', query);
 
+  /*
+   * Correcting a book — `PATCH /library/books/:id`, which had no caller. A catalogue entry could be
+   * added and never fixed: a mistyped ISBN, a book moved to another rack, a copy lost and the count
+   * left too high.
+   *
+   * `quantity` is the one that needs care and is offered anyway: `available_quantity` is derived
+   * from it minus what is on loan, so lowering it below the number currently issued is refused by
+   * the API. The hint says so rather than leaving the refusal to explain itself.
+   */
+  const [editing, setEditing] = useState<Book | null>(null);
+
   const columns = useMemo<Column<Book>[]>(
     () => [
       { key: 'title', header: 'Title', cell: (row) => <span className="font-medium">{row.title}</span> },
@@ -153,8 +165,21 @@ function BooksPanel() {
       },
       { key: 'rack', header: 'Rack', cell: (row) => row.rack_number ?? <span className="text-muted-soft">—</span> },
       { key: 'active', header: 'Status', cell: (row) => <StatusBadge status={row.is_active ? 'active' : 'inactive'} /> },
+      ...(can('library.manage')
+        ? [
+            {
+              key: 'actions',
+              header: 'Actions',
+              cell: (row: Book) => (
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setEditing(row)}>
+                  Edit
+                </button>
+              ),
+            } as Column<Book>,
+          ]
+        : []),
     ],
-    []
+    [can]
   );
 
   return (
@@ -214,6 +239,45 @@ function BooksPanel() {
           {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
         </>
       )}
+
+      <EditDialog
+        row={editing}
+        title={editing ? `Edit ${editing.title}` : ''}
+        description="The catalogue entry. Loans already out are untouched by anything changed here."
+        success="Book updated"
+        onClose={() => setEditing(null)}
+        onSaved={reload}
+        save={(row, body) => api.patch(`/library/books/${row.id}`, body)}
+        initial={(row) => ({
+          title: row.title,
+          author: row.author ?? '',
+          category: row.category ?? '',
+          isbn: row.isbn ?? '',
+          rack_number: row.rack_number ?? '',
+          quantity: String(row.quantity),
+          is_active: row.is_active,
+        })}
+        fields={[
+          { name: 'title', label: 'Title', required: true },
+          { name: 'author', label: 'Author', nullable: true },
+          { name: 'category', label: 'Category', nullable: true },
+          { name: 'isbn', label: 'ISBN', nullable: true },
+          { name: 'rack_number', label: 'Rack', nullable: true },
+          {
+            name: 'quantity',
+            label: 'Copies held',
+            kind: 'number',
+            min: 0,
+            hint: 'Available copies are this minus what is on loan, so it cannot be lowered below the number currently issued — the API refuses that with the figure.',
+          },
+          {
+            name: 'is_active',
+            kind: 'checkbox',
+            label: 'In the catalogue',
+            hint: 'A withdrawn book cannot be issued. Loans already out are unaffected and can still be returned.',
+          },
+        ]}
+      />
     </>
   );
 }
