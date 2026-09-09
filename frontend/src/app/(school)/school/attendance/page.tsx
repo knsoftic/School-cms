@@ -30,7 +30,8 @@
  *      just "Search" would be read as name search and would quietly return nothing for a name that
  *      is present — the same dead-control problem in a different disguise. So the label and the
  *      placeholder both say remarks.
- *   2. **The action button is omitted** — see the note on `PageHeader` below.
+ *   2. **The action button leads to a register, not a create form** — see the note on
+ *      `PageHeader` below. It was omitted entirely until the register screen existed.
  *
  * ## The module gate needs nothing from this file
  *
@@ -41,9 +42,12 @@
  * whenever the snapshot in the token is older than the subscription.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
+import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
+import { Icon } from '@/components/icon';
 import {
   SearchField,
   FilterBar,
@@ -162,6 +166,10 @@ function formatTimestamp(value: string | null): string | null {
 const spell = (value: string) => value.replace(/_/g, ' ');
 
 export default function AttendancePage() {
+  const { can } = useAuth();
+  /* The key `POST /attendance/students` is mounted behind. */
+  const canMark = can('attendance.mark');
+
   const [page, setPage] = useState(1);
   const [date, setDate] = useState('');
   const [status, setStatus] = useState('');
@@ -373,15 +381,29 @@ export default function AttendancePage() {
         * 100-104). Guarding a button with a key nobody holds hides it from everyone including the
         * Super Admin, which is a dead control that looks like a permissions bug.
         *
-        * `attendance.mark` is the real write permission, and it is still not a button for this
-        * screen: `POST /attendance/students` takes a class, a date and an `entries` array of up to
-        * 500 students, because FR-ATT-001 is "a teacher marks a section", not "a user adds a row".
-        * That is a register form, a screen of its own, and linking to a route that does not exist yet
-        * would be worse than linking to nothing.
+        * `attendance.mark` is the real write permission, and this button is now gated on it.
+        *
+        * It was deliberately absent until 2026-09-09, and the reason is worth keeping because it was
+        * the right call at the time: `POST /attendance/students` takes a class, a date and an
+        * `entries` array of up to 500 students, because FR-ATT-001 is "a teacher marks a section",
+        * not "a user adds a row". That is a register form and a screen of its own, and linking to a
+        * route that did not exist would have been worse than linking to nothing.
+        *
+        * `/school/attendance/mark` is that screen. Until it existed, §16 — a whole section of the
+        * source — was readable and not usable: nothing in the product could record a single day's
+        * attendance.
         */}
       <PageHeader
         title="Attendance"
         description="Student attendance records, most recent day first."
+        action={
+          canMark ? (
+            <Link href="/school/attendance/mark" className="btn btn-primary">
+              <Icon name="plus" size={15} />
+              Mark attendance
+            </Link>
+          ) : undefined
+        }
       />
 
       <FilterBar

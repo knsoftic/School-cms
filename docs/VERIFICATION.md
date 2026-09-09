@@ -137,23 +137,49 @@ count errs toward *reachable*:
 > **142 write routes are mounted. 43 have a frontend caller. 99 do not.**
 
 Spot-checked rather than trusted: the **Attendance** screen contains no form and no write call of any
-kind, so §16's attendance cannot be marked from the product. **Platform Settings** cannot be saved.
-`/plans` has nine write routes and one caller, so the Features, Limits and Modules sub-screens are
-read-only.
+kind, so §16's attendance cannot be marked from the product. `/plans` has nine write routes and one
+caller, so the Features, Limits and Modules sub-screens are read-only.
 
-Largest clusters: subscriptions 14, plans 9, exams 7, AI 6, students 5, taxes 5, quotations 5,
-classes and sections 4, academic sessions 4, invoices 4, assignments 4.
+### The split that matters
 
-Not all 99 are defects. `POST /coupons/validate` is a checkout-time call and there is no checkout
-screen; several §9 platform lifecycle routes belong to screens §33 does not list. But most are
-capabilities the API offers and the product does not, and they divide into two kinds that should not
-be conflated:
+Conflating these two is how a specification question gets built as a feature, so they are counted
+separately. Screen presence is read from the route tree; §33 presence from `lib/nav.ts`, which
+`verify-frontend.js` already asserts against §33 in both directions.
 
-* **No screen exists, and §33 does not name one.** Academic sessions are the clear case: four write
-  routes, no screen, and §33's School list — seventeen entries, checked — does not include one, while
-  FR-SCHOOL-002 requires the operations. *Where they belong is a specification question.*
-* **The screen exists and simply has no control.** Classes and Sections edit/delete are the clear
-  case: §33 names both, both exist, and neither has a row action. *No decision required.*
+| | Routes | Meaning |
+|---|---|---|
+| **Buildable now** | **69** | A screen exists, §33 names it, the control has an obvious home. Nothing to decide. |
+| **Needs a decision** | **30** | No screen exists and §33 names none. *Where* the operation lives is a question about the requirement. |
+
+**Buildable now (69).** subscriptions 14 · plans 9 · exams 7 · schools 6 · students 5 ·
+classes and sections 4 · invoices 4 · coupons 3 · parents 3 · attendance 2 · finance 2 · payments 2 ·
+users 2 · addons 2 · fees 1 · homework 1 · library 1 · organizations 1.
+
+**Needs a decision (30).** AI workflow 6 · quotations 5 · taxes 5 · assignments 4 ·
+**academic sessions 4** · notifications 3 · roles 2 · **school settings 1**.
+
+The two clearest cases of each kind:
+
+* *Buildable* — **Classes and Sections** edit and delete. §33 names both screens, both exist, and
+  neither has a row action. The same shape as the subject and timetable actions already closed.
+* *Needs a decision* — **academic sessions**. Four write routes, no screen, and §33's School list
+  (seventeen entries, checked against `nav.ts`) does not include one, while FR-SCHOOL-002 requires
+  create / activate / close. That is a question about the requirement, which is why `FR-SCHOOL-002`
+  correctly still reads `Tested`.
+
+A few of the 99 are deliberate rather than owed: `POST /coupons/validate` is a checkout-time call and
+there is no checkout screen, and `POST /notifications/:id/read` wants a notification centre that §33
+does not list.
+
+**Correction to an earlier draft of this section.** It said *"Platform Settings cannot be saved"*.
+That was wrong twice over. `PATCH /settings` is **§14.1, school-scoped**, with Principal / School
+Admin as its actor — not a platform endpoint — and the school surface has no Settings screen because
+§33's School list does not name one. The *platform* Settings screen has no form **deliberately**, and
+its own header argues the case at length: §33 lists "Settings" among the sixteen Super Admin screens,
+the role table points at "global settings (see Section 9)", and Section 9 defines only 9.1 Dashboard,
+9.2 School Management and 9.3 Principal Creation — the cross-reference points at nothing. A form there
+would have to invent the requirement, the fields, and an endpoint to save them to. That screen is
+correct as it stands; `PATCH /settings` belongs in the *needs a decision* column above.
 
 **How this was missed until now.** `docs/UI-AUDIT-FINDINGS.md` filed nine findings about unreachable
 endpoints and all nine are closed. But that register was built by auditing **screens that exist** and

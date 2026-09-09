@@ -32,16 +32,20 @@ import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { EXPLAINED_CODES, useCollection } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
+import type { FormEvent } from 'react';
 import {
+  CheckboxField,
   Field,
   Notice,
+  SelectField,
   focusFirstInvalidField,
   SubmitButton,
   FilterBar,
   FilterSelect,
 } from '@/components/form';
+import { useRowAction } from '@/lib/useRowAction';
 import { Icon } from '@/components/icon';
-import { Modal } from '@/components/overlay';
+import { ConfirmDialog, Modal } from '@/components/overlay';
 import { useToast } from '@/components/toast';
 import {
   Column,
@@ -185,8 +189,25 @@ function SectionsPanel({ classId }: { classId: number }) {
     return () => controller.abort();
   }, [classId, attempt]);
 
-  const columns = useMemo<Column<SectionRow>[]>(
-    () => [
+  /* Hoisted above the columns, which now need it — the row actions are gated on the same key. */
+  const mayManage = can('classes.manage');
+
+  const [editing, setEditing] = useState<SectionRow | null>(null);
+
+  /*
+   * A section with students enrolled is refused by the service with a 409, and `useRowAction` keeps
+   * that message inside the dialog — where the answer is "retire it instead", which the edit form
+   * above offers.
+   */
+  const remove = useRowAction<SectionRow>({
+    perform: (row) => api.delete(`/classes/${classId}/sections/${row.id}`),
+    success: (row) => `Section ${row.name} removed`,
+    failure: 'Could not remove that section',
+    onDone: reload,
+  });
+
+  const columns = useMemo<Column<SectionRow>[]>(() => {
+    const base: Column<SectionRow>[] = [
       { key: 'name', header: 'Section', cell: (row) => <span className="font-medium">{row.name}</span> },
       {
         key: 'teacher',
@@ -208,17 +229,44 @@ function SectionsPanel({ classId }: { classId: number }) {
       },
       { key: 'room', header: 'Room', cell: (row) => row.room ?? <span className="text-muted-soft">—</span> },
       { key: 'active', header: 'Status', cell: (row) => <StatusBadge status={row.is_active ? 'active' : 'inactive'} /> },
-    ],
-    /* The names arrive after the first render; without this the column freezes on the fallback. */
-    [teacherNames]
-  );
+    ];
+
+    /*
+     * The two routes that had no caller.
+     *
+     * `PATCH` and `DELETE /classes/:id/sections/:sectionId` are both mounted behind `classes.manage`
+     * and neither was reachable: a section could be added and then never renamed, never given a
+     * room, never assigned a teacher, and never retired. The Add dialog collects three of the six
+     * fields the update schema accepts, so even a section created here could not be completed.
+     */
+    if (!mayManage) return base;
+
+    return [
+      ...base,
+      {
+        key: 'actions',
+        header: 'Actions',
+        cell: (row) => (
+          <span className="flex flex-wrap gap-1">
+            <button type="button" onClick={() => setEditing(row)} className="btn btn-ghost btn-sm">
+              Edit
+            </button>
+            <button type="button" onClick={() => remove.ask(row)} className="btn btn-ghost btn-sm">
+              <Icon name="trash" size={14} />
+              Remove
+            </button>
+          </span>
+        ),
+      },
+    ];
+  /* The names arrive after the first render; without this the column freezes on the fallback. */
+  }, [teacherNames, mayManage, remove]);
 
   if (refusal) return <RefusalNotice refusal={refusal} />;
   if (error) return <ErrorNotice message={error} onRetry={reload} />;
   /* Skeleton on the first load only; a refetch after adding a section dims the table in place. */
   if (loading && rows.length === 0) return <LoadingBlock label="Loading sections…" />;
 
-  const mayManage = can('classes.manage');
   const addButton = mayManage ? (
     <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
       <Icon name="plus" size={15} />
@@ -227,15 +275,40 @@ function SectionsPanel({ classId }: { classId: number }) {
   ) : null;
 
   const dialog = (
-    <AddSectionDialog
-      classId={classId}
-      open={adding}
-      onClose={() => setAdding(false)}
-      onCreated={() => {
-        setAdding(false);
-        reload();
-      }}
-    />
+    <>
+      <AddSectionDialog
+        classId={classId}
+        open={adding}
+        onClose={() => setAdding(false)}
+        onCreated={() => {
+          setAdding(false);
+          reload();
+        }}
+      />
+
+      <EditSectionDialog
+        classId={classId}
+        section={editing}
+        teacherNames={teacherNames}
+        onClose={() => setEditing(null)}
+        onSaved={() => {
+          setEditing(null);
+          reload();
+        }}
+      />
+
+      <ConfirmDialog
+        open={remove.target !== null}
+        onCancel={remove.cancel}
+        onConfirm={() => remove.confirm()}
+        title={`Remove section ${remove.target?.name ?? ''}?`}
+        description={
+          remove.conflict ??
+          'The row is removed outright — sections carry no deleted state. If students are enrolled in it the removal is refused; retire it with the Active switch instead, which keeps the record and takes it off new timetables.'
+        }
+        confirmLabel="Remove section"
+      />
+    </>
   );
 
   /*
@@ -394,6 +467,195 @@ function AddSectionDialog({
             hint="Optional."
           />
         </div>
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * `PATCH /classes/:id/sections/:sectionId`.
+ *
+ * ## It collects the whole update schema, unlike the Add dialog
+ *
+ * `AddSectionDialog` asks for three fields — name, capacity, room — because those are what a section
+ * needs to exist. The update schema accepts **six**, and the three it adds are the ones a section
+ * acquires later: the class teacher, and `is_active`, which is how a section is retired. Offering
+ * only what creation offered would leave half the record permanently unreachable, which is the
+ * shape of the gap this dialog closes.
+ *
+ * `class_id` is `forbiddenField('"class_id" is the path parameter')` on the schema, so a section
+ * cannot be moved between classes here — and nothing pretends otherwise.
+ *
+ * ## The teacher picker is fed from the names the panel already loaded
+ *
+ * `SectionsPanel` fetches `/teachers` once for its Class-teacher column and keeps an id → name map.
+ * Reading that rather than fetching again means the dialog opens with no request of its own, and a
+ * teacher the map could not resolve simply is not offered — which is honest, because it is a teacher
+ * the panel cannot name either.
+ */
+function EditSectionDialog({
+  classId,
+  section,
+  teacherNames,
+  onClose,
+  onSaved,
+}: {
+  classId: number;
+  section: SectionRow | null;
+  teacherNames: Map<number, string>;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { success } = useToast();
+  const [name, setName] = useState('');
+  const [capacity, setCapacity] = useState('');
+  const [room, setRoom] = useState('');
+  const [teacherId, setTeacherId] = useState('');
+  const [isActive, setIsActive] = useState(true);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  /* Seeded from the row every time a different section is opened. */
+  useEffect(() => {
+    if (!section) return;
+    setName(section.name);
+    setCapacity(section.capacity === null ? '' : String(section.capacity));
+    setRoom(section.room ?? '');
+    setTeacherId(section.class_teacher_id === null ? '' : String(section.class_teacher_id));
+    setIsActive(section.is_active);
+    setReason('');
+    setBusy(false);
+    setFailure(null);
+    setFieldErrors({});
+  }, [section]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!section) return;
+    setBusy(true);
+    setFailure(null);
+    setFieldErrors({});
+
+    try {
+      /*
+       * The whole editable set, not a diff. `.min(1)` would accept a diff, but computing one means
+       * deciding whether a cleared field is "set to null" or "unchanged" — and getting that wrong
+       * silently drops an edit. A blank capacity or room goes as `null`, which is what clearing one
+       * means.
+       */
+      await api.patch(`/classes/${classId}/sections/${section.id}`, {
+        name,
+        capacity: capacity.trim() ? Number(capacity) : null,
+        room: room.trim() || null,
+        class_teacher_id: teacherId ? Number(teacherId) : null,
+        is_active: isActive,
+        reason: reason.trim() || undefined,
+      });
+      success(`Section ${name} updated`);
+      onSaved();
+    } catch (caught) {
+      if (!(caught instanceof ApiError)) throw caught;
+      const perField = caught.fieldErrors();
+      setFieldErrors(perField);
+      setFailure(Object.keys(perField).length ? null : caught.message);
+      if (Object.keys(perField).length) focusFirstInvalidField();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={section !== null}
+      onClose={onClose}
+      title={section ? `Edit section ${section.name}` : 'Edit section'}
+      description="A section cannot be moved to another class — that is fixed by the path it lives at."
+      busy={busy}
+      footer={
+        <>
+          <button type="button" onClick={onClose} disabled={busy} className="btn btn-secondary">
+            Cancel
+          </button>
+          <SubmitButton form="edit-section" busy={busy} busyLabel="Saving…">
+            Save changes
+          </SubmitButton>
+        </>
+      }
+    >
+      <form id="edit-section" onSubmit={submit} className="space-y-4" noValidate>
+        {failure ? <Notice tone="error">{failure}</Notice> : null}
+
+        <Field
+          id="edit-section-name"
+          label="Name"
+          required
+          maxLength={60}
+          value={name}
+          error={fieldErrors.name}
+          onChange={(event) => setName(event.target.value)}
+          hint="Unique within the class."
+        />
+
+        <SelectField
+          id="edit-section-teacher"
+          label="Class teacher"
+          value={teacherId}
+          error={fieldErrors.class_teacher_id}
+          onChange={(event) => setTeacherId(event.target.value)}
+          hint="Optional. Only teachers of this school can be named; one from another school is refused."
+        >
+          <option value="">Nobody named</option>
+          {[...teacherNames.entries()].map(([id, label]) => (
+            <option key={id} value={id}>
+              {label}
+            </option>
+          ))}
+        </SelectField>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field
+            id="edit-section-capacity"
+            label="Capacity"
+            type="number"
+            min="0"
+            step="1"
+            inputMode="numeric"
+            value={capacity}
+            error={fieldErrors.capacity}
+            onChange={(event) => setCapacity(event.target.value)}
+            hint="Optional. Clear it for no limit."
+          />
+          <Field
+            id="edit-section-room"
+            label="Room"
+            maxLength={60}
+            value={room}
+            error={fieldErrors.room}
+            onChange={(event) => setRoom(event.target.value)}
+            hint="Optional."
+          />
+        </div>
+
+        <CheckboxField
+          id="edit-section-active"
+          label="Active"
+          checked={isActive}
+          error={fieldErrors.is_active}
+          onChange={(event) => setIsActive(event.target.checked)}
+          hint="Retiring a section keeps it and its records, and takes it off new timetables and registers. This is the alternative to removing it, and the only one available once students have been enrolled."
+        />
+
+        <Field
+          id="edit-section-reason"
+          label="Reason"
+          maxLength={255}
+          value={reason}
+          error={fieldErrors.reason}
+          onChange={(event) => setReason(event.target.value)}
+          hint="Optional. Recorded against this edit."
+        />
       </form>
     </Modal>
   );

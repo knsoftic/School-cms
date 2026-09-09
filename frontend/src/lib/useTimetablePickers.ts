@@ -94,55 +94,62 @@ export interface TimetablePickers {
 }
 
 /**
- * @param classId  the chosen class, as the form holds it. `''` before one is chosen.
- * @param enabled  false for a caller who is about to be refused, so nothing is fetched for them.
+ * Four independent fetches rather than one `Promise.all`.
+ *
+ * The grants are separate and so are the consequences — a school without the Teachers module still
+ * builds a timetable — and an `all` would let one refusal take the other lists down with it.
+ *
+ * `api.page` rather than `api.get`: `meta.pagination.total` is the only thing that tells a picker it
+ * is showing a first page rather than the whole set.
+ *
+ * None of the calls sends `school_id`. `tenantWhere(req.tenant, …)` already pins every query to the
+ * caller's school, and naming one here is how a request ends up `CROSS_SCHOOL_ACCESS`.
  */
-export function useTimetablePickers(classId: string, enabled: boolean): TimetablePickers {
-  const [classes, setClasses] = useState<Picker<ClassOption>>({ state: 'loading' });
-  const [sections, setSections] = useState<Picker<SectionOption>>(NO_SECTIONS);
-  const [subjects, setSubjects] = useState<Picker<SubjectOption>>({ state: 'loading' });
-  const [teachers, setTeachers] = useState<Picker<TeacherOption>>({ state: 'loading' });
-  const [sessions, setSessions] = useState<Picker<SessionOption>>({ state: 'loading' });
+function useList<T>(path: string, enabled: boolean): Picker<T> {
+  const [picker, setPicker] = useState<Picker<T>>({ state: 'loading' });
 
   useEffect(() => {
-    /* The permission gate is a `return` after the hooks on both screens, so without this four lists
-       would be fetched for a caller who is about to be told no. */
     if (!enabled) return;
-
     let cancelled = false;
 
-    /*
-     * Four independent fetches rather than one `Promise.all`. The four grants are separate and so are
-     * the four consequences — a school without the Teachers module still builds a timetable — and an
-     * `all` would let one refusal take the other three lists down with it.
-     *
-     * `api.page` rather than `api.get`: `meta.pagination.total` is the only thing that tells a picker
-     * it is showing a first page rather than the whole set.
-     *
-     * None of the calls sends `school_id`. `tenantWhere(req.tenant, …)` already pins every query to
-     * the caller's school, and naming one here is how a request ends up `CROSS_SCHOOL_ACCESS`.
-     */
-    async function load<T>(path: string, apply: (picker: Picker<T>) => void) {
+    (async () => {
       try {
         const page = await api.page<T[]>(path, { query: { limit: OPTION_LIMIT } });
         if (!cancelled) {
-          apply({ state: 'ready', rows: page.data, total: page.meta?.total ?? page.data.length });
+          setPicker({
+            state: 'ready',
+            rows: page.data,
+            total: page.meta?.total ?? page.data.length,
+          });
         }
       } catch {
-        /* Which refusal it was does not change the remedy, and each branch on the screen states its own. */
-        if (!cancelled) apply({ state: 'failed' });
+        /* Which refusal it was does not change the remedy; each screen states its own. */
+        if (!cancelled) setPicker({ state: 'failed' });
       }
-    }
-
-    void load<ClassOption>('/classes', setClasses);
-    void load<SubjectOption>('/subjects', setSubjects);
-    void load<TeacherOption>('/teachers', setTeachers);
-    void load<SessionOption>('/sessions', setSessions);
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
+  }, [path, enabled]);
+
+  return picker;
+}
+
+/**
+ * The class list, plus the sections of whichever class is chosen.
+ *
+ * Split out of `useTimetablePickers` when the attendance register needed exactly these two and none
+ * of the other three: loading subjects, teachers and sessions for a screen that shows none of them
+ * is two or three wasted requests per visit, and copying the section-follows-class rule instead
+ * would put the same decision in two places.
+ */
+export function useClassSections(
+  classId: string,
+  enabled: boolean
+): { classes: Picker<ClassOption>; sections: Picker<SectionOption> } {
+  const classes = useList<ClassOption>('/classes', enabled);
+  const [sections, setSections] = useState<Picker<SectionOption>>(NO_SECTIONS);
 
   /*
    * Sections hang off the chosen class, so this effect is keyed on it.
@@ -151,9 +158,9 @@ export function useTimetablePickers(classId: string, enabled: boolean): Timetabl
    * `{ sections: rows }` ordered by name, with no pagination to read — so there is no `total` to
    * compare and nothing here can be truncated.
    *
-   * It needs `classes.view`, the same grant as the class list above, so a failure here is almost
-   * never a permission problem: by the time a class can be chosen, the grant has already been proved.
-   * What it does catch is a class deleted between the two calls, which is why the branch still exists.
+   * It needs `classes.view`, the same grant as the class list, so a failure here is almost never a
+   * permission problem: by the time a class can be chosen, the grant has already been proved. What
+   * it does catch is a class deleted between the two calls, which is why the branch still exists.
    */
   useEffect(() => {
     if (!classId) {
@@ -178,6 +185,19 @@ export function useTimetablePickers(classId: string, enabled: boolean): Timetabl
       cancelled = true;
     };
   }, [classId]);
+
+  return { classes, sections };
+}
+
+/**
+ * @param classId  the chosen class, as the form holds it. `''` before one is chosen.
+ * @param enabled  false for a caller who is about to be refused, so nothing is fetched for them.
+ */
+export function useTimetablePickers(classId: string, enabled: boolean): TimetablePickers {
+  const { classes, sections } = useClassSections(classId, enabled);
+  const subjects = useList<SubjectOption>('/subjects', enabled);
+  const teachers = useList<TeacherOption>('/teachers', enabled);
+  const sessions = useList<SessionOption>('/sessions', enabled);
 
   return { classes, sections, subjects, teachers, sessions };
 }
