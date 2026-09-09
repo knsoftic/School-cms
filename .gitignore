@@ -10,11 +10,21 @@ node_modules/
 !.env.example
 
 # Runtime storage (SRS §26)
-storage/logs/
-storage/uploads/
-storage/backups/
-storage/tmp/
+#
+# `**/` is load-bearing, and its absence was a real defect. A pattern with a slash anywhere but at the
+# end is **anchored to this file's directory**, so `storage/logs/` matched only `<repo>/storage/logs/`
+# — a path that does not exist — and never `backend/storage/logs/`, which is the one that does. Eleven
+# runtime files were tracked as a result: ten rotated log archives and one uploaded student photo. The
+# logs are not inert either: `MAIL_DRIVER=log` renders every outgoing message into them, and
+# `mailService.js` says so in its own header — *"a reset link appears in `storage/logs`"*.
+#
+# Found in session 28 by noticing a `git commit` summary that named three `.log.gz` files.
+**/storage/logs/
+**/storage/uploads/
+**/storage/backups/
+**/storage/tmp/
 *.log
+*.log.gz
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

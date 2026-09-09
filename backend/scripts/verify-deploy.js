@@ -591,6 +591,53 @@ function verifyLint() {
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
+/**
+ * Part 7 — what must never reach the repository.
+ *
+ * `.gitignore` names runtime storage under SRS §26 and looked correct. It was not: a pattern with a
+ * slash anywhere but at the end is **anchored to the file's own directory**, so `storage/logs/`
+ * matched `<repo>/storage/logs/` — a path that does not exist — and never `backend/storage/logs/`,
+ * which is the one that does. Eleven runtime files were tracked as a result: ten rotated log archives
+ * and an uploaded student photo.
+ *
+ * The logs are not inert. `.env` sets `MAIL_DRIVER=log` and `mailService.js` says in its own header
+ * that this renders the message into the application log — *"a reset link appears in
+ * `storage/logs`"* — so every password-reset mail sent in development is written there.
+ *
+ * Asserted two ways on purpose. The **patterns** are checked because they are the thing that was
+ * wrong, and `git ls-files` is checked because a pattern only governs what is not already tracked:
+ * fixing the first without the second leaves every existing file in the index, which is exactly the
+ * state this was found in. Neither assertion alone would have caught it.
+ */
+function verifyRepositoryHygiene() {
+  console.log('');
+  console.log('── Part 7 — what must never reach the repository ──');
+
+  const ignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8');
+  for (const dir of ['logs', 'uploads', 'backups', 'tmp']) {
+    check(
+      `storage/${dir} is ignored at any depth, not only at the repository root`,
+      ignore.includes(`**/storage/${dir}/`),
+      true
+    );
+  }
+
+  /*
+   * `git ls-files` rather than a directory walk: the question is what the **index** holds, and a file
+   * on disk that git has never been told about is not the problem. `-z` and a split on NUL, because a
+   * path may contain anything but a NUL.
+   */
+  const tracked = spawnSync('git', ['ls-files', '-z', '--', '*/storage/logs/*', '*/storage/uploads/*',
+    '*/storage/backups/*', '*/storage/tmp/*'], { cwd: ROOT, encoding: 'utf8' });
+  const trackedFiles = (tracked.stdout || '').split('\0').filter(Boolean);
+  check('and no runtime file is tracked, whatever the patterns say', trackedFiles, []);
+
+  /* The one that would matter most, kept as its own assertion so a failure names it. */
+  const env = spawnSync('git', ['ls-files', '-z', '--', '*.env', '.env'], { cwd: ROOT, encoding: 'utf8' });
+  check('no .env is tracked either',
+    (env.stdout || '').split('\0').filter(Boolean), []);
+}
+
 function main() {
   verifyFiles();
   verifyPm2();
@@ -598,6 +645,7 @@ function main() {
   verifyEnv();
   verifyOps();
   verifyLint();
+  verifyRepositoryHygiene();
 }
 
 try {
