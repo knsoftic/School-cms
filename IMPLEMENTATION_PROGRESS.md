@@ -16,7 +16,7 @@ All fourteen middleware files plus the barrel are implemented; the authenticatio
 chain, the subscription entitlement engine, and the upload / rate-limit / CSRF / activity-log hardening
 layer each have their own verification suite; `src/app.js` / `src/server.js` wire them into a running
 process.
-**5,476 checks pass, 0 fail, 0 skip, across thirty-nine scripts**, every script exit 0, measured as one
+**5,478 checks pass, 0 fail, 0 skip, across thirty-nine scripts**, every script exit 0, measured as one
 **serial** loop against a live MariaDB in **session 28**. **SRS §14 through §23 are closed in full**, and
 so is **Known Issues #26** — the six columns that accepted a caller-supplied filesystem path. **Every SRS
 section of the backend is now implemented**; what remains of the backend is Phase 5, and the entire
@@ -116,17 +116,17 @@ table back to 0, `users` 1, `activity_logs` 1.
 | `verify-notifications.js` | 100 | SRS §23 — the engine, not the inbox. Part 3 drives `runNotificationSweep()` **directly**, as `verify-subscriptions.js` drives `runLifecycleSweep()`, because §23's actor is `System` and a suite that only called the five routes would leave eight sweeps and nine types unexercised. Every pass is given a **negative** beside its positive — an unpublished draft, a draft exam, a present student, a fee due in sixty days, a payment still pending — and idempotency is asserted by running the whole sweep **twice** and requiring zero new rows. The e-mail failure path is produced by the module's own code, `mailService.send` being replaced for exactly one call. Forty-three deliberate regressions |
 | `verify-jobs.js` | 57 | Phase 5 — the scheduler. Drives `runOrdered()` for real, including a real `mysqldump`. Its central assertion is **end to end rather than structural**: a subscription is planted as `active`, one ordered run is made, and a Subscription Expiry notification must exist afterwards — which is only possible if `subscription-lifecycle` ran before `notification-dispatch` in that same pass. Retention is proved by backdating mtimes, with the negative beside the positive: a file the task did not write is left alone however old. Fifteen deliberate regressions |
 | `verify-openapi.js` | 104 | SRS §28 / FR-APIDOC-001 — the generated OpenAPI document, checked against the application it describes rather than against a schema validator. Part 3 serves it over real HTTP and fetches every asset the Swagger UI needs under this app's CSP |
-| `verify-frontend.js` | 282 | Phase 4 — the frontend's contract with this API, checked against the **generated** OpenAPI document rather than a hand-written list: every path the client calls must exist with that method on the mounted app. Also asserts §30 Rule 1 directly (no plan code or name compared against a literal) and that the access token never reaches browser storage. Lives here, not in `frontend/`, because the claim it verifies is about the backend |
+| `verify-frontend.js` | 284 | Phase 4 — the frontend's contract with this API, checked against the **generated** OpenAPI document rather than a hand-written list: every path the client calls must exist with that method on the mounted app. Also asserts §30 Rule 1 directly (no plan code or name compared against a literal) and that the access token never reaches browser storage. Lives here, not in `frontend/`, because the claim it verifies is about the backend |
 | `verify-deploy.js` | 61 | SRS §27 / FR-DEPLOY-001 — the six `deploy/` artifacts, cross-checked against `backend/src/`. **Nothing here is validated by its own tool**: nginx, pm2, mysql and logrotate are all absent from this machine, so the suite checks agreement with the application instead of syntax. `ecosystem.config.js` is the exception — being JavaScript, it is `require()`d |
 | `verify-security.js` | 28 | SRS §24 — injection and cross-site protection over real HTTP (rows 6.3, 6.4, FR-SEC-003). Six SQL payloads at **value** parameters, where the defence is Sequelize’s binding rather than the `sortBy` allow-list already probed elsewhere; script payloads asserted in both directions — executable markup stripped, and `Smith & Sons 5 < 7 Ltd` left intact, because a sanitiser that strips too much is a data-corruption bug wearing a security badge. Its first assertion checks its own previous run left no residue |
 | `verify-pdf.js` | 20 | Phase 5.4's renderer, on its own terms. It exists separately because §22 **cannot exercise it**: the student report fits on one page, so four guards — the footer's pagination fix, the repeated header, the page break and the measured row height — were unprovable through the reports suite. All four are about the *second* page. Reads the PDF back by inflating its content streams, because `pdf-parse` cannot parse pdfkit output at all |
 | `verify-performance.js` | 16 | SRS §25 — indexes, pagination bounds and caching (row 6.15). **No timing assertion, deliberately**: §25 sets no numeric target, and "under 50 ms" would measure this machine on this afternoon. Structural instead — all **50** tables carrying `school_id` have a `school_id`-**leading** index (leading, because MySQL reads a composite left to right), no tenant list query is a full scan forced by a missing index, and the cache is measured by **counting queries** rather than by the clock: first read hits the database, second reads none of it, and `invalidateSchool` sends the next one back |
 | `verify-concurrency.js` | 19 | Known Issues #21 — the limit check and the write it guards. The only suite in the loop that runs anything **in parallel**: it fires eight concurrent creates at a school whose `student_limit`, `teacher_limit` and `staff_limit` are each **1**, and reads the table afterwards. It is one suite rather than three assertions in three module suites because what races is the guard, not any module. Its central assertion is the **row count**, not the number of successful calls — a create that succeeded and rolled back would move one and not the other, and it is the table that decides whether a school is over its plan — with a third assertion that the other seven were refused by the **limit** and not by a deadlock or a unique-key collision, so a "fix" that merely made concurrent creates fail some other way cannot pass. Proved against the defect: with the three `reserveHeadcount()` calls commented out it reports **8 rows against a ceiling of 1, on all three modules, 9 FAILED** |
-| **Total** | **5,476** | Thirty-nine scripts, measured in one **serial** loop in session 28 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25. **Every figure in this column was re-derived from `tests/baseline.json` in session 27**, which is the file `npm test` checks each suite against; nineteen of them had drifted, `verify-frontend.js` by 154 |
+| **Total** | **5,478** | Thirty-nine scripts, measured in one **serial** loop in session 28 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25. **Every figure in this column was re-derived from `tests/baseline.json` in session 27**, which is the file `npm test` checks each suite against; nineteen of them had drifted, `verify-frontend.js` by 154 |
 
 Counts are assertions, not output lines. Thirty-eight of the thirty-nine scripts print one `PASS` line per
 assertion; `verify-seed.js` prints a single `PASS (22)` summary line followed by 22 sub-bullets, so
-counting output lines undercounts the loop by 21 — a serial run prints 5,455 `PASS` lines for **5,476**
+counting output lines undercounts the loop by 21 — a serial run prints 5,457 `PASS` lines for **5,478**
 assertions.
 
 **The per-script list above was re-measured in session 26**, in the alphabetical order the loop
@@ -160,7 +160,7 @@ fixed two live-DB defects, ran Part 5 over HTTP, and re-measured the whole fourt
 
 **Session 16 (same calendar day again) opened on unrecorded Phase 3.I work already on disk**, ran the
 fifteen-script loop as its first action — which is what surfaced it — then audited and repaired it. The
-table above is the session-28 figure: **5,476 / 0 FAIL / 0 SKIP / every script exit 0**, from a serial run.
+table above is the session-28 figure: **5,478 / 0 FAIL / 0 SKIP / every script exit 0**, from a serial run.
 
 The server itself now runs:
 
@@ -11445,6 +11445,31 @@ Session 16 (2026-09-02, same calendar day) opened on that stop and found it alre
      saying it is done.
 382. Re-recorded and re-ran: **39 suites, 5,476 assertions, 0 FAIL, 0 SKIP, every script exit 0**;
      `npm test` **5,681 tests, exit 0**; both lints green.
+383. **Re-measured write-route coverage rather than trusting the recorded 149 of 150 — and the
+     measurement found two of its own blind spots.** The script reported **147**: `POST
+     /attendance/students` and `POST /attendance/teachers` were reached by `api.post(teachers ?
+     '/attendance/teachers' : '/attendance/students', body)`, a ternary inside the call that neither
+     the script nor `verify-frontend.js` can see. The screen worked; the safety net could not tell.
+384. Wrote both calls out and added two assertions, so losing either caller is a red test. Regressed
+     to the ternary and both fired. **Third time this project has hit the shape** — FR-BILL-004's
+     approve and reject, and the subscription plan change, were the first two — so it is now a rule in
+     §8: an endpoint chosen by an expression is an endpoint nothing is watching.
+385. **Brought `docs/VERIFICATION.md` current**, it being the record row 7.13 exists to produce and
+     having gone stale in five places at once. Re-measured every figure in §3 rather than editing the
+     old ones, and kept the first alongside the second wherever they differ — a verification record
+     that quietly overwrites its own numbers is the thing it exists to prevent.
+386. Corrected one figure in it that **cannot be reproduced**: it recorded `npm test` at *"5,512
+     assertions, six consecutive runs"*, which is not an assertion count from any baseline this
+     repository has held, and the same number had reached `IMPLEMENTATION_CHECKLIST.md`. There is git
+     history from 2026-09-09 but the figure predates it, so where it came from is **unknown** and is
+     recorded as unknown rather than guessed at.
+387. §5's "three things have never been executed" is now **two** — frontend linting was the third and
+     was fixed in session 27 — and §6's register table records 17, 21 and 32 as closed with what
+     closed them. §7 now lists the eleven open questions in one place, each phrased so someone who
+     knows what the product should do could answer it in a sentence.
+388. Final run: **39 suites, 5,478 assertions, 0 FAIL, 0 SKIP, every script exit 0**; `npm test`
+     **5,683 tests, exit 0**; `eslint src tests --max-warnings 0` exit 0; `eslint .` in `frontend/`
+     exit 0; `tsc --noEmit` exit 0; `next build` clean.
 
 ### Next task — what is left, and why each item is where it is
 
@@ -11587,6 +11612,11 @@ Standing practice, with what this session added:
   nothing visible.
 - **A guard that is too strict is a defect too.** The headcount reservation has to match the predicate
   the headcount *counts* by, or a row that was never counted starts being refused.
+- **An endpoint chosen by an expression is an endpoint nothing is watching.** `verify-frontend.js`
+  collects `api.<method>(` followed *immediately* by a path literal, so `api.post(cond ? '/a' : '/b')`
+  and a call whose path is a template literal built from a variable are both invisible to it — three
+  times now: FR-BILL-004's approve and reject, the subscription plan change, and §16's two registers.
+  Write the branches out.
 - **Run the deliberate regressions, and treat a MISS as a defect in the test, in the fixture, or in
   the design.** Three of this session's assertions were regressed deliberately and all three fired;
   the fourth was the backspace, which is what a MISS looks like when nobody checks.

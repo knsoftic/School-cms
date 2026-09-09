@@ -327,7 +327,21 @@ function MarkAttendanceScreen() {
             }),
       };
 
-      await api.post(teachers ? '/attendance/teachers' : '/attendance/students', body);
+      /*
+       * The two calls are written out rather than selected by a ternary inside `api.post(…)`.
+       *
+       * `verify-frontend.js` collects `api.<method>(` followed **immediately** by a path literal, so
+       * `api.post(teachers ? '/attendance/teachers' : '/attendance/students', body)` was invisible to
+       * it: both FR-ATT-001 routes read as having no caller, and would have gone on reading that way
+       * if this screen ever lost them. The same trap is recorded in `super-admin/payments/page.tsx`
+       * for FR-BILL-004's approve and reject, and in `subscriptions/[id]/lifecycle.tsx`, which hit it
+       * twice before getting it right. One extra branch buys two routes inside the safety net.
+       */
+      if (teachers) {
+        await api.post('/attendance/teachers', body);
+      } else {
+        await api.post('/attendance/students', body);
+      }
 
       const noun = teachers ? 'teacher' : 'student';
       success(

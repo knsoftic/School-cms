@@ -1927,6 +1927,21 @@ function callsEndpoint(method, path) {
 }
 
 const UNREACHABLE = [
+  /*
+   * FR-ATT-001's two registers were **always** reachable and were nonetheless invisible here, which is
+   * why they head this list rather than sitting in it by history.
+   *
+   * `school/attendance/mark` called `api.post(teachers ? '/attendance/teachers' :
+   * '/attendance/students', body)`, and this suite collects `api.<method>(` followed *immediately* by
+   * a path literal — so both read as uncalled, and adding them here would have failed against a screen
+   * that worked. Found by re-measuring write-route coverage in session 28: 147 of 150 by the literal
+   * collector against 149 in fact. The screen now writes both calls out, which is the same remedy
+   * `super-admin/payments` took for FR-BILL-004 and `subscriptions/[id]/lifecycle.tsx` for the plan
+   * change, and these two assertions are what stops the ternary coming back.
+   */
+  ['POST', '/attendance/students', 'the student register can be marked (FR-ATT-001)'],
+  ['POST', '/attendance/teachers', 'the teacher register can be marked (FR-ATT-001)'],
+
   ['POST', '/documents', 'a document can be generated'],
   ['POST', '/fees/assignments', 'a fee structure can be charged to students'],
   ['POST', '/fees/payments', 'a fee payment can be collected'],

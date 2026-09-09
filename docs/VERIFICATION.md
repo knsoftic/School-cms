@@ -14,9 +14,11 @@ It is a statement of **what was checked, how, and what the check measured** — 
 intent. Every figure below was produced by running something on the date recorded, and where a claim
 could not be verified it is written down as unverified rather than omitted.
 
-It is **not** a certificate. Three things in this system have never been executed and are named as
-such in §5; a fourth is a body of frontend work that no queue in this repository had sized until it
-was measured for this document, and it is the largest single item outstanding.
+It is **not** a certificate. **Two** things in this system have never been executed and are named as
+such in §5 — it said three when it was first written, and the third, frontend linting, was fixed in
+session 27. A fourth item was a body of frontend work that no queue in this repository had sized until
+it was measured for this document; it was the largest single thing outstanding and **it is closed**,
+at 149 of 150 write routes with a caller.
 
 ---
 
@@ -56,7 +58,7 @@ agents, each reading the SRS clause and the code it names.
 | Verdict | Count | Meaning |
 |---|---|---|
 | `real-fixable` | 44 | **All applied.** |
-| `real-blocked` | **13** | The defect is real; fixing it needs a decision the SRS does not supply. |
+| `real-blocked` | **13** → **11** | The defect is real; fixing it needs a decision the SRS does not supply. Two were closed in session 28 without any decision, because the tree had moved: findings 18 and 60 asked whether §33's screen list bounds the frontend surface, and session 27 had already answered it by building four screens beyond the seventeen. |
 | `refused` | 5 | The finding was wrong about the requirement. |
 | `already-fixed` | 1 | |
 
@@ -66,29 +68,44 @@ admission-without-a-class (§15.1 and SRS:818 answer it two different ways). Bot
 `docs/SRS-TRIAGE-VERDICTS.md` with the reasoning.
 
 The pattern is consistent enough to state as a rule: **where the SRS lists a capability without
-specifying it, a "fix" is a specification decision wearing implementation clothes.** Thirteen
-findings sit there, and they are the honest end state for a source that names capabilities without
-defining them — not a backlog.
+specifying it, a "fix" is a specification decision wearing implementation clothes.** Eleven findings
+sit there, and they are the honest end state for a source that names capabilities without defining
+them — not a backlog. **Each has since had the half of it that needed no decision done**: a
+consequence documented beside the code that causes it, a silent discard turned into a refusal, or a
+gap recorded in the checklist row it belongs to rather than only in the triage file.
 
 ## 3. What was measured, on 2026-09-09
 
+**Re-measured at the end of session 28.** The figures below are the second set; the first is kept
+beneath each one where it differed, because a verification record that quietly overwrites its own
+numbers is the thing it exists to prevent.
+
 | Check | Result |
 |---|---|
-| `npm test` (backend) | **5,512 assertions, 0 failures, 0 skips** — 38 suites, spawned serially, against live MariaDB. Six consecutive runs, exit 0 each time. |
-| Recorded baseline | 5,312 assertions across 38 suites (`tests/baseline.json`) |
-| `scripts/verify-frontend.js` | 170 assertions, **43 deliberate regressions all caught** |
+| `npm test` (backend) | **5,683 jest cases, 0 failures**, wrapping **39 suites / 5,478 assertions / 0 skips**, spawned serially against live MariaDB. *(First recorded: 5,512 cases over 38 suites — see the correction below.)* |
+| Recorded baseline | **5,478 assertions across 39 suites** (`tests/baseline.json`). *(Was 5,312 / 38.)* |
+| `scripts/verify-frontend.js` | **284 assertions**, 43 deliberate regressions all caught. *(Was 170.)* |
+| Write routes with a frontend caller | **149 of 150** — see §5 |
 | `npm run lint` (backend) | exit 0 |
-| `npm run lint` (frontend) | **fails — see §5** |
+| `npm run lint` (frontend) | **exit 0** — it failed when this document was first written; `eslint.config.mjs` was added in session 27 |
 | `tsc --noEmit` (frontend) | exit 0 |
 | `next build` | clean |
 | Schema | **65 tables** — §29's 64 plus `sequelize_meta`, the migration ledger |
 | Permission catalogue | **109 permissions, 11 roles** |
 | Git | initialised 2026-09-09; 397 files in the first commit; no `.env` in history |
 
-**On the assertion counts differing:** 5,512 is what `npm test` reports as jest cases; 5,312 is the
-recorded per-suite assertion baseline. They measure different things and `tests/verify.test.js`
-asserts the second exactly — not "at least", because a suite that grows and later shrinks back would
-slip through a floor.
+**On the assertion counts differing:** the jest figure counts cases, the baseline counts suite
+assertions, and jest adds five per suite plus the harness-integrity tests. They measure different
+things and `tests/verify.test.js` asserts the second exactly — not "at least", because a suite that
+grows and later shrinks back would slip through a floor.
+
+**One figure in the first version of this table could not be reproduced and is corrected rather than
+carried forward.** It recorded *"5,512 assertions ... six consecutive runs"* as the `npm test` result
+and 5,312 as the baseline. 5,512 is not an assertion count from any baseline this repository has held:
+the manifest of that moment summed to a different number, and the same 5,512 appeared in
+`IMPLEMENTATION_CHECKLIST.md` where it likewise could not be derived. Where it came from is
+**unknown** and is not guessed at here. What is recorded now is what a run today prints, which is the
+standard the rest of this document is written to.
 
 **Why the baseline exists at all:** nineteen of the 38 suites answer an unreachable database by
 skipping their HTTP half, printing "All pure … checks passed" and exiting **0**. Measured against a
@@ -104,10 +121,15 @@ status is `docs/IMPLEMENTATION_CHECKLIST.md`; this document records only where t
 | Row | Status | What is outstanding |
 |---|---|---|
 | 5.2 | In Progress | The Anthropic adapter is exercised with the SDK replaced in `require.cache`, so prompt construction, `textOf()` and `parseJson()` all run and only the HTTP hop is substituted. **The live round trip has never happened** — it needs an API key this environment does not have. |
-| 7.13 | In Progress | This document. Cannot close while 5.2 is open, and 13 findings remain `real-blocked`. |
-| FR-SCHOOL-002 | Tested | Academic session create / activate / close are implemented and verified, and **no screen reaches them** — see §5. |
-| FR-SCHOOL-003 | Tested | Classes and Sections can be created from the UI and not edited or deleted — see §5. |
-| FR-SUB-008 | Tested | Six of the eight plan limits are enforced. `admin_limit` is counted and never blocks; `api_limit` is neither counted nor blocked, because §11.2 names "API Limit" without saying what it measures. |
+| 7.13 | In Progress | This document. Cannot close while 5.2 is open, and **eleven** findings remain `real-blocked` — down from thirteen; findings 18 and 60 were closed in session 28 when the four screens beyond §33's seventeen were built and §33's list was ruled not to be a ceiling. |
+| 3.S.1 | Will not be built | Demo seed data. Optional, and §35 forbids inventing the plans, classes and students it would contain. It sat at `Pending` until session 28 while its own note said the work must not be done. |
+| FR-SUB-008 | In Progress | Six of the eight plan limits are enforced. `admin_limit` is counted and never blocks; `api_limit` is neither counted nor blocked, because §11.2 names "API Limit" without saying what it measures. *(Read `Tested` until session 28, which was wrong in the other direction — that status means unreachable, and `enforceLimit` has been mounted since session 16.)* |
+| FR-STUDENT-001 | In Progress | Admission, profile, photo, class/section, student ID and roll number are all delivered and reachable. **§15.1's "Documents" half has no code path at all** — `UPLOAD_PROFILES.STUDENT_DOCUMENT` cites the FR in its own rule and has never had a caller, and giving it one needs a `document_type` and a permission the fixed catalogue does not contain (triage finding 16). |
+
+**Two rows left this table in session 28.** FR-SCHOOL-002 and FR-SCHOOL-003 are `Completed`:
+`school/settings` reaches session create, activate and close — the nine endpoints finding 18 recorded
+as having no caller — and the class and section screens cover FR-SCHOOL-003. Both were verified
+against the tree, and `verify-frontend.js` asserts five of the nine by method and path.
 
 ## 5. What has never been executed, and one thing that was never sized
 
@@ -119,13 +141,15 @@ These are the honest gaps. Each is stated with what it would take.
 `.env` sets `MAIL_DRIVER=log`. The suites assert the delivery *records* — an `email` row born
 `pending` and becoming `sent` or `failed` — not that a message left the machine.
 
-**Frontend linting.** `npm run lint` in `frontend/` fails outright: Next.js 16 **removed the
-`next lint` command** and `next build` no longer lints
-(`node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md:1084`), there is no
-`eslint.config.*`, and the script still points at `next lint`. The frontend has therefore had **no
-lint coverage since the Next 16 upgrade**, and earlier entries in the progress log recording
-`npm run lint` exit 0 were true before it and are stale now. The backend is unaffected
-(`.eslintrc.json`, exit 0).
+**~~Frontend linting.~~ Fixed in session 27.** It read: *"`npm run lint` in `frontend/` fails
+outright — Next.js 16 removed the `next lint` command, `next build` no longer lints, there is no
+`eslint.config.*`, and the script still points at `next lint`."* All of that was true. `eslint.config.mjs`
+now exists (flat config on `eslint-config-next/core-web-vitals`), the script is `eslint .`, seventeen
+real findings were fixed, and `verify-deploy.js` asserts the config, the script string and a green run
+the way it already asserted the backend's. **One rule is off and is not a suppression to forget**:
+`react-hooks/set-state-in-effect`, whose 66 findings are two architectural patterns — a fetch effect
+setting `loading` before awaiting, and a form re-seeding when its row changes. Turning it back on is the
+acceptance test for whichever fetching architecture replaces the current one.
 
 **Ninety-nine write routes with no caller in the UI.** This is the largest item in this document and
 no queue in the repository had sized it before now.
@@ -141,6 +165,17 @@ application mounts, rather than what the route files declare — the figures wer
 at the start of that session and are **150 / 149 / 1** at the end. The one route without a caller
 is `POST /auth/refresh`, and it is a false positive: `apiClient.ts:302` reaches it with a raw
 `fetch` because it *is* the refresh mechanism and cannot use the client that depends on it.
+
+**Re-measured in session 28, and the measurement found two of its own blind spots.** The same script
+reported **147** with a caller, not 149 — `POST /attendance/students` and `POST /attendance/teachers`
+were reached by `api.post(teachers ? '/attendance/teachers' : '/attendance/students', body)`, a ternary
+inside the call that neither this script nor `verify-frontend.js` can see, both collecting
+`api.<method>(` followed *immediately* by a path literal. The screen worked; the safety net could not
+tell. Both calls are now written out, and both routes are asserted by method and path, so losing either
+caller is a red test rather than a silent regression. That is the third time this project has hit the
+shape — FR-BILL-004's approve and reject, and the subscription plan change, were the first two — which
+is why the rule is now written down: **an endpoint chosen by an expression is an endpoint nothing is
+watching.**
 
 Two corrections to what follows, both found by doing the work. **The *buildable / needs a
 decision* split was right to draw and wrong in its second half**: §33 fixes two *screen lists*,
@@ -205,13 +240,14 @@ part 43 alongside the measurement above.
 
 ## 6. Known issues still open
 
-`IMPLEMENTATION_PROGRESS.md` §5 is the register. Eleven of 31 rows are open; these are the ones with
-consequences:
+`IMPLEMENTATION_PROGRESS.md` §5 is the register. **Session 28 closed the last three rows a patch could
+close** — 17, 21 and 32 — so what is open is eight rows, none of which is waiting on engineering:
 
 | # | Issue | Note |
 |---|---|---|
-| 17 | A school sees add-on prices restricted to plans it is not on | Small. `detailInclude()` has two callers, both in its own file; the register's stated reason for deferring it is wrong. |
-| 21 | A limit check and the write it guards are not atomic | Real. Two concurrent admissions can both pass at `used = limit − 1`. |
+| ~~17~~ | ~~A school sees add-on prices restricted to plans it is not on~~ | **Closed.** `detailInclude()` now filters `addon_prices` to the unrestricted rows plus the school's own plan, using the write path's `ADDON_PRICE_PLAN_MISMATCH` refusal inverted into a filter rather than a rule of its own. Regressed both ways. |
+| ~~21~~ | ~~A limit check and the write it guards are not atomic~~ | **Closed, all four racing keys.** The three headcount limits take a `schools` row lock as their transaction's first statement (order is load-bearing: under REPEATABLE READ the first plain `SELECT` fixes the snapshot, not the lock). `ai_limit` could not use a lock — its critical section is a provider round trip — and takes the allowance ahead of the call in one conditional `UPDATE` instead, refunding when nothing is produced. **No 65th table was needed: the counter is the reservation.** `scripts/verify-concurrency.js` measures all four with eight concurrent calls each. |
+| ~~32~~ | ~~A student photo can be stored and never looked at~~ | **Closed.** `GET /students/:id/photo` on `students.view`, through the same tenant-scoped finder `GET /:id` uses; the detail screen renders it as a blob through the authenticated client. |
 | 18 | An unpriced add-on purchase records at zero | **Must not be "fixed"** — the SRS names no default `addon_prices` row. |
 | 19 | `wallet_balance` is never debited or credited | **Must not be "fixed"** — §13.2 lists "Wallet" among five payment methods and says nothing else. |
 | 2 | MySQL (XAMPP) does not survive this environment reliably | Environmental. The Aria recovery procedure is in the register, including the correction that logs must be quarantined *outside* the data directory. |
@@ -222,8 +258,23 @@ consequences:
 ## 7. What would close row 7.13
 
 1. A live Anthropic API key, to close 5.2.
-2. A decision on the 13 `real-blocked` findings — each needs a requirement the SRS does not state.
-   They are listed with their reasoning in `docs/SRS-TRIAGE-VERDICTS.md`.
+2. A decision on the **eleven** `real-blocked` findings — down from thirteen — each needing a
+   requirement the SRS does not state. They are listed with their reasoning in
+   `docs/SRS-TRIAGE-VERDICTS.md`, and session 28 rewrote each one's opening so the question is legible
+   without reading the verdict: what identifies two period-less fees of one component (20), whether
+   `status` may be submitted on plan create and with which values (11), what `premium_reports` unlocks
+   (64), which of §23's nine types reaches a Teacher or the Super Admin (63), what an
+   `override_type: 'price'` row changes and from which cycle (39), whether a Principal's tenancy moves
+   when they are assigned to another school (10), whether `transaction_id` is mandatory per payment
+   method (52), whether §5's role prose or an FR's Actor line governs (47), whether FR-SUB-009's
+   Description or its Actor line governs (53), what document type and permission an uploaded student
+   document takes (16), and whether admission requires a class (17).
 
 Neither is engineering work. Both are decisions or credentials, and this document exists so that the
 distinction is on the record rather than inferred.
+
+**Everything else that was outstanding when this document was first written has been done.** The
+ninety-nine uncalled write routes are 149 of 150. The frontend has a lint. The three Known Issues rows
+with real consequences — 17, 21 and 32 — are closed and held by assertions that were proved against
+the defects they exist for. Of the eleven findings that remain blocked, the half of each that needed
+only honesty rather than a decision has been recorded in the row it belongs to.

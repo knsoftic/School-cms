@@ -57,7 +57,7 @@ every script exit 0, measured as one loop against live MariaDB:
 | `verify-exams.js` | 219 |
 | `verify-fees.js` | 177 |
 | `verify-finance.js` | 163 |
-| `verify-frontend.js` | 282 |
+| `verify-frontend.js` | 284 |
 | `verify-homework.js` | 109 |
 | `verify-jobs.js` | 57 |
 | `verify-library.js` | 161 |
@@ -80,7 +80,7 @@ every script exit 0, measured as one loop against live MariaDB:
 | `verify-timetable.js` | 115 |
 | `verify-users-roles.js` | 236 |
 | `verify-validate.js` | 35 |
-| **Total** | **5,476** |
+| **Total** | **5,478** |
 
 Regenerated from `backend/tests/baseline.json`, the manifest `npm test` checks each run
 against. The previous table listed **30** suites totalling **4,613** — stale by 8 suites and
@@ -728,7 +728,7 @@ twenty of the fifty status words; and `pass`/`fail` untoned because `RESULT_OUTC
 
 `frontend/` is scaffolded and **builds** — Next.js 16.3.4 App Router, React 19.2.8, Tailwind 4.3.3,
 TypeScript 5.9.3. `npm run build` and `tsc --noEmit` both pass. Verified by
-`backend/scripts/verify-frontend.js` (282 assertions, 43 deliberate regressions all caught), which
+`backend/scripts/verify-frontend.js` (284 assertions, 43 deliberate regressions all caught), which
 checks the client against the **generated OpenAPI document** rather than a hand-written list, so a
 renamed route fails the suite the same day and names the frontend file still calling the old path.
 
@@ -869,7 +869,7 @@ was never true and never what anyone meant.
 Against the legend's own bar for `Completed` — *"the code exists **and** an executable check covers
 it **and** that check passes today"* — all fifteen qualify and did when they were written. Each row's
 Notes name the suite that covers it, all thirty-nine run under `npm test`, and the loop was measured
-at **5,476 assertions, 0 failures, 0 skips, every script exit 0** on 2026-09-09, re-recorded into
+at **5,478 assertions, 0 failures, 0 skips, every script exit 0** on 2026-09-09, re-recorded into
 `backend/tests/baseline.json` in the same run. **This sentence previously claimed 5,512 assertions over
 six consecutive serial runs, and that figure cannot be reproduced**: the baseline of the moment summed
 to 5,429 across thirty-eight suites, 5,440 across thirty-nine after `verify-concurrency.js` was added,
