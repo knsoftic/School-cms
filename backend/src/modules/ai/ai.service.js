@@ -370,6 +370,23 @@ async function generate(req, id, payload) {
   const count = Number(payload.count) || DEFAULT_QUESTION_COUNT;
   const difficulty = payload.difficulty || bank.requested_difficulty || QUESTION_DIFFICULTY.MEDIUM;
 
+  /*
+   * The allowance is taken **before** the provider is called — Known Issues #21's `ai_limit` half.
+   *
+   * `enforceLimit(LIMITS.AI_LIMIT)` on the route reads the counter, decides, and returns; the driver is
+   * called after that, and the increment came after *that*. Two requests at 999 of 1000 both passed,
+   * both generated, and the school landed at 1001. `reserveUsage()` moves the increment to the front
+   * and makes it conditional in one statement, so the two are serialised against each other without
+   * anything holding a lock across the provider call. The route guard stays: it refuses at the cap
+   * before any of this runs, with the message a school can act on.
+   *
+   * Every path out of here after this line has to give the reservation back, which is what the two
+   * `releaseUsage` calls below do. FR-AI-002 counts *requests that produced questions*, and the header
+   * already promised a provider failure costs nothing — that promise is now kept by a refund rather
+   * than by not having charged yet.
+   */
+  await usageService.reserveUsage(bank.school_id, LIMITS.AI_LIMIT, 1);
+
   let produced;
   try {
     produced = await aiDriver.generate({
@@ -384,7 +401,8 @@ async function generate(req, id, payload) {
     bank.set({ error_message: String(err.message).slice(0, 500) });
     await bank.save();
     logger.error('AI generation failed', { bankId: bank.id, driver: aiDriver.driverName(), error: err.message });
-    /* No usage is recorded: nothing was produced, and the stage has not moved. */
+    /* The reservation goes back: nothing was produced, and the stage has not moved. */
+    await usageService.releaseUsage(bank.school_id, LIMITS.AI_LIMIT, 1);
     throw ApiError.validation('The AI provider could not generate questions from this content', [
       { field: 'source', message: err.message },
     ]);
@@ -421,14 +439,34 @@ async function generate(req, id, payload) {
       await bank.save({ transaction });
     });
   } catch (err) {
+    /*
+     * The questions were generated and then not stored, so the request produced nothing the school can
+     * use and the reservation goes back — the same rule as the provider failure above. Released before
+     * `rethrow`, which throws.
+     */
+    await usageService.releaseUsage(bank.school_id, LIMITS.AI_LIMIT, 1);
     return rethrow(err);
   }
 
   /*
-   * After the commit, awaited, and NOT swallowed — see the header. This is the first production caller
-   * `usageService.recordUsage` has ever had.
+   * The reservation is now settled, and reading it back is what the response reports. `recordUsage` is
+   * NOT called again here: the increment happened at the reservation, and calling it a second time
+   * would charge the request twice — which is the mistake this shape invites and the reason the read is
+   * spelled out rather than left implied.
    */
-  const usage = await usageService.recordUsage(bank.school_id, LIMITS.AI_LIMIT, 1);
+  const settled = await usageService.getUsage(bank.school_id, LIMITS.AI_LIMIT);
+  /*
+   * Narrowed to the four fields `recordUsage` returned, so the response body is byte-for-byte what it
+   * was before the reservation moved the increment. `getUsage` answers with eleven more — period
+   * bounds, the resolution source, the measurement kind — and none of them was ever in this response.
+   * Widening an API as a side effect of an internal fix is how a contract changes without a decision.
+   */
+  const usage = {
+    used: settled.used,
+    allowed: settled.allowed,
+    overage: settled.overage,
+    overageAmount: settled.overageAmount,
+  };
 
   await recordAudit(req, {
     tableName: 'question_banks',

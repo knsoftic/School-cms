@@ -661,10 +661,10 @@ async function syncAllSchoolHeadcounts() {
  *
  * ## What it does not cover
  *
- * `ai_limit` — the fourth racing key — is deliberately out of scope. Its window is an entire LLM
- * provider round trip, and holding a row lock across a network call to a third party is a worse
- * failure than the one it fixes. That half needs a reservation row, which is a different design and
- * is left open in Known Issues #21.
+ * `ai_limit` — the fourth racing key — is deliberately out of scope **for this function**, because its
+ * window is an entire LLM provider round trip and holding a row lock across a call to a third party is
+ * a worse failure than the one it fixes. It is closed instead by `reserveUsage()` / `releaseUsage()`
+ * below, which take no lock at all.
  *
  * @param {number} schoolId
  * @param {string} limitKey   a HEADCOUNT limit; anything else is a programming error
@@ -692,12 +692,170 @@ async function reserveHeadcount(schoolId, limitKey, increment, transaction) {
   return assertWithinLimit(schoolId, limitKey, increment, transaction);
 }
 
+/**
+ * Consume an accumulating allowance **before** the work it pays for — the other half of Known
+ * Issues #21, and the half `reserveHeadcount()` above cannot do.
+ *
+ * ## Why a lock is the wrong instrument here
+ *
+ * `ai_limit` is the fourth racing key, and its critical section is not a transaction — it is an entire
+ * LLM provider round trip. `enforceLimit` reads the counter, the driver is called, and only then does
+ * `recordUsage` increment: two requests at 999 of 1000 both pass, both generate, and the school lands
+ * at 1001. Widening `reserveHeadcount()` to cover it would hold a `schools` row lock across a network
+ * call to a third party, which blocks every other write for that school for as long as the provider
+ * takes and turns a provider outage into a database pile-up. That is a worse failure than the one it
+ * fixes, which is why this is a different function rather than another caller of that one.
+ *
+ * ## Reserve, then refund — and why it needs no new table
+ *
+ * A reservation is just the increment, moved to the front and made conditional. The whole of it is one
+ * statement:
+ *
+ *     UPDATE usage_records SET used_value = used_value + :n
+ *      WHERE id = :id AND used_value + :n <= :allowance
+ *
+ * MariaDB takes the row lock for the duration of that single statement and releases it at once, so two
+ * concurrent requests are serialised against each other and neither waits on a provider. The statement
+ * reports how many rows it changed; **zero means the allowance is gone**, and no read-then-write window
+ * exists in which the answer could go stale. The counter is the reservation, which is why the design
+ * needs no reservation table — §29 fixes the schema at 64 tables and §35 forbids inventing a 65th.
+ *
+ * `releaseUsage()` is the refund, for a provider that failed or a commit that did not happen, and it is
+ * `recordUsage()` with a negative delta: that path already exists for storage returned by a deletion,
+ * and already floors the counter at zero.
+ *
+ * ## Two cases where there is nothing to reserve, and both increment unconditionally
+ *
+ * **Unlimited**, because there is no ceiling to hold anything against; and **overage allowed**, because
+ * §11.2 makes exceeding a soft limit a billing arrangement rather than a refusal — `checkLimit()`
+ * returns `allowed: true, reason: 'overage'` for exactly this case, and a reservation that refused
+ * would enforce a rule the plan does not have. The two are read from the resolved snapshot, not from
+ * `usage_records.allowed_value`, which is a **denormalised copy** that a mid-period plan change leaves
+ * stale.
+ *
+ * @param {number} schoolId
+ * @param {string} limitKey  a CUMULATIVE or PERIODIC limit; anything else is a programming error
+ * @param {number} [delta]   units to reserve, positive
+ * @returns {Promise<object|null>} the same shape `recordUsage` returns; null when the school has no
+ *                                 subscription to track against, exactly as `recordUsage` does
+ * @throws {ApiError} 403 PLAN_LIMIT_EXCEEDED when the allowance is already spent
+ */
+async function reserveUsage(schoolId, limitKey, delta = 1) {
+  entitlementService.assertKnownLimitKeys([limitKey], 'usageService.reserveUsage');
+
+  const amount = Number(delta);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error(
+      `usageService.reserveUsage(): delta must be a positive number; received ${delta}`
+    );
+  }
+
+  const measurement = measurementFor(limitKey);
+  if (measurement === MEASUREMENT.HEADCOUNT) {
+    throw new Error(
+      `usageService.reserveUsage(): ${limitKey} is a headcount limit — use reserveHeadcount() instead`
+    );
+  }
+  if (measurement === MEASUREMENT.PER_REQUEST) {
+    throw new Error(
+      `usageService.reserveUsage(): ${limitKey} is a per-request limit and is not accumulated`
+    );
+  }
+
+  const snapshot = await entitlementService.getSnapshot(schoolId);
+  const period = periodFor(snapshot, limitKey);
+  /*
+   * No subscription. `recordUsage` logs and returns null here rather than throwing, because whatever
+   * produced the usage should have been refused earlier; the same answer is given for the same reason,
+   * so a caller cannot tell the two apart and start relying on one of them.
+   */
+  if (!period) return recordUsage(schoolId, limitKey, amount);
+
+  const limit = snapshot.limits[limitKey];
+  const unlimited = limit.type === LIMIT_TYPES.UNLIMITED;
+  if (unlimited || limit.allowOverage) return recordUsage(schoolId, limitKey, amount);
+
+  const allowance = limit.value || 0;
+
+  /*
+   * The row has to exist before it can be updated conditionally. `findOrCreate` is the same call
+   * `recordUsage` makes, and creating it with `used_value: 0` reserves nothing by itself — the
+   * conditional UPDATE below is the only thing that moves the counter.
+   */
+  const [row] = await db.UsageRecord.findOrCreate({
+    where: { school_id: schoolId, limit_key: limitKey, period_start: period.start },
+    defaults: {
+      school_id: schoolId,
+      organization_id: snapshot.organizationId,
+      subscription_id: snapshot.subscription.id,
+      limit_key: limitKey,
+      unit: limit.unit || LIMIT_UNITS[limitKey] || null,
+      used_value: 0,
+      allowed_value: allowance,
+      period_start: period.start,
+      period_end: period.end,
+    },
+  });
+
+  const [, affected] = await db.sequelize.query(
+    'UPDATE usage_records SET used_value = used_value + :amount, last_incremented_at = NOW() ' +
+      'WHERE id = :id AND used_value + :amount <= :allowance',
+    {
+      replacements: { amount, id: row.id, allowance },
+      type: db.sequelize.QueryTypes.UPDATE,
+    }
+  );
+
+  /*
+   * `affected` is 0 when the row no longer satisfies the predicate — which is the refusal, and the
+   * only one this function makes. The numbers in the message are re-read rather than taken from the
+   * snapshot above, so they describe the state that actually refused the request rather than the state
+   * it was checked against.
+   */
+  if (!affected) return assertWithinLimit(schoolId, limitKey, amount);
+
+  await row.reload();
+  const used = toCount(row.get('used_value'));
+  const overage = overageFor(limit, used);
+  row.set('allowed_value', allowance);
+  row.set('overage_value', overage.value);
+  row.set('overage_amount', overage.amount);
+  row.set('period_end', period.end);
+  await row.save();
+
+  return { used, allowed: allowance, overage: overage.value, overageAmount: overage.amount };
+}
+
+/**
+ * Give a reservation back — the refund half of `reserveUsage()`.
+ *
+ * A thin, named wrapper rather than leaving callers to write `recordUsage(id, key, -n)`: the negative
+ * delta reads as an accident at a call site, and a refund that is written by hand is a refund somebody
+ * will eventually forget the sign on. `recordUsage` already floors the counter at zero.
+ *
+ * @param {number} schoolId
+ * @param {string} limitKey
+ * @param {number} [delta]  units to give back, positive
+ * @returns {Promise<object|null>}
+ */
+async function releaseUsage(schoolId, limitKey, delta = 1) {
+  const amount = Number(delta);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error(
+      `usageService.releaseUsage(): delta must be a positive number; received ${delta}`
+    );
+  }
+  return recordUsage(schoolId, limitKey, -amount);
+}
+
 module.exports = {
   getUsage,
   getUsageSummary,
   checkLimit,
   assertWithinLimit,
   reserveHeadcount,
+  reserveUsage,
+  releaseUsage,
   checkPerRequestLimit,
   recordUsage,
   syncHeadcount,

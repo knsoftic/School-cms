@@ -505,27 +505,57 @@ function verifyRouting() {
   check('  refusing a question whose answer is not one of its own options',
     /correct_option does not match any option key/.test(svc), true);
 
-  check('the service records usage exactly once', (svc.match(/recordUsage\(/g) || []).length, 1);
-  check('  against the AI limit', /recordUsage\(bank\.school_id, LIMITS\.AI_LIMIT, 1\)/.test(svc), true);
+  /*
+   * The meter, at the source — rewritten for Known Issues #21's `ai_limit` half.
+   *
+   * These five assertions used to pin the opposite arrangement: exactly one `recordUsage()`, **after**
+   * the transaction, "so a failed generation is never charged". That was correct about the refund and
+   * wrong about the race — `enforceLimit` read the counter, the provider was called, and the increment
+   * came last, so two requests at 999 of 1000 both passed and the school landed at 1001. The
+   * allowance is now taken *before* the driver and given back on either failure path, so what has to be
+   * pinned is the order and the refunds rather than the single late increment.
+   *
+   * Behavioural assertions on the counter live in part 3; these are here because a single-threaded
+   * suite cannot see an ordering that only matters under concurrency — §5a session 21's technique.
+   */
+  check('the service reserves the allowance exactly once', (svc.match(/reserveUsage\(/g) || []).length, 1);
+  check('  against the AI limit', /reserveUsage\(bank\.school_id, LIMITS\.AI_LIMIT, 1\)/.test(svc), true);
   check(
-    '  awaited, so a failed increment surfaces instead of being swallowed',
-    /await usageService\.recordUsage\(/.test(svc),
-    true
-  );
-  check(
-    '  and after the transaction, so a failed generation is never charged',
-    svc.indexOf('db.sequelize.transaction(') < svc.indexOf('usageService.recordUsage('),
+    '  awaited, so a refused reservation stops the request instead of being swallowed',
+    /await usageService\.reserveUsage\(/.test(svc),
     true
   );
   /*
-   * Comments stripped. Without it this matched `invoices.service.js` and `subscriptions.service.js`,
-   * which only MENTION recordUsage in prose — §5a session 18's lesson, met again on the first run.
+   * The whole point of the change, and the one assertion that would fail if it were reverted: the
+   * reservation is ahead of the provider call. Presence is asserted with the order, because
+   * `indexOf(a) < indexOf(b)` is satisfied by DELETING `a` — -1 is less than everything, so the probe
+   * would go greener as the code got worse.
    */
-  check('  which is this codebase\'s first production caller of recordUsage',
+  const reserveAt = svc.indexOf('usageService.reserveUsage(');
+  const driverAt = svc.indexOf('aiDriver.generate(');
+  check('  and BEFORE the provider is called, which is what closes the race',
+    [reserveAt > -1, driverAt > -1, reserveAt < driverAt], [true, true, true]);
+  check(
+    '  with a refund on both paths that produce nothing — the provider failing, and the write failing',
+    (svc.match(/await usageService\.releaseUsage\(bank\.school_id, LIMITS\.AI_LIMIT, 1\)/g) || []).length,
+    2
+  );
+  /*
+   * `recordUsage` must NOT also be called here. The increment happens at the reservation, so a second
+   * call would charge the request twice — the mistake this shape invites, and invisible to any
+   * assertion that only counts the total after one request.
+   */
+  check('  and the settled figure is read, never incremented a second time',
+    (svc.match(/recordUsage\(/g) || []).length, 0);
+  /*
+   * Comments stripped. Without it this matched `invoices.service.js` and `subscriptions.service.js`,
+   * which only MENTION the usage service in prose — §5a session 18's lesson, met again on the first run.
+   */
+  check('  which makes ai the only production caller of the reservation',
     fs.readdirSync(path.join(__dirname, '../src/modules'))
       .filter((m) => {
         const rel = `../src/modules/${m}/${m}.service.js`;
-        return fs.existsSync(path.join(__dirname, rel)) && /recordUsage\(/.test(stripped(rel));
+        return fs.existsSync(path.join(__dirname, rel)) && /reserveUsage\(/.test(stripped(rel));
       }),
     ['ai']);
 

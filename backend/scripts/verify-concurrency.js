@@ -29,12 +29,19 @@
  * Removing the three reservation calls reproduces the table above exactly, which is how this suite
  * was checked against the thing it is supposed to catch.
  *
- * ## What it does not cover, and why that is not an omission here
+ * ## `ai_limit` is here too, and it is fixed by a different instrument
  *
- * `ai_limit` is the fourth racing key and is deliberately untouched. Its window is an entire LLM
- * provider round trip, and the remedy used here — hold a row lock for the duration of the critical
- * section — would hold that lock across a call to a third party. That is a worse failure than the one
- * it fixes, so `ai_limit` needs a reservation row instead and stays open in Known Issues #21.
+ * It is the fourth racing key, and a lock is the wrong tool for it: its critical section is an entire
+ * LLM provider round trip, so the remedy the three above use would hold a `schools` row lock across a
+ * call to a third party — blocking every other write for that school for as long as the provider takes,
+ * and turning a provider outage into a database pile-up. `usageService.reserveUsage()` takes the
+ * allowance **before** the driver instead, in one conditional `UPDATE` whose row lock lives and dies
+ * inside that statement, and `releaseUsage()` gives it back when nothing was produced.
+ *
+ * Measured the same way: eight concurrent generates against `ai_limit: 1`, each on its own question
+ * bank because the workflow stage machine already serialises two generates on one bank. Before the fix,
+ * **8 admitted and the counter at 8**; after, one admitted, seven refused `PLAN_LIMIT_EXCEEDED`, and the
+ * counter at exactly 1. The refund is asserted separately, by making the provider fail.
  *
  * The other four §11.2 keys cannot race: `admin_limit` has no guard mounted, `storage_limit` is never
  * incremented, `api_limit` has no writer, and `file_upload_limit` is per-request and reads no shared
@@ -43,13 +50,20 @@
  * ## The fixture, and why it must be its own school
  *
  * A ceiling of 1 is the smallest that can be exceeded, and the smallest that makes "one admitted" an
- * unambiguous pass. The school is created here and removed here: sharing a fixture school with
+ * unambiguous pass. All four limits are set to it. The school is created here and removed here: sharing a fixture school with
  * another suite would let this one's eight parallel writes interleave with that one's assertions.
  * Every row it creates carries the `CONC-21` code or a `Conc` name prefix, and teardown is checked
  * rather than assumed.
  */
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'development';
+/*
+ * Pinned, not inherited. The `ai_limit` half below drives `ai.service.generate()` for real, and a run
+ * that picked up a live provider from a local `.env` would make network calls from the verification
+ * loop and take its answers from a third party. `.env` already sets `mock`; this makes it a property of
+ * the suite rather than of the machine it happens to run on.
+ */
+process.env.AI_DRIVER = 'mock';
 
 const db = require('../src/models');
 const usageService = require('../src/services/usageService');
@@ -57,6 +71,7 @@ const tenantService = require('../src/services/tenantService');
 const studentsService = require('../src/modules/students/students.service');
 const teachersService = require('../src/modules/teachers/teachers.service');
 const staffService = require('../src/modules/staff/staff.service');
+const aiService = require('../src/modules/ai/ai.service');
 const { LIMITS } = require('../src/config/constants');
 
 const TAG = 'CONC-21';
@@ -79,6 +94,13 @@ async function cleanup() {
   await db.sequelize.query("DELETE FROM teachers WHERE first_name LIKE 'Conc%'");
   await db.sequelize.query("DELETE FROM staff WHERE first_name LIKE 'Conc%'");
   await db.sequelize.query(
+    "DELETE FROM questions WHERE question_bank_id IN (SELECT id FROM question_banks WHERE name LIKE 'Conc %')"
+  );
+  await db.sequelize.query("DELETE FROM question_banks WHERE name LIKE 'Conc %'");
+  await db.sequelize.query(
+    "DELETE FROM usage_records WHERE school_id IN (SELECT id FROM schools WHERE code = 'CONC-21')"
+  );
+  await db.sequelize.query(
     `DELETE FROM plan_limits WHERE plan_id IN (SELECT id FROM subscription_plans WHERE code = '${TAG}')`
   );
   await db.sequelize.query(
@@ -92,7 +114,7 @@ async function cleanup() {
   await db.sequelize.query(`DELETE FROM organizations WHERE code = '${TAG}'`);
 }
 
-/** A school of its own, on a plan whose three headcount ceilings are 1. */
+/** A school of its own, on a plan whose four racing ceilings are each 1. */
 async function buildFixture() {
   const org = await db.Organization.create({ name: 'Concurrency Org', code: TAG, status: 'active' });
   const school = await db.School.create({
@@ -109,7 +131,7 @@ async function buildFixture() {
     tier_rank: 1,
   });
 
-  for (const key of [LIMITS.STUDENT_LIMIT, LIMITS.TEACHER_LIMIT, LIMITS.STAFF_LIMIT]) {
+  for (const key of [LIMITS.STUDENT_LIMIT, LIMITS.TEACHER_LIMIT, LIMITS.STAFF_LIMIT, LIMITS.AI_LIMIT]) {
     /* eslint-disable-next-line no-await-in-loop */
     await db.PlanLimit.create({
       plan_id: plan.id,
@@ -291,6 +313,103 @@ async function main() {
     })
   );
   check('an inactive teacher is still admitted at the ceiling, because it is not counted', inactive, 'created');
+
+  /* ═════════════════ ai_limit — reserve-then-refund, no lock held across the provider ═════════════════ */
+
+  /*
+   * Eight banks, not one. `generate` requires `workflow_stage: 'analyzed'` and leaves `generated`, so
+   * the stage machine already refuses a second generate on the same bank — a single-bank fixture would
+   * measure that refusal and report a pass having never exercised the limit at all. Each bank is
+   * planted directly at `analyzed`: the four steps before it are `verify-ai.js`'s subject, and driving
+   * them here would only add ways for this fixture to fail for reasons that are not the point.
+   */
+  const banks = await Promise.all(
+    Array.from({ length: CONCURRENCY }, (_, n) =>
+      db.QuestionBank.create({
+        school_id: school.id,
+        organization_id: org.id,
+        name: `Conc bank ${n}`,
+        topic: 'Concurrency',
+        source_type: 'syllabus',
+        extracted_text: `Concurrency probe ${n}. `.repeat(20),
+        analyzed_topics: [{ name: 'Concurrency', weight: 1 }],
+        workflow_stage: 'analyzed',
+        is_ai_generated: true,
+      })
+    )
+  );
+
+  const aiOutcomes = await Promise.all(
+    banks.map((bank, n) =>
+      attempt(async () => {
+        await usageService.assertWithinLimit(school.id, LIMITS.AI_LIMIT, 1);
+        await aiService.generate(req, bank.id, { count: 2, difficulty: 'medium' });
+      }).then((outcome) => ({ outcome, n }))
+    )
+  );
+
+  const generated = aiOutcomes.filter((r) => r.outcome === 'created').length;
+  const aiUsage = await usageService.getUsage(school.id, LIMITS.AI_LIMIT);
+
+  /*
+   * The counter is the assertion that matters here, where the row count was the assertion for the three
+   * above: `ai_limit` is PERIODIC, so what the plan constrains is `usage_records.used_value` and not a
+   * number of rows in a table.
+   */
+  check(
+    `${CONCURRENCY} concurrent generates against an ai_limit of 1 leave the counter at exactly one`,
+    aiUsage.used,
+    1
+  );
+  check('  and exactly one call produced questions', generated, 1);
+  check(
+    `  and the other ${CONCURRENCY - 1} were refused by the limit and nothing else`,
+    [...new Set(aiOutcomes.filter((r) => r.outcome !== 'created').map((r) => r.outcome))],
+    ['PLAN_LIMIT_EXCEEDED']
+  );
+
+  /*
+   * The refund, which is the half a reservation can get wrong in the other direction. A provider that
+   * fails must cost nothing — `ai.service.js` promised that before the reservation existed and the
+   * promise now has to be kept by giving the unit back rather than by not having taken it yet.
+   *
+   * Provoked by emptying the source text, which `mock.js` still generates from — so the failure is
+   * forced through the module's own error path by replacing the driver's `generate` for one call, the
+   * technique `verify-notifications.js` uses on `mailService.send`.
+   */
+  await usageService.releaseUsage(school.id, LIMITS.AI_LIMIT, 1);
+  const zeroed = await usageService.getUsage(school.id, LIMITS.AI_LIMIT);
+  check('the counter can be given back, and does not go below zero', zeroed.used, 0);
+
+  const aiDriver = require('../src/ai');
+  const realGenerate = aiDriver.generate;
+  aiDriver.generate = async () => {
+    throw new Error('Concurrency probe: the provider is down');
+  };
+  const failedBank = await db.QuestionBank.create({
+    school_id: school.id,
+    organization_id: org.id,
+    name: 'Conc bank failure',
+    topic: 'Concurrency',
+    source_type: 'syllabus',
+    extracted_text: 'Concurrency failure probe.',
+    analyzed_topics: [{ name: 'Concurrency', weight: 1 }],
+    workflow_stage: 'analyzed',
+    is_ai_generated: true,
+  });
+  const failed = await attempt(() => aiService.generate(req, failedBank.id, { count: 2 }));
+  aiDriver.generate = realGenerate;
+
+  check('a generation the provider failed is refused', failed !== 'created', true);
+  const afterFailure = await usageService.getUsage(school.id, LIMITS.AI_LIMIT);
+  check('  and costs the school nothing, because the reservation is refunded', afterFailure.used, 0);
+  /*
+   * Not vacuous: the same fixture with a working driver charges one. Without this, a `reserveUsage`
+   * that never incremented at all would pass the assertion above.
+   */
+  const succeeded = await attempt(() => aiService.generate(req, failedBank.id, { count: 2 }));
+  check('  which is not vacuous — the same bank charges one when the provider works', succeeded, 'created');
+  check('    leaving the counter at one', (await usageService.getUsage(school.id, LIMITS.AI_LIMIT)).used, 1);
 
   await cleanup();
   await tenantService.invalidateSchool(school.id);
