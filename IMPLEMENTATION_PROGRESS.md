@@ -3,7 +3,7 @@
 **Project:** Multi-School Management System (multi-tenant SaaS)
 **Source of truth:** `SRS_Multi-School-Management-System.docx` (36 sections)
 **Root:** `E:\School Managment System`
-**Last updated:** 2026-09-09 (session 26, part 43 — the unreachable endpoints)
+**Last updated:** 2026-09-09 (session 26, part 44 — the plan catalogue was write-once)
 **Overall state:** **The Super Admin platform surface, accounts-and-access, the whole subscription
 *catalogue* — plans and add-ons — the subscription *lifecycle*, Phase 3.H billing, and Phase 3.I
 school setup are complete and verified.** SRS §9 works end to end; §10 / §11's Plan Builder can build a
@@ -8990,6 +8990,166 @@ Two of them are worth separating out, because they are not the same kind of gap:
   * **Classes and Sections** edit/delete are the opposite: §33 names both screens, both exist, and
     they simply have no row action — the same shape as the subject and timetable actions closed in
     this part, and buildable with no decision to make.
+
+---
+
+### Session 26, part 44 — the plan catalogue was write-once
+
+`POST /plans` had a caller. The other nine routes did not, and the consequence is worth stating in
+one sentence: **a plan could be created and then never edited, priced, duplicated, offered,
+withdrawn or archived from anywhere in the product.** Four screens §33 names — Plans, Modules,
+Features, Limits — existed and were read-only, and the note in `modules/page.tsx` explaining why
+said a toggle *"that silently dropped the others would be worse than showing the state honestly"*.
+That was right about the risk and wrong about the fix: the answer is to send the others.
+
+Six requirements were unreachable, not partially built: FR-SUB-002 (edit), FR-SUB-003 (duplicate),
+FR-SUB-004 (activate / deactivate), FR-SUB-005 (archive), FR-SUB-006 (pricing), FR-SUB-007 (modules,
+features, limits) and §11.2 (limits).
+
+| route | permission | where it is now |
+|---|---|---|
+| `PATCH /plans/:id` | `plans.manage` | `/super-admin/plans/[id]` — the Details tab |
+| `POST /plans/:id/duplicate` | `plans.manage` | `Duplicate` per row; a form, because `code` is required |
+| `POST /plans/:id/activate` | `plans.manage` | `Activate` per row |
+| `POST /plans/:id/deactivate` | `plans.manage` | `Withdraw` on an active plan, `Restore` on an archived one |
+| `POST /plans/:id/archive` | `plans.manage` | `Archive` per row |
+| `PUT /plans/:id/prices` | `plans.pricing.manage` | `/super-admin/plans/[id]` — the Pricing tab |
+| `PUT /plans/:id/modules` | `plans.modules.manage` | the Modules screen, now a form |
+| `PUT /plans/:id/features` | `plans.modules.manage` | the Features screen, now a form |
+| `PUT /plans/:id/limits` | `plans.limits.manage` | the Limits screen, now a form |
+
+**Four permission keys, gated separately.** `plans.manage`, `plans.pricing.manage`,
+`plans.modules.manage` (which covers features too) and `plans.limits.manage` are four of the fixed
+109, and an operator may hold one without the others. Gating all four editors on `plans.manage`
+would have hidden screens from people entitled to them, so each editor reads its own key and shows
+the set read-only without it. `verify-frontend.js` asserts the three sub-screen gates by name.
+
+#### One endpoint offered under two names, deliberately
+
+`POST /plans/:id/deactivate` is reached from two buttons. `plans.service.js`'s `TRANSITIONS` has one
+entry for `inactive`, so both write `status: inactive, archived_at: null` — but arriving there from
+`active` is withdrawing a plan from sale and arriving from `archived` is taking one back out of the
+archive. A single dialog titled *"Withdraw Starter from the catalogue?"* would have described
+something that had already happened. `PlanTransition` therefore has four values for three endpoints,
+and says why in its own comment.
+
+#### What the set editors had to get right, and what each would have broken
+
+Three of the four sub-resources are whole-set replacements, which makes the *payload* the risk rather
+than the request.
+
+  * **Modules.** A module with no `plan_modules` row has never been configured; one with a row saying
+    `is_enabled: false` was turned off on purpose. Sending all twenty every time would flatten the
+    first into the second and destroy a distinction the read model goes out of its way to show, so
+    the payload is the modules that are ticked **plus** the ones that already had a row. It also
+    carries each row's stored `settings` through — nothing in the entitlement chain reads that
+    column, which is exactly why a replacement that dropped it would lose it silently.
+  * **Limits.** `setLimits` requires all eight of §11.2's keys, and that is not strictness for its own
+    sake: an absent row resolves to **zero** in `entitlementService`, not to unlimited, so a partial
+    save is a way to silently forbid something. The form holds all eight. An unconfigured limit opens
+    as Fixed with an empty allowance — the one honest default, since neither zero nor unlimited is a
+    decision the screen may make for the operator — and the warning above the list says how many have
+    never been set and what that currently allows.
+  * **Prices.** §10.4 has five models and each bills a different column. Fixed prices `base_amount`,
+    the three unit models price `unit_amount`, Custom prices `custom_amount`, and none of the three
+    allows null — so a row must send only the amount its own model uses, or the refusal names a box
+    the operator never saw. Each row shows the amounts its model bills and nothing else.
+
+Each of those three is now a `verify-frontend.js` assertion, and each was proved to **fail** with the
+rule removed before being left in place.
+
+#### Three message defects, all measured on screen rather than reasoned about
+
+  1. `checkPriceSet` reported a duplicate as `prices[1] repeats the billing cycle, pricing model and
+     tier band of an earlier entry` — a zero-based array index for a row the screen calls "Price 2" —
+     and a second default as `Only one price may be marked "is_default" for a plan`, a column name for
+     a box labelled "Pre-selected when subscribing". Both notations are now substituted for what the
+     screen shows. Substitutions, not rewrites: everything else is passed through, on the same
+     reasoning `humaniseFieldError` gives for leaving a message it does not recognise alone.
+  2. A per-row 422 arrives keyed `limits.5.overage_unit_amount`, and no input can be called
+     `overage_unit_amount` when eight rows would share the id. `FieldMessage`'s humaniser only
+     matches a message beginning with the input's **own** id, so it could not fire — the box labelled
+     "Rate per extra count" showed `"overage_unit_amount" is required when overage is allowed; use 0
+     for free overage`. `lib/formErrors.ts` gained `splitIndexedErrors` (the `prices.2.field` prefix
+     parsed off and routed to its row) and `rowError` (the rewrite done where the server's key is
+     still known). Both are shared by the three editors and by any set editor after them.
+  3. Submitting the duplicate dialog empty answered `Code for the copy is not allowed to be empty` —
+     Joi's `string.empty`, which means what `any.required` means and reads worse. `humaniseFieldError`
+     now says `is required` for it, so a blank box and an omitted key read alike **everywhere**, not
+     only here.
+
+#### `SubmitButton` grew a `disabled` prop, and the assertion about it was tightened rather than left
+
+A set editor's Save should be inert until something has changed. `disabled` is separate from `busy`
+because the two mean different things to the person looking at the button — `busy` swaps the label
+and shows a spinner, this does not — and it never replaces the in-flight guard: the attribute is
+`disabled={busy || disabled}`. `verify-frontend.js` asserted `disabled={busy}` verbatim inside
+`SubmitButton`'s body, so it went red, which is what that assertion is for. It now names `busy`
+inside the wider expression, so the regression it guards against — `busy` dropping out and letting a
+second click through — still fails.
+
+#### The `PriceDraft` type, and an assertion that was right to complain
+
+A price row is held as strings, because the difference between `"0"` and `""` is the difference
+between *"this plan charges nothing"* and *"this plan does not charge that"*, and a free plan is a
+price row with `base_amount` 0. Written out as sixteen fields, five of them were `base_amount:
+string` and friends — and `verify-frontend.js`'s rule that no screen may type a DECIMAL column as a
+string failed, correctly: it cannot tell a form value from a payload. The type is now a mapped type
+over one `TEXT_FIELDS` list, which says the thing that is true of all of them once and leaves the
+money keys out of any `: string` declaration. The rule was not weakened and no exception was added.
+
+#### Verified against the real API, as a Super Admin
+
+Signed in as `ui-audit@msms.local` (platform scope). Every one of the nine was driven and then read
+back out of the database:
+
+  * duplicated `Campus Complete` as `UIA-PLAN-COPY` — the copy arrived with all 20 modules, 8 limits
+    and 1 price, `status: inactive`, and `audit_logs.reason` reading `Duplicated from plan 6604
+    (UIA-PLAN)`;
+  * activated it (toast: *"Campus Complete (Trial run) is now offered for new subscriptions"*),
+    withdrew it with the reason *"Trial run finished — pricing under review."* — which landed in
+    `audit_logs.reason`, the only place it can, since §29 gives `subscription_plans` no column for it
+    — archived it, and restored it;
+  * edited `trial_days` 0 → 14 and read `14` back off the row; submitting it blank first answered
+    *"Enter a number. Use 0 for none."* under the box, because `NOT NULL DEFAULT 0` means blank is not
+    a state that column has;
+  * added a yearly price at 4,999 beside the monthly 499 and read both `plan_prices` rows back;
+    submitting a second monthly Fixed row first produced *"Price 2 repeats the billing cycle, pricing
+    model and tier band of an earlier entry"*, and ticking a second default produced *"Only one price
+    may be marked “Pre-selected when subscribing” for a plan"*;
+  * unticked `library`, saved, read `is_enabled: 0` with 20 rows and 19 enabled, re-ticked and saved;
+  * set `student_limit` overage to 2.50 and `ai_limit` to unlimited, and read back
+    `allow_overage: 1, overage_unit_amount: 2.5` and `limit_type: unlimited, limit_value: null`;
+  * added a feature `report_retention` / *Report retention window* / `24 months` grouped under
+    `reports` and read the row back. Typing `Report Retention` first was refused with *"Key must
+    start with a letter or digit and may contain only lower-case letters, digits, underscores, dots
+    and hyphens"* — the humanised form of a message that names `feature_key`.
+
+`npx tsc --noEmit` clean, `npm run build` 63 pages, `verify-frontend.js` **190 / 190**, and the full
+suite **5,532 passing** after `record-baseline.js` (+20 assertions, 5,332 total).
+
+#### Where the unreachable-route count actually stands
+
+Re-measured after this part, and the number moved for two reasons — nine routes closed, and the
+collector fixed twice. **142 write routes are mounted. 54 are called at exactly their own path, and
+6 more are addressed through an interpolated path segment** (`api.post(\`/addons/${addon.id}/${takingOff
+? 'deactivate' : 'activate'}\`)`, `api.post(\`/finance/${kind}\`)`,
+`api.post(\`/payments/${payment.id}/${decision}\`)`). **82 have no caller.**
+
+Two collector defects were found while measuring, both of which had made earlier figures wrong:
+
+  * a pattern anchored to the opening paren missed `api.post(teachers ? '/attendance/teachers' :
+    '/attendance/students', body)` and so reported **both** of §16's registers as unreachable, three
+    parts after they were built and driven in a browser;
+  * treating an interpolated segment as a wildcard is what makes `/payments/:id/approve` visible, and
+    it also matches `/payments/:id/refunds`, which nothing calls — `decision` is typed
+    `'approve' | 'reject'`. So the wildcard half of the answer is read, not trusted: that one was
+    checked by hand and counted as unreachable.
+
+The largest remaining clusters: **subscriptions 14**, **exams 7**, **AI 6**, **schools 6**,
+**quotations 5**, **taxes 5**, **assignments 4**, **invoices 4**, **academic sessions 4**,
+**notifications 3**, **coupons 3**, **parents 3**. `plans` is off the list entirely, and so are
+attendance, students, subjects, timetable, staff, teachers and documents.
 
 ---
 

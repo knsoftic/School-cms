@@ -726,7 +726,7 @@ twenty of the fifty status words; and `pass`/`fail` untoned because `RESULT_OUTC
 
 `frontend/` is scaffolded and **builds** — Next.js 16.3.4 App Router, React 19.2.8, Tailwind 4.3.3,
 TypeScript 5.9.3. `npm run build` and `tsc --noEmit` both pass. Verified by
-`backend/scripts/verify-frontend.js` (170 assertions, 43 deliberate regressions all caught), which
+`backend/scripts/verify-frontend.js` (190 assertions, 43 deliberate regressions all caught), which
 checks the client against the **generated OpenAPI document** rather than a hand-written list, so a
 renamed route fails the suite the same day and names the frontend file still calling the old path.
 

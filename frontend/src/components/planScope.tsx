@@ -23,9 +23,11 @@
  * eight limit keys with their units — so those two screens can show what a plan *could* include and
  * not merely what it does.
  *
- * Features needs no catalogue and has none: there is no feature vocabulary anywhere in the codebase,
- * and `plan_features` carries its own `name` per row. That asymmetry is real and is why the three
- * screens are three files rather than one with a switch.
+ * There is no *feature* vocabulary anywhere in the codebase, and `plan_features` carries its own
+ * `feature_key` and `name` per row — so the Features screen is a free list rather than a grid over a
+ * fixed set. That asymmetry is real and is why the three screens are three files rather than one
+ * with a switch. It still reads the catalogue, for one narrow thing: `featureItem.module_key` is
+ * `valid(...MODULE_LIST)`, so the module a feature is grouped under does come from the fixed twenty.
  */
 
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -34,6 +36,7 @@ import { useEffect, useState } from 'react';
 import { ApiError, api } from '@/lib/apiClient';
 import { useCollection, EXPLAINED_CODES } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
+import { SelectField } from '@/components/form';
 import { EmptyNotice, ErrorNotice, LoadingBlock, RefusalNotice } from '@/components/table';
 
 export interface PlanRow {
@@ -47,6 +50,15 @@ export interface PlanModule {
   id: number;
   module_key: string;
   is_enabled: boolean;
+  /**
+   * Free-form per-module configuration.
+   *
+   * Nothing in the entitlement chain reads it — `hasModule()` resolves from `is_enabled` alone, and
+   * the column's own comment says it is stored for the Plan Builder. It is typed and carried anyway,
+   * because `PUT /plans/:id/modules` replaces the whole set: an editor that sent every module back
+   * without this field would silently empty it on save.
+   */
+  settings: Record<string, unknown> | null;
 }
 
 export interface PlanFeature {
@@ -69,16 +81,59 @@ export interface PlanLimit {
   overage_unit_amount: string | number | null;
 }
 
+/**
+ * One `plan_prices` row — SRS §10.3 (billing cycles) and §10.4 (pricing models).
+ *
+ * Every money column is `DECIMAL`, and `config/database.js` sets `dialectOptions.decimalNumbers`,
+ * so they arrive as JS numbers. The union with `string` is kept for the reason the teachers screen
+ * gives for the same shape: one line of configuration decides it, and a type that accepts both
+ * cannot be broken by flipping it.
+ */
+export interface PlanPrice {
+  id: number;
+  billing_cycle: string;
+  cycle_days: number | null;
+  pricing_model: string;
+  currency: string;
+  base_amount: string | number | null;
+  unit_amount: string | number | null;
+  included_units: number | null;
+  tier_min_units: number | null;
+  tier_max_units: number | null;
+  overage_unit_amount: string | number | null;
+  custom_amount: string | number | null;
+  custom_notes: string | null;
+  setup_fee: string | number | null;
+  is_active: boolean;
+  is_default: boolean;
+  display_order: number | null;
+}
+
 export interface PlanDetail extends PlanRow {
+  /* The plan's own editable columns — `PATCH /plans/:id`'s field set. */
+  description: string | null;
+  visibility: string;
+  is_recommended: boolean;
+  display_order: number;
+  trial_days: number;
+  grace_period_days: number;
+  default_renewal_mode: string;
+  tier_rank: number;
+
   modules: PlanModule[];
   features: PlanFeature[];
   limits: PlanLimit[];
+  prices: PlanPrice[];
 }
 
 /** `GET /plans/catalogue` — §11's fixed vocabulary. Features are absent from it by design. */
 export interface Catalogue {
   modules: { key: string; label: string }[];
   limits: { key: string; label: string; unit: string | null; types: string[] }[];
+  /** §10.3. `days` is null for `custom_days` (the length is per price row) and for `one_time`. */
+  billingCycles: { cycle: string; days: number | null }[];
+  /** §10.4's five models, in the order `constants.js` declares them. */
+  pricingModels: string[];
 }
 
 /** The plan chosen in the URL, and a setter that keeps it there. */
@@ -167,14 +222,18 @@ export function PlanPicker({ selected, onSelect }: { selected: string | null; on
 
   return (
     <div className="mb-5 max-w-sm">
-      <label htmlFor="plan-picker" className="block text-sm font-medium">
-        Plan
-      </label>
-      <select
+      {/*
+        * `SelectField` rather than a hand-rolled label and `<select>`, which is what this was: the
+        * wrapper is what carries the error slot, the `aria-describedby` wiring and the one set of
+        * control styles every other select in the product uses. There is nothing about this picker
+        * that needed its own copy of half of that.
+        */}
+      <SelectField
         id="plan-picker"
+        label="Plan"
         value={selected ?? ''}
         onChange={(event) => onSelect(event.target.value)}
-        className="field-select"
+        hint="Modules, features, limits and pricing all belong to one plan, so this is the first question each of those screens asks."
       >
         <option value="">Choose a plan…</option>
         {plans.rows.map((plan) => (
@@ -182,7 +241,7 @@ export function PlanPicker({ selected, onSelect }: { selected: string | null; on
             {plan.name} ({plan.code})
           </option>
         ))}
-      </select>
+      </SelectField>
     </div>
   );
 }

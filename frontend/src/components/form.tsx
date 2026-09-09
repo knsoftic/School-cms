@@ -109,7 +109,14 @@ export function humaniseFieldError(message: string, field: string, label: string
       '$1 characters'
     )
     /* Joi's own wording for a bounded string, which reads the same way. */
-    .replace(/^length must be (\d+) characters long$/, 'must be exactly $1 characters');
+    .replace(/^length must be (\d+) characters long$/, 'must be exactly $1 characters')
+    /*
+     * `string.empty`, which is what Joi says when a required box is submitted blank — measured on
+     * the plan duplicate dialog as "Code for the copy is not allowed to be empty". It means the same
+     * thing as `any.required`'s "is required", and that is the sentence the rest of the product
+     * already uses for it, so the two now read alike whether the field was left blank or omitted.
+     */
+    .replace(/^is not allowed to be empty$/, 'is required');
 
   return `${label} ${rest}`;
 }
@@ -656,10 +663,20 @@ export function SubmitButton({
   busyLabel,
   fullWidth = true,
   form,
+  disabled = false,
 }: {
   busy: boolean;
   children: ReactNode;
   busyLabel: string;
+  /**
+   * An additional reason the form cannot be submitted — the set editors use it for "nothing has
+   * changed yet".
+   *
+   * Separate from `busy` rather than folded into it, because the two mean different things to the
+   * person looking at the button: `busy` swaps the label and shows a spinner, and this does not.
+   * It never *replaces* the in-flight guard below; it only adds to it.
+   */
+  disabled?: boolean;
   /**
    * Full width below `sm` regardless — a submit button is the one thing on a form a thumb must not
    * miss. Above `sm` it sizes to its label unless a caller insists otherwise (the auth panel does,
@@ -686,7 +703,7 @@ export function SubmitButton({
        * every one of these posts is non-idempotent, so a second click creates a second record. The
        * spinner and the label change are how a person knows why the button stopped responding.
        */
-      disabled={busy}
+      disabled={busy || disabled}
       aria-busy={busy}
       /* A footer button sits beside Cancel at the dialog's own scale, so it is not stretched. */
       className={

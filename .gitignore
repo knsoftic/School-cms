@@ -48,3 +48,4 @@ tmp/
 # `tests/baseline.json` is NOT ignored: it is the recorded per-suite assertion count the run is
 # checked against, and it only changes when `npm run test:baseline` is run deliberately.
 backend/tests/.last-run.json
+frontend/tsconfig.tsbuildinfo

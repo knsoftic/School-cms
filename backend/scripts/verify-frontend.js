@@ -1738,16 +1738,32 @@ const humanise = (message, field, label) => {
   return `${label} ${message
     .replace(leading, '')
     .replace(/^length (must be (?:at least|at most|less than|greater than) \d+) characters long$/, '$1 characters')
-    .replace(/^length must be (\d+) characters long$/, 'must be exactly $1 characters')}`;
+    .replace(/^length must be (\d+) characters long$/, 'must be exactly $1 characters')
+    .replace(/^is not allowed to be empty$/, 'is required')}`;
 };
 check('  a message naming the column is rewritten to name the label',
   humanise('school_id is required', 'school_id', 'School'), 'School is required');
 check('  Joi\'s "length must be" is unwound',
   humanise('username length must be at least 3 characters long', 'username', 'Username'),
   'Username must be at least 3 characters');
+check('  Joi\'s string.empty reads as the required message it means',
+  humanise('code is not allowed to be empty', 'code', 'Code for the copy'),
+  'Code for the copy is required');
 check('  and a message that is already a sentence is left alone',
   humanise('Password must be at least 8 characters long.', 'password', 'Password'),
   'Password must be at least 8 characters long.');
+
+/*
+ * The four assertions above run against the re-implementation directly overhead, not against
+ * `form.tsx` — so a rule added to one and not the other would leave them agreeing about a product
+ * that no longer behaves that way. This ties the two together: every rewrite in the real function
+ * has a counterpart here, and adding one there without one here fails.
+ */
+const humaniseSource = /export function humaniseFieldError\([\s\S]*?\n\}/.exec(formCode);
+check('  and the copy above rewrites exactly what the real function rewrites',
+  humaniseSource !== null
+    && (humaniseSource[0].match(/\.replace\(/g) || []).length
+      === /* the copy: the key escape, the leading strip, and the three message rules */ 5, true);
 
 /*
  * Double submission. Every post here is non-idempotent, so the guard is `disabled` while in flight
@@ -1771,9 +1787,15 @@ const submitBody = /export function SubmitButton\([\s\S]*?(?=\n\/\* ─|\nexport
   .exec(formCode);
 check('SubmitButton is where the double-submit guard lives',
   submitBody !== null, true);
+/*
+ * `busy || disabled`, not `busy`, since the set editors gained a "nothing has changed yet" gate.
+ * The regression this guards against is `busy` dropping out of that expression, which would let a
+ * second click through while the first request is still in flight — so the test names `busy`
+ * explicitly rather than accepting any `disabled={…}`.
+ */
 check('  and it disables itself, and says so, while a request is in flight',
   submitBody !== null
-    && /disabled=\{busy\}/.test(submitBody[0])
+    && /disabled=\{busy \|\| disabled\}/.test(submitBody[0])
     && /aria-busy=\{busy\}/.test(submitBody[0]), true);
 
 const handRolledSubmits = sourceFiles(APP)
@@ -1841,6 +1863,25 @@ const UNREACHABLE = [
   ['POST', '/subjects/:id/classes', 'a subject can be assigned to a class'],
   ['POST', '/subjects/:id/teachers', 'a teacher can be assigned to a subject'],
   ['PATCH', '/timetable/:id', 'a timetable slot can be corrected'],
+
+  /*
+   * The plan cluster — nine routes, four permission keys, all unreachable until 2026-09-09.
+   *
+   * Worth naming as a group because the catalogue was *write-once* without them: a plan could be
+   * created and then never edited, priced, duplicated, activated, withdrawn or archived from any
+   * screen in the product. FR-SUB-002 through FR-SUB-007 are the six requirements that describes,
+   * and §33 names Plans, Modules, Features and Limits as screens — all four of which existed and
+   * were read-only.
+   */
+  ['PATCH', '/plans/:id', 'a plan can be edited (FR-SUB-002)'],
+  ['POST', '/plans/:id/duplicate', 'a plan can be duplicated (FR-SUB-003)'],
+  ['POST', '/plans/:id/activate', 'a plan can be offered for new subscriptions (FR-SUB-004)'],
+  ['POST', '/plans/:id/deactivate', 'a plan can be withdrawn from the catalogue (FR-SUB-004)'],
+  ['POST', '/plans/:id/archive', 'a plan can be archived (FR-SUB-005)'],
+  ['PUT', '/plans/:id/prices', 'a plan can be priced (FR-SUB-006)'],
+  ['PUT', '/plans/:id/modules', 'a plan\'s modules can be chosen (FR-SUB-007)'],
+  ['PUT', '/plans/:id/features', 'a plan\'s features can be configured (FR-SUB-007)'],
+  ['PUT', '/plans/:id/limits', 'a plan\'s limits can be set (SRS §11.2)'],
 ];
 
 for (const [method, path, what] of UNREACHABLE) {
@@ -1905,6 +1946,80 @@ for (const [screen, label] of [['staff', 'staff'], ['teachers', 'teachers']]) {
     /is_active:\s*false,\s*left_at/.test(source), true);
   check(`  and reactivating ${label} clears it`,
     /is_active:\s*true,\s*left_at:\s*null/.test(source), true);
+}
+
+/* ──────────────────── the plan cluster's own rules ──────────────────── */
+
+/*
+ * Three of the four plan sub-resources are **whole-set** replacements, and each has a rule that a
+ * screen can satisfy the path-and-method check above while getting badly wrong. These are the three.
+ */
+{
+  const PLANS = path.join(APP, '(platform)', 'super-admin', 'plans');
+  const limits = code(fs.readFileSync(path.join(PLANS, 'limits', 'page.tsx'), 'utf8'));
+  const modules = code(fs.readFileSync(path.join(PLANS, 'modules', 'page.tsx'), 'utf8'));
+  const pricing = code(fs.readFileSync(path.join(PLANS, '[id]', 'pricing.tsx'), 'utf8'));
+  const detail = code(fs.readFileSync(path.join(PLANS, '[id]', 'page.tsx'), 'utf8'));
+
+  /*
+   * An unlimited limit carries a **null** `limit_value`, and the validator refuses a number beside
+   * it (`otherwise: Joi.valid(null)`). Sending the box's leftover text would be a 422 on a field the
+   * screen had already hidden.
+   */
+  check('an unlimited plan limit is sent with a null allowance',
+    /limit_value:\s*fixed\s*\?.*:\s*null,/.test(limits), true);
+
+  /*
+   * `usageService` treats a null overage rate as free, so `allow_overage` without a rate would give
+   * away unlimited free excess. The validator requires the rate; the screen must not send a blank
+   * string in its place, which would be reported as "must be a number" instead of "is required".
+   */
+  check('  and a blank overage rate is sent as absent rather than as an empty string',
+    /draft\.overage\.trim\(\) === ''\s*\n?\s*\?\s*undefined/.test(limits), true);
+
+  /*
+   * The modules editor must not flatten "never configured" into "turned off": it sends the modules
+   * that are ticked plus the ones that already had a row, not all twenty. See the screen's header.
+   */
+  check('the modules editor sends the modules with a decision, not all twenty',
+    /enabled\[entry\.key\]\s*\|\|\s*stored\.has\(entry\.key\)/.test(modules), true);
+
+  /*
+   * `plan_modules.settings` is stored for the Plan Builder and read by nothing — which is exactly
+   * why a whole-set PUT that dropped it would lose it silently.
+   */
+  check('  and carries each module\'s stored settings through the replacement',
+    /settings:\s*row\.settings/.test(modules), true);
+
+  /*
+   * §10.4: Fixed bills `base_amount`, the unit models bill `unit_amount`, Custom bills
+   * `custom_amount`. A row must not send an amount its own model does not price — none of those
+   * three columns allows null, so a null would be a 422 on a box the operator never saw.
+   */
+  check('a price sends only the amount its pricing model bills',
+    /pricing_model === 'fixed'\)\s*item\.base_amount/.test(pricing)
+      && /if \(unitModel\) \{\s*\n\s*item\.unit_amount/.test(pricing)
+      && /pricing_model === 'custom'\)\s*\{\s*\n\s*item\.custom_amount/.test(pricing), true);
+
+  /*
+   * Status is FR-SUB-004's and FR-SUB-005's, each with its own endpoint and its own audit reason —
+   * and `plans.validation.js` `update` does not accept it. A status control on the edit form would
+   * be a field the API silently strips.
+   */
+  check('the plan edit form does not offer a status control',
+    !/id="status"/.test(detail) && !/status:\s*values\./.test(detail), true);
+
+  /*
+   * Four separate permission keys, not one. An operator may hold pricing without modules, and
+   * gating all four editors on `plans.manage` would hide screens from people entitled to them.
+   */
+  for (const [key, file, source] of [
+    ['plans.pricing.manage', 'the pricing editor', detail],
+    ['plans.modules.manage', 'the modules editor', modules],
+    ['plans.limits.manage', 'the limits editor', limits],
+  ]) {
+    check(`${file} is gated on ${key}`, new RegExp(`can\\('${key}'\\)`).test(source), true);
+  }
 }
 
 console.log(failures === 0 ? 'All frontend contract checks passed.' : `${failures} check(s) FAILED.`);
