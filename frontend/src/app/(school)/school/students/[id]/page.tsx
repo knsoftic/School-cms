@@ -23,18 +23,18 @@
  * *"written from an uploaded file — POST /students/:id/photo, never a request body"*. So the photo
  * is a separate panel and a separate request, which is also why it is not inside the `<form>`.
  *
- * ## The photo can be stored and cannot be looked at, and this screen says so
+ * ## The photo can now be looked at — Known Issues #32
  *
- * Checked rather than assumed: `present()` deletes `photo_path` and returns `has_photo` in its
- * place, and **no route serves the bytes**. `sendStoredFile` has exactly three callers — assignments,
- * homework and payments — and students is not one of them. Nothing else in `backend/src` reads the
- * column either, including the ID-card document, which builds its payload from the record.
+ * This block used to say the opposite, and it was true when it was written: `present()` deletes
+ * `photo_path` and returns `has_photo` in its place, `sendStoredFile` had exactly three callers —
+ * assignments, homework and payments — and students was not one, so an upload stored a file that no
+ * screen could display. The panel carried a notice saying so rather than implying a viewer.
  *
- * So uploading a photo today sets a flag and stores a file that no screen can display. That is worth
- * offering, because the route is the only writer FR-STUDENT-001's photo has and a school that
- * uploads now has the data when a viewer exists — but it is not worth *implying* a viewer. The panel
- * says what happens and what does not, which is the same rule the Reports and Settings screens
- * follow: naming an absence beats claiming a capability.
+ * `GET /students/:id/photo` now serves the bytes, so the notice is gone and the image is here. It
+ * arrives as a **blob URL through the authenticated client**, not as an `<img src>` pointing at the
+ * route: the route is behind `students.view` and the token only ever travels in an `Authorization`
+ * header, which a browser fetching an `<img>` does not send. The long note on the `stored` state has
+ * the rest of it.
  */
 
 import { useParams } from 'next/navigation';
@@ -370,6 +370,65 @@ export default function StudentDetailPage() {
   const [uploading, setUploading] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
 
+  /**
+   * The stored photo, as an object URL — Known Issues #32, now that `GET /students/:id/photo` exists.
+   *
+   * ## Why it cannot be an `<img src>` pointing at the route
+   *
+   * The route is behind `requirePermission('students.view')`, and `middlewares/authenticate.js`
+   * reads the bearer token from `Authorization` and nowhere else — there is no cookie fallback. A
+   * browser fetching an `<img>` sends no such header, so the request would be a 401 and the panel
+   * would show a broken image. The bytes have to come through the authenticated client and reach the
+   * `<img>` as a blob URL. This is the shape `super-admin/payments` established for FR-BILL-004's
+   * screenshot, and the reasoning is identical.
+   *
+   * Four states rather than a nullable string, for the same reason that screen has four: "not asked
+   * for", "fetching", "here it is" and "it would not load" are different things to show, and an empty
+   * frame that might still be loading is the one answer that makes someone guess.
+   */
+  const [stored, setStored] = useState<
+    { state: 'idle' } | { state: 'loading' } | { state: 'ready'; url: string } | { state: 'failed' }
+  >({ state: 'idle' });
+
+  /*
+   * Fetch when the record says there is one, and revoke on the way out.
+   *
+   * `student?.has_photo` is in the dependency list on purpose: after an upload `setStudent` replaces
+   * the record, so a first photo flips the flag and this re-runs. A *replacement* does not change the
+   * flag, so `photoVersion` is bumped by the uploader to force the refetch — without it, storing a new
+   * image would leave the old one on screen and the panel would be lying about what is on file.
+   *
+   * `cancelled` guards the late resolve: React 19 Strict Mode runs this mount → unmount → mount, so
+   * the first fetch lands after its own teardown.
+   */
+  const [photoVersion, setPhotoVersion] = useState(0);
+  useEffect(() => {
+    if (!student?.has_photo) {
+      setStored({ state: 'idle' });
+      return;
+    }
+
+    let cancelled = false;
+    let url: string | null = null;
+    setStored({ state: 'loading' });
+
+    (async () => {
+      try {
+        const file = await api.download(`/students/${studentId}/photo`);
+        if (cancelled) return;
+        url = URL.createObjectURL(file.blob);
+        setStored({ state: 'ready', url });
+      } catch {
+        if (!cancelled) setStored({ state: 'failed' });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [studentId, student?.has_photo, photoVersion]);
+
   async function uploadPhoto() {
     if (!photo) return;
     setUploading(true);
@@ -388,6 +447,8 @@ export default function StudentDetailPage() {
       });
       setStudent(body.student);
       setPhoto(null);
+      /* A replacement leaves `has_photo` true, so nothing above it would refetch. See the effect. */
+      setPhotoVersion((n) => n + 1);
       success('Photo stored on the record');
     } catch (caught) {
       if (!(caught instanceof ApiError)) throw caught;
@@ -794,19 +855,38 @@ export default function StudentDetailPage() {
         </div>
 
         {/*
-          * The honest note, and it is not a hedge.
+          * The viewer that closes Known Issues #32.
           *
-          * `present()` removes `photo_path` and returns `has_photo` instead, and **nothing serves
-          * the bytes**: `sendStoredFile` has three callers — assignments, homework and payments —
-          * and students is not one. Nothing in `backend/src` reads the column either, the ID-card
-          * document included. So the upload stores a file and flips a flag, and there is nowhere to
-          * look at it. Saying that is better than a panel that implies otherwise.
+          * This panel used to carry a notice saying the photo could be stored and not looked at,
+          * which was true: `present()` removes `photo_path` and returned `has_photo` in its place,
+          * and nothing served the bytes. `GET /students/:id/photo` now does, so the note is gone and
+          * the image is here instead.
+          *
+          * `max-h` rather than a fixed box: a school's photos are whatever aspect ratio their camera
+          * produced, and `object-contain` inside a bounded frame shows all of one without cropping a
+          * face out of it.
           */}
-        <Notice tone="info">
-          Uploading stores the photo against the record. There is no screen that displays it yet —
-          no route serves the file, so this sets the flag above and keeps the image for when one
-          does.
-        </Notice>
+        {stored.state === 'loading' && (
+          <div
+            className="h-40 w-32 animate-pulse rounded-md border border-border-soft bg-surface-sunken"
+            role="status"
+            aria-label="Loading the photo"
+          />
+        )}
+        {stored.state === 'ready' && (
+          /* eslint-disable-next-line @next/next/no-img-element -- a blob: URL, not an optimisable asset */
+          <img
+            src={stored.url}
+            alt={`${student.first_name} ${student.last_name ?? ''}`.trim()}
+            className="max-h-56 w-auto rounded-md border border-border-soft object-contain"
+          />
+        )}
+        {stored.state === 'failed' && (
+          <Notice tone="warn">
+            The record says a photo is on file, but it could not be loaded. The stored file may be
+            missing from disk.
+          </Notice>
+        )}
 
         <div className="mt-4 space-y-4">
           <FileField

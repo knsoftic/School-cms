@@ -454,8 +454,12 @@ function main() {
    * sub-resources instead (`/payments/{id}/screenshot`, `/students/{id}/photo`,
    * `/homework/{id}/attachment`), which re-check the tenant on the way out.
    *
-   * `photo_path` is deliberately NOT in the list: nothing was found suppressing it, and banning a
-   * field the API legitimately returns would block a valid screen for no reason.
+   * `photo_path` is deliberately NOT in the list, and the reason is narrower than it first looks.
+   * `students.service.present()` **does** suppress it, exactly as the three above are suppressed — but
+   * `parents`, `staff` and `teachers` all return the column as it stands, permanently null for want of
+   * a writer, and their screens name it in prose for that very reason. Banning the string outright
+   * would refuse a field three APIs legitimately return. The students half is covered instead by the
+   * assertion below, that the photo is fetched through the file route rather than from a path.
    */
 
   /*
@@ -2164,6 +2168,17 @@ check('the payment proof is fetched through the authenticated client',
   /api\.download\(\s*`\/payments\/\$\{[^}]+\}\/screenshot`/.test(frontendSource), true);
 check('  and rendered, rather than reported as a word',
   /createObjectURL/.test(frontendSource), true);
+
+/*
+ * FR-STUDENT-001's photo, Known Issues #32. `GET /students/:id/photo` was mounted to close it, and a
+ * route with no caller would leave the register's row half-closed while reading as done — which is
+ * the exact failure the uncalled-route queue existed for. Both halves are asserted: that the bytes
+ * are fetched, and that the screen no longer carries the notice saying they cannot be.
+ */
+check('a stored student photo is fetched through the authenticated client',
+  /api\.download\(\s*`\/students\/\$\{[^}]+\}\/photo`/.test(frontendSource), true);
+check('  and no screen still says a photo cannot be displayed',
+  /no route serves the file/.test(frontendSource), false);
 
 check('a generated document can be downloaded as a PDF',
   /api\.download\(\s*`\/documents\/\$\{[^}]+\}`/.test(frontendSource)

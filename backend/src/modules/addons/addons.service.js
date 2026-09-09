@@ -50,6 +50,7 @@ const ApiError = require('../../utils/ApiError');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const { LIMIT_UNITS } = require('../../config/constants');
+const entitlementService = require('../../services/entitlementService');
 
 const SORTABLE = Object.freeze([
   'id',
@@ -92,12 +93,13 @@ function scopeFor(tenant) {
  *
  * A school-scoped caller sees only active prices, for the same reason it sees only active add-ons: an
  * inactive price is a historical row kept because a purchase points at it (see `pricesInUse`), not an
- * offer.
+ * offer — and, since Known Issues #17, only the prices its own plan can buy.
  *
  * @param {{isPlatform: boolean}} tenant
+ * @param {number|null} [planId]  the school's plan; null means "unrestricted prices only"
  * @returns {object[]}
  */
-function detailInclude(tenant) {
+function detailInclude(tenant, planId = null) {
   const include = {
     model: db.AddonPrice,
     as: 'prices',
@@ -107,8 +109,52 @@ function detailInclude(tenant) {
       ['id', 'ASC'],
     ],
   };
-  if (!tenant || !tenant.isPlatform) include.where = { is_active: true };
+  if (!tenant || !tenant.isPlatform) {
+    /*
+     * Known Issues #17. This filtered on `is_active` alone, so a school-scoped read returned prices
+     * whose `plan_id` names a **different plan** — figures it could see and could not act on. The
+     * purchase path already refused them (`subscriptions.service.js`, `ADDON_PRICE_PLAN_MISMATCH`),
+     * so nothing could be bought that should not be; what leaked was the catalogue.
+     *
+     * The predicate is the write path's, inverted from a refusal into a filter: it refuses when
+     * `price.plan_id && price.plan_id !== subscription.plan_id`, so what a school may see is a null
+     * `plan_id` — "available on any plan" — or its own. Written from that line rather than invented,
+     * because a read filter stricter or looser than the write rule is a new rule, and §35 has none to
+     * offer.
+     *
+     * `planId` null covers two cases that behave the same and for the same reason: a school with no
+     * usable subscription, and a caller who did not resolve one. Neither can buy a plan-restricted
+     * price, so neither is shown one.
+     *
+     * This compares plan **ids**. §30 Rule 1 forbids branching on a plan's code or name, and the ids
+     * are what `addon_prices.plan_id` and `subscriptions.plan_id` already hold.
+     */
+    include.where = {
+      is_active: true,
+      plan_id: planId === null || planId === undefined ? null : { [Op.or]: [null, planId] },
+    };
+  }
   return [include];
+}
+
+/**
+ * The plan id a school-scoped read should be filtered against, or null.
+ *
+ * Resolved here rather than inside `detailInclude()` so that helper stays synchronous — it has two
+ * callers, both in this file, and both are already async, so the resolution costs one awaited call at
+ * the top of each rather than a signature change that reaches everything.
+ *
+ * A platform caller gets null and is not filtered at all: the Super Admin's catalogue is the whole
+ * catalogue, which is the same reason `scopeFor()` returns `{}` for them.
+ *
+ * @param {{isPlatform: boolean, schoolId?: number}} tenant
+ * @returns {Promise<number|null>}
+ */
+async function planIdFor(tenant) {
+  if (!tenant || tenant.isPlatform || !tenant.schoolId) return null;
+  /* Named `entitlement`, not `snapshot`: `snapshot` is the audit helper this file already imports. */
+  const entitlement = await entitlementService.getSnapshot(tenant.schoolId);
+  return entitlement && entitlement.subscription ? entitlement.subscription.planId : null;
 }
 
 /**
@@ -175,7 +221,7 @@ async function list(tenant, query, pagination, req) {
     {
       where,
       order: getSort(req, SORTABLE, DEFAULT_SORT),
-      include: detailInclude(tenant),
+      include: detailInclude(tenant, await planIdFor(tenant)),
     },
     pagination
   );
@@ -195,7 +241,8 @@ async function list(tenant, query, pagination, req) {
 async function findById(tenant, id, options = {}) {
   const addon = await db.Addon.findOne({
     where: { ...scopeFor(tenant), id },
-    include: options.detail === false ? undefined : detailInclude(tenant),
+    include:
+      options.detail === false ? undefined : detailInclude(tenant, await planIdFor(tenant)),
   });
   if (!addon) throw ApiError.notFound('Add-on not found', { code: 'ADDON_NOT_FOUND' });
   return addon;

@@ -4,6 +4,8 @@ const service = require('./students.service');
 const ApiResponse = require('../../utils/ApiResponse');
 const { getPagination } = require('../../utils/pagination');
 const { describeActivity } = require('../../middlewares/activityLog');
+const { sendStoredFile } = require('../../utils/fileResponse');
+const ApiError = require('../../utils/ApiError');
 
 function label(student) {
   return [student.first_name, student.last_name].filter(Boolean).join(' ');
@@ -99,4 +101,40 @@ async function setPhoto(req, res) {
   return ApiResponse.ok(res, { student: service.present(student) }, { message: 'Student photo updated' });
 }
 
-module.exports = { list, show, create, update, setPhoto, promote, transfer, leave };
+/**
+ * FR-STUDENT-001's photo, read back — Known Issues #32.
+ *
+ * The column had exactly one writer and no reader: `present()` deletes `photo_path` and returns
+ * `has_photo`, `sendStoredFile` had three callers and students was not one, and the ID card builds its
+ * payload from the record rather than from the file. So `POST /:id/photo` set a flag and wrote bytes to
+ * disk that nothing in the application could display.
+ *
+ * `findById(req, ...)` is the same load `show` uses, so the tenant boundary that decides which students
+ * a caller may see decides which photos they may see, with no second rule to maintain — the shape
+ * `payments.screenshot` established for FR-BILL-004.
+ *
+ * Served `inline`: a photo belongs beside the record, not in a downloads folder. The filename carries
+ * the school's own `student_id` rather than the primary key, because that is the number the school uses
+ * and the primary key is not theirs to learn.
+ *
+ * A student with no photo is a **404 with a message**, not an empty 200: `has_photo` already tells a
+ * caller whether to ask, so a request that arrives anyway is asking for something that is not there.
+ */
+async function photo(req, res) {
+  const student = await service.findById(req, req.params.id, req.query && req.query.school_id);
+  if (!student.photo_path) throw ApiError.notFound('This student has no photo');
+
+  describeActivity(req, {
+    entityId: student.id,
+    description: `Viewed the photo for student ${label(student)}`,
+    metadata: { school_id: student.school_id, student_id: student.student_id },
+  });
+
+  return sendStoredFile(res, student.photo_path, {
+    filename: `student-photo-${student.student_id}`,
+    inline: true,
+    schoolId: student.school_id,
+  });
+}
+
+module.exports = { list, show, create, update, setPhoto, photo, promote, transfer, leave };

@@ -9,6 +9,8 @@
  * | §15.1 | FR-STUDENT-001  | `POST /`              | `students` module · `students.manage` · limit   |
  * | §15.1 | FR-STUDENT-001  | `GET /:id`            | `students` module · `students.view`             |
  * | §15.1 | FR-STUDENT-001  | `PATCH /:id`          | `students` module · `students.manage`           |
+ * | §15.1 | FR-STUDENT-001  | `POST /:id/photo`     | `students` module · `students.manage`           |
+ * | §15.1 | FR-STUDENT-001  | `GET /:id/photo`      | `students` module · `students.view`             |
  * | §15.1 | FR-STUDENT-002  | `POST /:id/promote`   | `students` module · `students.progression`      |
  * | §15.1 | FR-STUDENT-002  | `POST /:id/transfer`  | `students` module · `students.progression`      |
  * | §15.1 | FR-STUDENT-002  | `POST /:id/leave`     | `students` module · `students.progression`      |
@@ -93,6 +95,26 @@ router.post(
   validate({ params: schemas.idParam, body: schemas.setPhoto }),
   logActivity({ action: 'update', entityType: 'student', onlyOnSuccess: true }),
   asyncHandler(controller.setPhoto)
+);
+
+/*
+ * The reader for the writer above — Known Issues #32.
+ *
+ * `students.photo_path` had one writer and no reader at all, so a school could upload a photo and had
+ * no way to look at it. This is `payments`' `GET /:id/screenshot` in every respect that matters: the
+ * *view* permission rather than the manage one, because looking at a record's photo is looking at the
+ * record; `validate` on the params and on `showQuery`, so a platform caller can name the school the
+ * same way `GET /:id` lets them; and no `logActivity`, because the controller calls `describeActivity`
+ * and a read is not a mutation.
+ *
+ * Declared above `GET /:id` for the same reason the three lifecycle routes are: an extra segment does
+ * not collide with `:id`, but keeping the specific path first means it never can.
+ */
+router.get(
+  '/:id/photo',
+  requirePermission('students.view'),
+  validate({ params: schemas.idParam, query: schemas.showQuery }),
+  asyncHandler(controller.photo)
 );
 
 router.post(

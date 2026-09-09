@@ -52,6 +52,7 @@ const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
 const { settleDistinct } = require('./lib/settle');
+const { metaOf } = require('../src/utils/routeMeta');
 
 const studentRoutes = require('../src/modules/students/students.routes');
 const { schemas } = require('../src/modules/students/students.validation');
@@ -107,6 +108,23 @@ function routesOf(router) {
 function handlerNames(router, method, routePath) {
   const layer = router.stack.find((l) => l.route && l.route.path === routePath && l.route.methods[method]);
   return layer ? layer.route.stack.map((h) => h.handle.name) : [];
+}
+
+/**
+ * The permission keys a route's guard was built from.
+ *
+ * Read from `routeMeta`'s annotation rather than from the source text: the guard already publishes
+ * them there for the OpenAPI document, so this asserts the same fact the document is generated from,
+ * and a route whose guard is missing entirely reads as `null` rather than as an empty list.
+ */
+function permissionsOf(router, method, path) {
+  const layer = router.stack.find((l) => l.route && l.route.path === path && l.route.methods[method]);
+  if (!layer) return null;
+  for (const handler of layer.route.stack) {
+    const meta = metaOf(handler.handle);
+    if (meta && meta.permissions) return meta.permissions;
+  }
+  return null;
 }
 
 function named(router, method, path, fnName) {
@@ -274,16 +292,37 @@ function verifyRouting() {
   console.log('\n── Part 2 — declared routes ──\n');
 
   const routes = routesOf(studentRoutes);
-  check('the eight §15.1 routes are declared', routes, [
+  check('the nine §15.1 routes are declared', routes, [
     'GET /',
     'POST /',
     'POST /:id/photo',
+    'GET /:id/photo',
     'POST /:id/promote',
     'POST /:id/transfer',
     'POST /:id/leave',
     'GET /:id',
     'PATCH /:id',
   ]);
+
+  /*
+   * `GET /:id/photo` closes Known Issues #32: `photo_path` had a writer and no reader, so a photo could
+   * be stored and never looked at. The two assertions below are about the pair being consistent — the
+   * reader takes the *view* permission where the writer takes manage, and the reader carries no upload
+   * middleware, which is what would betray a copy-paste of the writer's chain.
+   */
+  check(
+    'the photo reader takes students.view, where its writer takes students.manage',
+    [
+      permissionsOf(studentRoutes, 'get', '/:id/photo'),
+      permissionsOf(studentRoutes, 'post', '/:id/photo'),
+    ],
+    [['students.view'], ['students.manage']]
+  );
+  check(
+    '  and it is declared above GET /:id, so the literal segment can never be swallowed',
+    routes.indexOf('GET /:id/photo') < routes.indexOf('GET /:id'),
+    true
+  );
 
   /*
    * `POST /:id/photo` is Known Issues #26's other half. Refusing `photo_path` from the body closes the
@@ -1168,6 +1207,71 @@ async function verifyHttp() {
       method: 'POST', token: principalB, form: studentPhoto,
     });
     check('and the module gate still applies to it', denied.status, 403);
+
+    /* ═══ Known Issues #32 — the photo can now be looked at ═══ */
+
+    /*
+     * Fetched with a bare `fetch` rather than through `call`, which reads the response as text: the
+     * whole point of these assertions is the **bytes**, and comparing a decoded string would pass for
+     * a body that is not the file. The upload above sent `PNG`; this reads the same eight-byte
+     * signature back and compares buffers.
+     */
+    const photoUrl = `${base}/students/${photoTarget.id}/photo`;
+    const served = await fetch(photoUrl, { headers: { Authorization: `Bearer ${principalA}` } });
+    const servedBytes = Buffer.from(await served.arrayBuffer());
+    check('FR-STUDENT-001 — a stored photo can be read back', served.status, 200);
+    check('  and the bytes are the ones that were uploaded',
+      servedBytes.equals(PNG), true);
+    check('  served as the image it is, not as a download',
+      [served.headers.get('content-type'), served.headers.get('content-disposition')],
+      ['image/png', `inline; filename="student-photo-${photoTarget.student_id}"`]);
+    /*
+     * The filename carries the school's own `student_id`, not the primary key. Asserted because it is
+     * the kind of detail a later edit would "simplify" to `:id`, which hands a caller a number that is
+     * not theirs and means nothing to the school.
+     */
+    check('  named by the school’s student id rather than the primary key',
+      (served.headers.get('content-disposition') || '').includes(String(photoTarget.id))
+        && String(photoTarget.id) !== String(photoTarget.student_id),
+      false);
+    check('  and a stored file is never cacheable by a shared proxy',
+      [served.headers.get('cache-control'), served.headers.get('x-content-type-options')],
+      ['private, no-store', 'nosniff']);
+
+    /*
+     * The three refusals, each a different rule. Without them a route that returned somebody's photo
+     * for any id would pass every assertion above.
+     */
+    const unphotographed = await expectOk(
+      '/students',
+      {
+        method: 'POST',
+        token: principalA,
+        body: { first_name: 'Unphotographed', last_name: 'Probe', admission_date: '2025-04-11' },
+      },
+      201
+    );
+    created.students.push(dataOf(unphotographed).student.id);
+    const noPhotoYet = await call(`/students/${dataOf(unphotographed).student.id}/photo`, { token: principalA });
+    check('a student with no photo is a 404, not an empty 200', noPhotoYet.status, 404);
+    /*
+     * The cross-school read needs a student in another school who **has** a photo.
+     *
+     * Written first against `dSitting`, who has none, and that assertion could not fail: the route
+     * answers 404 for a student with no photo whatever the tenancy rule says, so replacing the
+     * tenant-scoped finder with a bare `findByPk` left it green. Proved by exactly that regression.
+     */
+    const dPhotoForm = new FormData();
+    dPhotoForm.set('photo', new Blob([PNG], { type: 'image/png' }), 'dee.png');
+    await expectOk(`/students/${dataOf(dSitting).student.id}/photo`, {
+      method: 'POST', token: principalD, form: dPhotoForm,
+    }, 200);
+    const crossSchoolRead = await call(`/students/${dataOf(dSitting).student.id}/photo`, { token: principalA });
+    check("another school's student photo is not readable", crossSchoolRead.status, 404);
+    const ownSchoolRead = await call(`/students/${dataOf(dSitting).student.id}/photo`, { token: principalD });
+    check('  which is not vacuous — the same photo is readable by its own school', ownSchoolRead.status, 200);
+    const deniedRead = await call(`/students/${photoTarget.id}/photo`, { token: principalB });
+    check('and the module gate applies to the reader as well as the writer', deniedRead.status, 403);
 
     const audits = await settleDistinct(
       () => db.AuditLog.findAll({

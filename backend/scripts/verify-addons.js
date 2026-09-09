@@ -808,6 +808,8 @@ async function verifyHttp() {
 
     const students = rows.find((row) => row.key === ADDONS.EXTRA_STUDENTS);
     const domain = rows.find((row) => row.key === ADDONS.CUSTOM_DOMAIN);
+    /* A third add-on, kept clear of the two above so the Known Issues #17 price set stands alone. */
+    const storage = rows.find((row) => row.key === ADDONS.EXTRA_STORAGE);
     check('Extra Students raises a limit', students.effect_type, 'limit_increase');
     check('specifically the student limit', students.effect_target, LIMITS.STUDENT_LIMIT);
     check('Custom Domain unlocks a feature instead', domain.effect_type, 'feature_unlock');
@@ -1133,6 +1135,72 @@ async function verifyHttp() {
     check('the purchase adds its granted units', first.limits.student_limit.addonUnits, 500);
     check('so the ceiling is the sum', first.limits.student_limit.value, 600);
 
+    /* ───────── Known Issues #17 — a school sees only the prices its plan can buy ───────── */
+
+    /*
+     * The defect: `detailInclude()` filtered `addon_prices` by `is_active` alone, so a school-scoped
+     * read returned prices whose `plan_id` named a **different plan**. The purchase path already
+     * refused them with `ADDON_PRICE_PLAN_MISMATCH` (asserted in `verify-subscriptions.js`), so the
+     * hole was never in the write — it was a school reading a figure it could not act on.
+     *
+     * Three prices on one add-on, which is the smallest set that separates the two failure modes: a
+     * filter that hides too much would drop the unrestricted row, and one that hides nothing would
+     * keep the foreign row. A test with only two could pass while doing either.
+     */
+    const otherPlanRes = await call('/plans', {
+      method: 'POST',
+      token: platform,
+      body: { name: 'Verify Addons Other Plan', code: 'VAD-OTHER', visibility: PLAN_VISIBILITY.PUBLIC },
+    });
+    check('a second plan exists to restrict a price to', otherPlanRes.status, 201);
+    const otherPlan = dataOf(otherPlanRes).plan;
+
+    const threePrices = await call(`/addons/${storage.id}/prices`, {
+      method: 'PUT',
+      token: platform,
+      body: {
+        prices: [
+          { billing_cycle: BILLING_CYCLES.MONTHLY, currency: 'USD', unit_amount: 5 },
+          { billing_cycle: BILLING_CYCLES.YEARLY, currency: 'USD', unit_amount: 50, plan_id: plan.id },
+          { billing_cycle: BILLING_CYCLES.QUARTERLY, currency: 'USD', unit_amount: 15, plan_id: otherPlan.id },
+        ],
+      },
+    });
+    check('three prices are written — unrestricted, this plan, another plan', threePrices.status, 200);
+    check(
+      '  and the platform admin sees all three, because its catalogue is the whole catalogue',
+      dataOf(threePrices).addon.prices.length,
+      3
+    );
+
+    await entitlementService.invalidateSchool(fixtures.school.id);
+    const schoolPrices = await call(`/addons/${storage.id}`, { token: principal });
+    check('the school reads the add-on', schoolPrices.status, 200);
+    const visible = (dataOf(schoolPrices).addon.prices || []).map((row) => row.billing_cycle).sort();
+    check(
+      'and sees the unrestricted price and its own plan’s, and not the other plan’s',
+      visible,
+      [BILLING_CYCLES.MONTHLY, BILLING_CYCLES.YEARLY].sort()
+    );
+    check(
+      '  which is not vacuous — the row it cannot see exists and is active',
+      await db.AddonPrice.count({
+        where: { addon_id: storage.id, plan_id: otherPlan.id, is_active: true },
+      }),
+      1
+    );
+    /*
+     * The list read goes through the same helper by a different call site, so both are asserted: a fix
+     * applied to `findById` alone would leave the catalogue listing leaking.
+     */
+    const listedForPlan = await call('/addons?limit=100', { token: principal });
+    const listedRow = (dataOf(listedForPlan) || []).find((row) => row.id === storage.id);
+    check(
+      'the list read is filtered too, not only the read by id',
+      (listedRow.prices || []).map((row) => row.billing_cycle).sort(),
+      [BILLING_CYCLES.MONTHLY, BILLING_CYCLES.YEARLY].sort()
+    );
+
     /*
      * The headline assertion. `CACHE_TTL=600` is still in force and this module calls no `invalidate*`,
      * so an unchanged snapshot here is the *correct* result — the opposite of what verify-plans.js
@@ -1272,10 +1340,15 @@ async function verifyHttp() {
       audits.filter((row) => row.table_name === 'addons').length > 0,
       true
     );
+    /*
+     * Four, not three, since the Known Issues #17 block added a fourth `PUT /addons/:id/prices` — the
+     * three-price set on `extra_storage`. An exact count rather than a floor, deliberately: a price
+     * replacement that stopped auditing would slip past `>= 3` for as long as any other one still did.
+     */
     check(
       'and the price replacements against addon_prices',
       audits.filter((row) => row.table_name === 'addon_prices').length,
-      3
+      4
     );
 
     const blockSizeAudit = audits.find(
