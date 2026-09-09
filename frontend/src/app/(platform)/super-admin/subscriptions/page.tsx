@@ -34,6 +34,7 @@
  * The dates below are formatted, never interpreted.
  */
 
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
@@ -201,8 +202,17 @@ export default function SubscriptionsPage() {
       {
         key: 'plan',
         header: 'Plan',
+        /*
+         * The way into the row's own screen, where FR-SUB-010 to FR-SUB-015 live. The plan name is
+         * the link rather than a trailing "View" column, for the reason the Students list gives:
+         * a row whose most identifying cell is not clickable teaches people to hunt for the action
+         * column, and there is nothing on this row a reader would sooner click.
+         */
         cell: (row) => (
-          <div>
+          <Link
+            href={`/super-admin/subscriptions/${row.id}`}
+            className="block rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
             {/*
               * Displayed, never compared. SRS §30 Rule 1 forbids branching on a plan name — what a
               * plan grants is `plan_modules` / `plan_features` / `plan_limits`, resolved by
@@ -219,7 +229,7 @@ export default function SubscriptionsPage() {
             {row.standing?.hasScheduledChange ? (
               <span className="block text-xs text-muted-soft">change scheduled</span>
             ) : null}
-          </div>
+          </Link>
         ),
       },
       { key: 'state', header: 'State', cell: (row) => <StatusBadge status={row.state} /> },

@@ -154,6 +154,7 @@ const {
   PLAN_VISIBILITY,
   LIMIT_TYPES,
   LIMIT_UNITS,
+  LIMIT_LABELS,
   LIMIT_LIST,
   MODULE_LIST,
   USAGE_LIMIT_KEYS,
@@ -167,6 +168,7 @@ const {
   DOWNGRADE_TIMING,
   RENEWAL_MODES,
   OVERRIDE_TYPES,
+  PRICE_OVERRIDE_TARGETS,
 } = require('../src/config/constants');
 const { DEFAULT_ROLE_PERMISSIONS } = require('../src/config/permissions');
 
@@ -712,6 +714,41 @@ function verifyTransitionTable() {
     Object.values(RENEWAL_MODES),
   ]);
   check('the four §33 override types', cat.overrideTypes, Object.values(OVERRIDE_TYPES));
+
+  /*
+   * What an override may target — published because `createOverride`'s schema restricts three of the
+   * four types to lists no endpoint exposed, so a screen offering the choice had nowhere to read it
+   * from.
+   *
+   * The limit list is asserted against `USAGE_LIMIT_KEYS` rather than against a written-out set of
+   * nine, and the distinction is the whole point of the assertion: `GET /plans/catalogue` publishes
+   * `LIMIT_LIST`, which is **eight** — `plan_limits.limit_key` may not hold `sms_limit`. The schema
+   * here accepts nine. Publishing the plan catalogue's eight would have made the one override an SMS
+   * negotiation needs unofferable, and no assertion comparing a hard-coded list to itself would have
+   * noticed.
+   */
+  check(
+    'the override target vocabularies come from the same constants the schema restricts to',
+    [cat.limitTargets.map((limit) => limit.key), cat.limitTypes, cat.priceTargets],
+    [USAGE_LIMIT_KEYS.slice(), Object.values(LIMIT_TYPES), PRICE_OVERRIDE_TARGETS.slice()]
+  );
+  check(
+    '  and the limit list is the nine, which is one more than the plan catalogue publishes',
+    [cat.limitTargets.length, LIMIT_LIST.length, cat.limitTargets.at(-1).key],
+    [9, 8, 'sms_limit']
+  );
+  check(
+    '  each carrying the label and unit a screen would otherwise have to invent',
+    cat.limitTargets.every(
+      (limit) => limit.label === LIMIT_LABELS[limit.key] && limit.unit === LIMIT_UNITS[limit.key]
+    ),
+    true
+  );
+  check(
+    '  and the price target is the one column a subscription actually carries',
+    [cat.priceTargets, Object.keys(db.Subscription.rawAttributes).includes('cycle_amount')],
+    [['cycle_amount'], true]
+  );
   check(
     'and the transition table, so a screen can disable rather than guess',
     cat.transitions.map((t) => `${t.action}:${t.from.length}->${t.to}`),

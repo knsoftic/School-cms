@@ -16,8 +16,8 @@ All fourteen middleware files plus the barrel are implemented; the authenticatio
 chain, the subscription entitlement engine, and the upload / rate-limit / CSRF / activity-log hardening
 layer each have their own verification suite; `src/app.js` / `src/server.js` wire them into a running
 process.
-**5,162 checks pass, 0 fail, 0 skip, across thirty-eight scripts**, every script exit 0, measured as one
-**serial** loop against a live MariaDB in **session 26**. **SRS §14 through §23 are closed in full**, and
+**5,350 checks pass, 0 fail, 0 skip, across thirty-eight scripts**, every script exit 0, measured as one
+**serial** loop against a live MariaDB in **session 27**. **SRS §14 through §23 are closed in full**, and
 so is **Known Issues #26** — the six columns that accepted a caller-supplied filesystem path. **Every SRS
 section of the backend is now implemented**; what remains of the backend is Phase 5, and the entire
 frontend is still unstarted.
@@ -83,49 +83,49 @@ table back to 0, `users` 1, `activity_logs` 1.
 
 | Script | Checks | Covers |
 |---|---|---|
-| `verify-error-handler.js` | 52 | Error envelope, leak prevention |
-| `verify-validate.js` | 32 | Joi validation, mass-assignment stripping |
+| `verify-error-handler.js` | 54 | Error envelope, leak prevention |
+| `verify-validate.js` | 35 | Joi validation, mass-assignment stripping |
 | `verify-auth-chain.js` | 84 | Authentication, tenant isolation, authorization |
 | `verify-entitlement.js` | 272 | Subscription entitlement, limits, usage |
 | `verify-seed.js` | 22 | Seeder counts and transactional rollback |
 | `verify-middlewares.js` | 262 | Upload, rate limit, CSRF, activity/audit logging |
-| `verify-app.js` | 202 | App wiring, system routes, boot and shutdown (`/api/v1` is 41 layers) |
+| `verify-app.js` | 205 | App wiring, system routes, boot and shutdown (`/api/v1` is 41 layers) |
 | `verify-auth-module.js` | 237 | SRS §7 — the nine auth endpoints, end to end |
 | `verify-platform-modules.js` | 313 | SRS §9 — the eighteen platform endpoints, end to end |
 | `verify-users-roles.js` | 236 | SRS §33 "Users" / §29 roles — the nine endpoints, end to end |
 | `verify-plans.js` | 175 | SRS §10 / §11 — the thirteen plan endpoints, end to end |
 | `verify-addons.js` | 169 | SRS §11.3 — the six add-on endpoints, end to end |
-| `verify-subscriptions.js` | 208 | SRS §12 / §30 / §33 — the nineteen subscription endpoints plus the lifecycle sweep |
-| `verify-billing.js` | 220 | SRS §13 / §33 — billing math, route tables, schemas, scheduled sweeps, and the HTTP money path |
+| `verify-subscriptions.js` | 212 | SRS §12 / §30 / §33 — the nineteen subscription endpoints plus the lifecycle sweep |
+| `verify-billing.js` | 239 | SRS §13 / §33 — billing math, route tables, schemas, scheduled sweeps, and the HTTP money path |
 | `verify-school-setup.js` | 168 | SRS §14 — the twenty-nine school-setup endpoints, the audit trail, and the organization-scope regression |
-| `verify-teachers.js` | 85 | SRS §15.3 — the six teacher endpoints, the first entitlement guard, and the teacher_limit ceiling |
+| `verify-teachers.js` | 87 | SRS §15.3 — the six teacher endpoints, the first entitlement guard, and the teacher_limit ceiling |
 | `verify-students.js` | 136 | SRS §15.1 — the seven student endpoints, the admission ceiling, and the promotion / transfer / leaving machine |
 | `verify-parents.js` | 116 | SRS §15.2 — the eight parent endpoints, the account the module creates, and the children join |
 | `verify-staff.js` | 89 | SRS §15.4 — the four staff endpoints, the four categories, and the ceiling on both paths |
-| `verify-attendance.js` | 80 | SRS §16 — the five attendance endpoints, the bulk upsert, and the three report periods |
-| `verify-fees.js` | 163 | SRS §17 — the eight fee endpoints, the ledger arithmetic, and the per-school receipt series |
+| `verify-attendance.js` | 82 | SRS §16 — the five attendance endpoints, the bulk upsert, and the three report periods |
+| `verify-fees.js` | 174 | SRS §17 — the eight fee endpoints, the ledger arithmetic, and the per-school receipt series |
 | `verify-finance.js` | 163 | SRS §18 — the nine finance endpoints, the net balance, and the report window |
-| `verify-exams.js` | 206 | SRS §19 — the nineteen exam endpoints, the FR-EXAM-003 calculation, and the merit list |
+| `verify-exams.js` | 219 | SRS §19 — the nineteen exam endpoints, the FR-EXAM-003 calculation, and the merit list |
 | `verify-timetable.js` | 115 | SRS §20.1 — the six timetable endpoints and all three FR-TT-002 conflicts |
-| `verify-homework.js` | 98 | SRS §20.2 — the four homework endpoints, a real file upload, and the self-scoped view |
+| `verify-homework.js` | 109 | SRS §20.2 — the four homework endpoints, a real file upload, and the self-scoped view |
 | `verify-assignments.js` | 196 | SRS §20.3 — the eight assignment endpoints and the whole FR-ASG-001 lifecycle. Asserts what each of the two `record_type` lists must **exclude**, not only what it contains; puts two students in the *same class and section* so a submission narrowing written by class instead of by student is visible; and proves both halves of `returned` — that it re-opens the submit route, and that `submitted`/`reviewed` do not. Sixteen fixes proved by deliberate regression |
 | `verify-library.js` | 161 | SRS §20.4 — the nine library endpoints, the shared counter and the calculated fine. Every issue/return assertion is written against the **invariant** `quantity - available_quantity === copies on loan`, re-read off the database rather than out of the response, because a response can be right while the row is wrong. The fine is checked as arithmetic, not as "some number was stored". Twenty-one fixes proved by deliberate regression |
-| `verify-documents.js` | 120 | SRS §20.5 — the three document endpoints, all seven generated documents, and the **per-type entitlement gate**. Its central fixture is a school subscribed to Certificates but *not* ID Cards, proving the same caller in the same school can issue a leaving certificate and is refused a student ID card. Each of the seven `generation_payload` builders is checked for the values it must carry, read against the fixture rows they were assembled from, not merely for being non-null. Nineteen fixes proved by deliberate regression, seven of which first exposed weaknesses in this suite's own assertions |
-| `verify-ai.js` | 169 | SRS §21 — the ten AI endpoints, the nine-step workflow as a stage machine, and FR-AI-002's meter. Pins `AI_DRIVER=mock` so the whole workflow runs offline and every generated string is predictable. Asserts the counter as a number that **moves** — and the two cases where it must not: a request the limit blocked, and a generation the provider failed. Every transition is tried out of order as well as in it. Sixteen fixes proved by deliberate regression |
-| `verify-reports.js` | 106 | SRS §22 — the seven reports and the Excel export. Its fixture is built so no number can be right by coincidence: five students across three unequal statuses, fees of 1000/2500/700 against payments of 400/2500/0, results at 91/64/38 giving a 66.67% pass rate. The two delegated reports are asserted **identical field-for-field** to `/attendance/students/report` and `/finance/report`, so §22 cannot start recomputing without breaking. The exported workbook is read back through exceljs and its numbers compared to the JSON. Twenty-three fixes proved by deliberate regression |
-| `verify-notifications.js` | 98 | SRS §23 — the engine, not the inbox. Part 3 drives `runNotificationSweep()` **directly**, as `verify-subscriptions.js` drives `runLifecycleSweep()`, because §23's actor is `System` and a suite that only called the five routes would leave eight sweeps and nine types unexercised. Every pass is given a **negative** beside its positive — an unpublished draft, a draft exam, a present student, a fee due in sixty days, a payment still pending — and idempotency is asserted by running the whole sweep **twice** and requiring zero new rows. The e-mail failure path is produced by the module's own code, `mailService.send` being replaced for exactly one call. Forty-three deliberate regressions |
-| `verify-jobs.js` | 42 | Phase 5 — the scheduler. Drives `runOrdered()` for real, including a real `mysqldump`. Its central assertion is **end to end rather than structural**: a subscription is planted as `active`, one ordered run is made, and a Subscription Expiry notification must exist afterwards — which is only possible if `subscription-lifecycle` ran before `notification-dispatch` in that same pass. Retention is proved by backdating mtimes, with the negative beside the positive: a file the task did not write is left alone however old. Fifteen deliberate regressions |
-| `verify-openapi.js` | 101 | SRS §28 / FR-APIDOC-001 — the generated OpenAPI document, checked against the application it describes rather than against a schema validator. Part 3 serves it over real HTTP and fetches every asset the Swagger UI needs under this app's CSP |
-| `verify-frontend.js` | 50 | Phase 4 — the frontend's contract with this API, checked against the **generated** OpenAPI document rather than a hand-written list: every path the client calls must exist with that method on the mounted app. Also asserts §30 Rule 1 directly (no plan code or name compared against a literal) and that the access token never reaches browser storage. Lives here, not in `frontend/`, because the claim it verifies is about the backend |
-| `verify-deploy.js` | 52 | SRS §27 / FR-DEPLOY-001 — the six `deploy/` artifacts, cross-checked against `backend/src/`. **Nothing here is validated by its own tool**: nginx, pm2, mysql and logrotate are all absent from this machine, so the suite checks agreement with the application instead of syntax. `ecosystem.config.js` is the exception — being JavaScript, it is `require()`d |
+| `verify-documents.js` | 133 | SRS §20.5 — the three document endpoints, all seven generated documents, and the **per-type entitlement gate**. Its central fixture is a school subscribed to Certificates but *not* ID Cards, proving the same caller in the same school can issue a leaving certificate and is refused a student ID card. Each of the seven `generation_payload` builders is checked for the values it must carry, read against the fixture rows they were assembled from, not merely for being non-null. Nineteen fixes proved by deliberate regression, seven of which first exposed weaknesses in this suite's own assertions |
+| `verify-ai.js` | 188 | SRS §21 — the ten AI endpoints, the nine-step workflow as a stage machine, and FR-AI-002's meter. Pins `AI_DRIVER=mock` so the whole workflow runs offline and every generated string is predictable. Asserts the counter as a number that **moves** — and the two cases where it must not: a request the limit blocked, and a generation the provider failed. Every transition is tried out of order as well as in it. Sixteen fixes proved by deliberate regression |
+| `verify-reports.js` | 112 | SRS §22 — the seven reports and the Excel export. Its fixture is built so no number can be right by coincidence: five students across three unequal statuses, fees of 1000/2500/700 against payments of 400/2500/0, results at 91/64/38 giving a 66.67% pass rate. The two delegated reports are asserted **identical field-for-field** to `/attendance/students/report` and `/finance/report`, so §22 cannot start recomputing without breaking. The exported workbook is read back through exceljs and its numbers compared to the JSON. Twenty-three fixes proved by deliberate regression |
+| `verify-notifications.js` | 100 | SRS §23 — the engine, not the inbox. Part 3 drives `runNotificationSweep()` **directly**, as `verify-subscriptions.js` drives `runLifecycleSweep()`, because §23's actor is `System` and a suite that only called the five routes would leave eight sweeps and nine types unexercised. Every pass is given a **negative** beside its positive — an unpublished draft, a draft exam, a present student, a fee due in sixty days, a payment still pending — and idempotency is asserted by running the whole sweep **twice** and requiring zero new rows. The e-mail failure path is produced by the module's own code, `mailService.send` being replaced for exactly one call. Forty-three deliberate regressions |
+| `verify-jobs.js` | 57 | Phase 5 — the scheduler. Drives `runOrdered()` for real, including a real `mysqldump`. Its central assertion is **end to end rather than structural**: a subscription is planted as `active`, one ordered run is made, and a Subscription Expiry notification must exist afterwards — which is only possible if `subscription-lifecycle` ran before `notification-dispatch` in that same pass. Retention is proved by backdating mtimes, with the negative beside the positive: a file the task did not write is left alone however old. Fifteen deliberate regressions |
+| `verify-openapi.js` | 104 | SRS §28 / FR-APIDOC-001 — the generated OpenAPI document, checked against the application it describes rather than against a schema validator. Part 3 serves it over real HTTP and fetches every asset the Swagger UI needs under this app's CSP |
+| `verify-frontend.js` | 204 | Phase 4 — the frontend's contract with this API, checked against the **generated** OpenAPI document rather than a hand-written list: every path the client calls must exist with that method on the mounted app. Also asserts §30 Rule 1 directly (no plan code or name compared against a literal) and that the access token never reaches browser storage. Lives here, not in `frontend/`, because the claim it verifies is about the backend |
+| `verify-deploy.js` | 58 | SRS §27 / FR-DEPLOY-001 — the six `deploy/` artifacts, cross-checked against `backend/src/`. **Nothing here is validated by its own tool**: nginx, pm2, mysql and logrotate are all absent from this machine, so the suite checks agreement with the application instead of syntax. `ecosystem.config.js` is the exception — being JavaScript, it is `require()`d |
 | `verify-security.js` | 28 | SRS §24 — injection and cross-site protection over real HTTP (rows 6.3, 6.4, FR-SEC-003). Six SQL payloads at **value** parameters, where the defence is Sequelize’s binding rather than the `sortBy` allow-list already probed elsewhere; script payloads asserted in both directions — executable markup stripped, and `Smith & Sons 5 < 7 Ltd` left intact, because a sanitiser that strips too much is a data-corruption bug wearing a security badge. Its first assertion checks its own previous run left no residue |
 | `verify-pdf.js` | 20 | Phase 5.4's renderer, on its own terms. It exists separately because §22 **cannot exercise it**: the student report fits on one page, so four guards — the footer's pagination fix, the repeated header, the page break and the measured row height — were unprovable through the reports suite. All four are about the *second* page. Reads the PDF back by inflating its content streams, because `pdf-parse` cannot parse pdfkit output at all |
-| `verify-performance.js` | 14 | SRS §25 — indexes, pagination bounds and caching (row 6.15). **No timing assertion, deliberately**: §25 sets no numeric target, and "under 50 ms" would measure this machine on this afternoon. Structural instead — all **50** tables carrying `school_id` have a `school_id`-**leading** index (leading, because MySQL reads a composite left to right), no tenant list query is a full scan forced by a missing index, and the cache is measured by **counting queries** rather than by the clock: first read hits the database, second reads none of it, and `invalidateSchool` sends the next one back |
-| **Total** | **5,162** | Thirty-eight scripts, measured in one **serial** loop in session 26 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25 |
+| `verify-performance.js` | 16 | SRS §25 — indexes, pagination bounds and caching (row 6.15). **No timing assertion, deliberately**: §25 sets no numeric target, and "under 50 ms" would measure this machine on this afternoon. Structural instead — all **50** tables carrying `school_id` have a `school_id`-**leading** index (leading, because MySQL reads a composite left to right), no tenant list query is a full scan forced by a missing index, and the cache is measured by **counting queries** rather than by the clock: first read hits the database, second reads none of it, and `invalidateSchool` sends the next one back |
+| **Total** | **5,350** | Thirty-eight scripts, measured in one **serial** loop in session 27 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25. **Every figure in this column was re-derived from `tests/baseline.json` in session 27**, which is the file `npm test` checks each suite against; nineteen of them had drifted, `verify-frontend.js` by 154 |
 
 Counts are assertions, not output lines. Thirty-seven of the thirty-eight scripts print one `PASS` line per
 assertion; `verify-seed.js` prints a single `PASS (22)` summary line followed by 22 sub-bullets, so
-counting output lines undercounts the loop by 21 — a serial run prints 5,141 `PASS` lines for **5,162**
+counting output lines undercounts the loop by 21 — a serial run prints 5,329 `PASS` lines for **5,350**
 assertions.
 
 **The per-script list above was re-measured in session 26**, in the alphabetical order the loop
@@ -159,7 +159,7 @@ fixed two live-DB defects, ran Part 5 over HTTP, and re-measured the whole fourt
 
 **Session 16 (same calendar day again) opened on unrecorded Phase 3.I work already on disk**, ran the
 fifteen-script loop as its first action — which is what surfaced it — then audited and repaired it. The
-table above is the session-26 figure: **5,162 / 0 FAIL / 0 SKIP / every script exit 0**, from a serial run.
+table above is the session-27 figure: **5,350 / 0 FAIL / 0 SKIP / every script exit 0**, from a serial run.
 
 The server itself now runs:
 
@@ -4470,16 +4470,196 @@ phase, and building against an invented endpoint would be inventing a requiremen
 
 ---
 
+## 2am. Phase 4 — the subscription detail screen ✅ the fourteen write routes with no caller
+
+`docs/VERIFICATION.md` sized a queue nothing in this repository had sized before: **142 write routes
+mounted, 43 with a frontend caller, 99 without**, and it named `/subscriptions` as the largest single
+cluster in it at **fourteen**. This section closes that cluster.
+
+Measured again at the start of this session against the *generated OpenAPI document* rather than by
+walking the route files — 150 write routes, 61 with a caller, 89 without. The two counts are not the
+same measurement and neither is wrong: the earlier one walked `*.routes.js`, this one reads what the
+application actually mounts, and four sessions of frontend work sit between them. What matters is
+that both name the same cluster as the biggest.
+
+At the end of this session: **75 of 150**. The fourteen are all of the difference.
+
+### What was unreachable, in the product's own terms
+
+A school could be **put on a plan and then nothing else**. It could not be activated, so the billing
+period never started; not suspended when it stopped paying; not paused, resumed, cancelled, upgraded,
+downgraded or renewed. No add-on could be sold onto it — the `/super-admin/addons` screen could put an
+add-on on sale and take it off again, and there was no way to sell one to anybody. None of §33's three
+override kinds — Feature Overrides, Custom Limits, Custom Pricing — could be applied or revoked.
+
+That is FR-SUB-009 through FR-SUB-015 — **seven requirements** — plus the whole of §33's SaaS engine,
+every one of them `Tested` in the checklist on the strength of an API that no screen called.
+
+### Why a detail screen, and why that is not a sixteenth §33 screen
+
+The precedent in this product is a **row action**: Plans, Schools and Students all act from their
+list. That works when the action is one confirmation on one row, and none of these fourteen is. A plan
+change needs a plan, a timing and a quantity; an override needs four fields whose shapes depend on
+each other; an add-on purchase needs a price the subscription's own plan is allowed to be charged on.
+A list screen carrying five forms is a list screen nobody can read.
+
+§33 names "Subscriptions" and does not name this, exactly as it names Plans and does not name
+`plans/[id]`. A detail view of a row on a named list is where that row's operations live, not a new
+screen the source failed to ask for.
+
+Five files under `(platform)/super-admin/subscriptions/[id]/`: `detail.ts` (the record, the
+vocabulary and the fetch hook), `lifecycle.tsx` (the six transitions and the renewal), `planChange.tsx`
+(upgrade and downgrade), `addons.tsx`, `overrides.tsx`, and `page.tsx` (the shell, the standing block
+and `PATCH /:id`). The list screen's plan-name cell became the link into it.
+
+### The transition bar is the server's answer, not the screen's
+
+`subscriptions.service.catalogue()` publishes the transition table — `{ action, to, from }` per edge —
+and its own header says why: so a screen can *"disable rather than guess"*. The bar renders one button
+per transition whose `from` contains the current state and nothing else. Driven in a browser: an
+`active` subscription offers **Suspend, Pause, Cancel** and Renew; pausing it re-renders the bar as
+**Suspend, Resume, Cancel**. Neither list is written anywhere in the frontend.
+
+Renewal is in the copy table and **not** in the transition table, because FR-SUB-015 is not a state
+change: `renew()` opens the next cycle on a subscription that is already open. Its button is offered on
+`standing.isOpen && standing.isRecurring` instead — a `one_time` subscription has no next period, and
+offering it there would be offering an operation whose only outcome is a refusal.
+
+### Direction is not a control
+
+There are two endpoints and one form. `changePlan()` classifies upgrade-versus-downgrade from the two
+plans' `tier_rank` and **refuses a request that arrived on the wrong route** with a 409 naming the
+other one. So the direction is a fact about the pair of plans, which the screen already has, and
+offering two buttons would be offering the operator a way to be wrong about something they cannot
+decide. The form picks the route and says which before the button is pressed; a same-tier plan is
+refused *before* the request, in the service's own words, with the submit disabled.
+
+`tier_rank` is read for that and nothing else. §30 Rule 1 forbids branching on a plan's identity and
+this does not: it compares two ranks to choose an HTTP route and derives no capability from either.
+
+### One backend change, and the gap that forced it
+
+`createOverride`'s schema restricts three of the four override types to lists **no endpoint
+published**. `catalogue()` now publishes `limitTargets`, `limitTypes` and `priceTargets`.
+
+The limit list is the reason this exists and the reason it could not be borrowed. `GET
+/plans/catalogue` publishes `LIMIT_LIST` — **eight** keys, because `plan_limits.limit_key` may not hold
+`sms_limit`. The override schema accepts `USAGE_LIMIT_KEYS` — **nine**, the eight plus the add-on-only
+SMS allowance. A screen reusing the plan catalogue here would have been silently unable to write the
+one override an SMS negotiation needs, and no assertion comparing a hard-coded list against itself
+would have noticed. `verify-subscriptions.js` now asserts the nine against `USAGE_LIMIT_KEYS` and
+asserts that it is one longer than `LIMIT_LIST`, which is the property that matters.
+
+`PRICE_TARGETS` moved from `subscriptions.validation.js` to `config/constants.js` as
+`PRICE_OVERRIDE_TARGETS`, because it now has two readers — the schema that refuses everything else and
+the endpoint that tells a screen what is accepted. Two frozen one-element arrays that must agree is how
+they come to disagree.
+
+**Module targets are deliberately not published**: they are §11.1's twenty keys, which `lib/modules.ts`
+already holds as a copy `verify-frontend.js` asserts against `MODULE_LABELS` in both directions. A
+third copy would be a third thing to keep in step. **Feature targets have no list at all**, and that is
+a property of the source: `plan_features` carries its own `name` per row, §11 fixes no feature
+vocabulary, and the schema does not restrict `target_key` for a feature either. The schema's silence
+and the missing list are the same fact, so the control is a text box that says where the key comes
+from.
+
+### An assertion that would have passed while proving nothing
+
+The first draft of `lifecycle.tsx` built one URL — `` `/subscriptions/${id}/${action}` `` — which is
+shorter and works. `verify-frontend.js` collects `api.<method>(` followed **immediately** by a path
+literal, so seven routes reached through an interpolated verb are invisible to it: they would have gone
+on reporting as uncalled after the screen that calls them shipped, which is the state the screen exists
+to end.
+
+The second draft put the literal in a `path` field and passed it to a shared `api.post`. **That is no
+better**, and the coverage measurement said so — 61 → 63, not 61 → 68. The collector looks for the
+literal *at the call*, so a path assembled anywhere else is the same blind spot wearing a longer name.
+The third holds the request itself per action, and the count moved to 75. The file records all three
+drafts, because the second one looks like the fix and is not.
+
+### Six routes driven end to end in a browser, and what that found
+
+`verify-frontend.js` proves a path is called. It cannot prove a form composes a body the API accepts.
+Six were driven against the real API on the real database: override apply, override revoke, pause,
+resume, add-on purchase, add-on cancel — each read back out of `subscription_overrides` /
+`subscription_addons` afterwards. Two defects came out of it, and **neither was visible to any
+assertion**:
+
+- **A control stricter than the API.** The add-on select disabled every add-on whose
+  `readiness.purchasable` was false — `is_active` **and** at least one active price. That is the right
+  test on the Add-ons catalogue screen, where "purchasable" means "a school could buy this", and the
+  wrong one here: `purchaseAddon()` refuses exactly one thing, an add-on that is not `is_active`. A
+  price is **optional**, because §11.3 add-ons are granted at no charge as part of a negotiation — which
+  this screen's own price control said two fields further down. So it forbade a supported operation, and
+  forbade it for precisely the add-ons that need it. Found because the development database has no
+  `addon_prices` row at all, so **every** option was disabled and the screen was unusable. A screen may
+  be looser than the API — the API is the guard. It may not be tighter, because nothing then tells the
+  operator that the thing they cannot do is a thing the system does.
+- **A branch that could not run, with a comment justifying it.** The unit-price cell read
+  `unit_amount === null ? 'no charge' : …`, reasoning that `addon_price_id` is nullable and `SET NULL`.
+  True of the *price pointer*; not of this column. `purchaseAddon()` writes
+  `price ? money.round(price.unit_amount) : 0`, so the null branch was unreachable and the no-charge
+  grant this session had just made rendered as "USD 0.00". Two claims in one comment, one of them about
+  the wrong column.
+
+A third finding is smaller and was found by reading the dialog back rather than by looking at it:
+`Modal`'s own dismiss control already carries the accessible name **"Close"**, so a footer button
+labelled "Close" gives a dialog two buttons a screen reader cannot tell apart. "Cancel" is the label
+every other dialog in the product uses — and it is wrong on the two dialogs whose *action* is a
+cancellation, where it would sit beside "Cancel subscription" and mean the opposite. Those two say
+"Go back".
+
+### What is not offered, and why
+
+- **No add-on edit.** `subscription_addons` has no update route, and the honest reading of §11.3 is that
+  a purchase is a purchase: changing a quantity is cancelling one and buying another, and both halves
+  are recorded. That is also the shape §13's invoice line can follow.
+- **No `metadata` control** on the configuration form. It is free-form JSON with no defined shape, and a
+  textarea that must parse to save is a way to lose a form's worth of typing to a missing brace.
+- **Nothing derives a lifecycle state from a date.** The list screen says this; it matters more here,
+  where every date is on one page and subtracting two is one keystroke away. `standing` carries the day
+  counts the server derived, and `state` is displayed as stored.
+
+### Verification
+
+- `tsc --noEmit` clean; `next build` clean, **63** pages (was 61).
+- `verify-frontend.js` **190 → 204**: the fourteen routes asserted by method and path, in a block whose
+  header names the cluster and says why two of them are reached through a table of senders.
+- `verify-subscriptions.js` **208 → 212**: the three new catalogue vocabularies against the constants
+  the schema restricts to, the nine-versus-eight property, the label-and-unit pairing, and the price
+  target against the column a subscription actually carries.
+- Whole loop, serially: **38 suites, 5,350 assertions, 0 FAIL, 0 SKIP, every script exit 0.**
+  `tests/baseline.json` re-recorded from that run (+18, +0 suites).
+- Six routes driven in a browser as described above, signed in as a Super Admin against the development
+  database.
+
+### Two things this session left behind, recorded rather than tidied away
+
+- **The `ui-audit@msms.local` probe account's password was reset** to drive the browser pass; no
+  session had recorded one. `browser-probe@msms.local`, the other probe account, is **soft-deleted** —
+  its `deleted_at` is set, the paranoid model cannot see it, and a password written to it before that
+  was noticed is inert. Neither account exists in `msms_test`, so no suite is affected.
+- **The development database carries the traces of the pass**: one revoked `sms_limit` override and one
+  cancelled SMS-credits purchase on subscription 9258, plus a pause/resume round trip that moved that
+  row's period end forward by the few seconds the pause lasted. All of it is honest history in the
+  shape the module records, and none of it is in `msms_test`.
+
+---
+
 ## 3. What is currently in progress
 
 **Nothing is mid-edit.** Every file on disk is complete, syntactically valid, and passes its
-verification script. **5,162 checks green, 0 failing, 0 skipped, across thirty-eight scripts**, every
-script exit 0, measured as one **serial** loop in **session 26** against live MariaDB (Known Issues #25 —
+verification script. **5,350 checks green, 0 failing, 0 skipped, across thirty-eight scripts**, every
+script exit 0, measured as one **serial** loop in **session 27** against live MariaDB (Known Issues #25 —
 a parallel run reports false failures). Per-script assertions, in the order the loop runs them:
 
-    169, 188, 205, 196, 82, 84, 237, 220, 52, 133, 272, 54
-    219, 174, 163, 51, 109, 57, 161, 262, 100, 104, 116, 20
-    16, 175, 313, 106, 168, 28, 22, 89, 136, 208, 87, 115, 236, 35  =  5,162
+    169, 188, 205, 196, 82, 84, 237, 239, 58, 133, 272, 54
+    219, 174, 163, 204, 109, 57, 161, 262, 100, 104, 116, 20
+    16, 175, 313, 112, 168, 28, 22, 89, 136, 212, 87, 115, 236, 35  =  5,350
+
+*(That array is `tests/baseline.json`, re-recorded from the session-27 run. Session 26's figures were
+5,162 with `verify-frontend` at 51 and `verify-subscriptions` at 208; +14 and +4 of the difference are
+this session's, and the rest was already recorded in the baseline and stale only here.)*
 
 Teardown after that loop was confirmed clean: every fixture table 0, `users` 1, `activity_logs` 1,
 `audit_logs` 0, seed 11 roles / 109 permissions / 353 grants / 7 add-ons, and zero files **and zero
@@ -4596,46 +4776,69 @@ classes or students to seed. This is row **3.S** in `docs/IMPLEMENTATION_CHECKLI
 lettering note in §3.
 
 ### Phase 4 — Frontend
-`frontend/` does not exist. Next.js (App Router) + Tailwind: auth pages, 16 Super Admin
-screens (§33), 17 School screens, teacher/parent/student portals, `AuthProvider`,
-`EntitlementProvider`, `apiClient`.
+
+*Rewritten in session 27. Every sentence this block held was written before Phase 4 began and had gone
+on asserting that none of it existed — it opened "`frontend/` does not exist" while §2ah–§2am describe
+sixty-three built pages. The same was true of Phase 5 and Phase 6 below. These three blocks were never
+revised as the phases were done, because §7's brief is where each session looked and this section is
+not. Nothing here is a new finding; it is the same work, said once in the place that claimed it was
+absent.*
+
+`frontend/` exists, builds and typechecks — Next.js 16.3.4 App Router, React 19.2.8, Tailwind 4.3.3,
+TypeScript 5.9.3, **63 pages**. `AuthProvider`, `EntitlementProvider` and `apiClient` are done (§2ah);
+the shell and all five auth pages (§2ai); the sixteen Super Admin screens (§2aj), the seventeen School
+screens (§2ak) and the three role surfaces (§2al); the eighteen create screens and the subscription
+detail screen (§2am). Verified by `backend/scripts/verify-frontend.js`, which checks every path the
+client calls against the **generated** OpenAPI document.
+
+What is left is not screens: it is **the write routes no screen calls**, 75 of 150, sized and split in
+§7's brief.
 
 ### Phase 5 — Integrations
-`src/payments/` (plugin registry + 5 providers), `src/ai/` (pipeline), `src/jobs/` (worker +
-cron + `tasks/databaseBackup.js`), `src/docs/` (Swagger). None exist. `npm run worker`,
-`npm run cron` and `npm run db:backup` currently fail.
+
+`src/ai/` exists as a driver switch over `mock` and `anthropic` (§2y); `src/jobs/` exists with the
+cron runner, the four sweeps, the queue handlers, the worker and `tasks/databaseBackup.js` (§2ab,
+§2ad); `src/docs/` generates and serves the OpenAPI document (§2af). `npm run worker`, `npm run cron`
+and `npm run db:backup` all run.
+
+`src/payments/` — the plugin registry and five providers — is the one part of this phase that does not
+exist. The billing modules record payments; they do not take them. **5.2 is the other open row**: the
+Anthropic adapter is written and has never been executed, for want of a key.
 
 ### Phase 6 — Tests
-`tests/` does not exist, including `tests/setup.js` which `package.json`'s jest config
-already points at, and the `msms_test` database has not been created. `npm test` currently fails.
-Planned coverage: school-isolation 403, `school_id` URL tampering, SQLi/XSS/CSRF, file-upload
-security, rate limiting, JWT security, role/permission enforcement, subscription lifecycle +
-proration, limit enforcement + overage, exam calculation + position, timetable conflict, fee partial
-payment, pagination.
 
-**Plus one item that is not in the SRS but is owed by how this project has been built:** the thirteen
-`scripts/verify-*.js` files hold 2,157 real assertions that jest cannot see, so `npm test` reports
-nothing while the project is in fact heavily covered. They should be folded into the jest suite —
-`docs/IMPLEMENTATION_CHECKLIST.md` row 6.17. Until then, "the tests" means the thirteen scripts, and the
-`Tested` statuses in the checklist rest on them.
+`tests/` exists — `globalSetup.js`, `setup.js`, `verify.test.js`, `helpers/suiteRunner.js` and
+`baseline.json` — the `msms_test` database is created, and `npm test` runs the whole safety net:
+**5,550 tests, exit 0**, being the 38 suites' 5,350 assertions as named cases plus five per suite and
+ten harness-integrity tests. Row 6.17 is closed.
 
-Session 12 raised the priority of this item. A suite that only runs when someone remembers to run it is
-how `verify-addons.js` sat broken and unnoticed between sessions 11 and 12 — it was never green, and
-nothing announced that. A jest suite in CI would have failed loudly on the session-11 commit. Until the
-fold-in happens, the thirteen-script loop in §1 is the only thing standing between a broken suite and a log
-entry that claims it passes, so **run it at the start of a session, not only at the end.**
+The coverage this block once listed as planned is built and is in §1's table: school-isolation 403,
+`school_id` tampering, SQLi/XSS/CSRF, upload security, rate limiting, JWT, permissions, the
+subscription lifecycle and proration, limits and overage, exam calculation and position, timetable
+conflict, partial fee payment and pagination. **Rows 6.3 and 6.4 remain In Progress** — XSS coverage is
+spread across seven suites and SQL-injection coverage sits in one.
+
+The lesson this block was written to carry is still the standing rule and is kept: a suite that only
+runs when someone remembers to run it is how `verify-addons.js` sat broken and unnoticed between
+sessions 11 and 12. **Run the loop at the start of a session, not only at the end.**
 
 ### Phase 7 — Deployment, docs, final review
 ~~`deploy/` does not exist~~ — **it does now** (§2ag): the Nginx site, the PM2 ecosystem, the MySQL
 production config, the production env template, logrotate and the monitoring runbook, verified by
 `scripts/verify-deploy.js`. Backup was never going to be a script here; it is
 `src/jobs/tasks/databaseBackup.js`. Phase 7 stands at 12 of 13, and the remaining row is 7.13.
-`docs/VERIFICATION.md` does not exist — it is 7.13's output and must not be linked to
-before it is written. `docs/IMPLEMENTATION_CHECKLIST.md` **was rewritten with honest statuses in
-session 7** and no longer needs regenerating; it needs keeping accurate. Two smaller gaps in the same
-phase: there is no ESLint configuration, so `npm run lint` fails, and the project is still not a git
-repository (`git init` has never been run — every "unchanged file" claim in this log rests on reading
-the file, not on a diff).
+~~`docs/VERIFICATION.md` does not exist~~ — **it does now**, written 2026-09-09 as 7.13's output; it
+records what was measured and on what date, names the four things that have never been executed, and
+carries the uncalled-write-routes queue §7's brief works from. `docs/IMPLEMENTATION_CHECKLIST.md` **was
+rewritten with honest statuses in session 7** and no longer needs regenerating; it needs keeping
+accurate. Two smaller gaps in the same phase, one of which has closed: the **frontend** has no ESLint
+configuration and `npm run lint` fails there — Next 16 removed `next lint` and the script still points
+at it, so the frontend has had no lint coverage since that upgrade (the backend has `.eslintrc.json`
+and exits 0). ~~The project is still not a git repository~~ — **it is now**. Seven commits, all dated **2026-09-09**,
+the first being "Multi-School Management System — backend complete, frontend complete": the history
+begins at that snapshot, so a claim about an unchanged file can now be checked with `git diff`, and
+every such claim in this log written before it still rests on reading the file. Which session ran
+`git init` is not recorded anywhere and the dates cannot separate them; it is not guessed here.
 
 ---
 
@@ -9195,7 +9398,7 @@ count, when in the period to issue, what due date to set and what to do in grace
 | 1 | ~~**`docs/IMPLEMENTATION_CHECKLIST.md` is inaccurate.**~~ **Resolved in session 7.** Every row had been pre-filled `Completed` / `Tested`, including Phases 4–7 which have not been started, and 37 SRS requirement IDs marked complete against modules that do not exist. It has been rewritten (320 → 441 lines) with each legend word defined and every status re-derived from the file system or from a check re-run first. | Was misleading in the worst possible way — it directly violated the "do not mark something complete without verifying it" rule. | Resolved. Both files are now truthful; where they disagree, **this file is corrected first** and the checklist follows. |
 | 2 | **MySQL (XAMPP) must be running**, and it does not survive this environment reliably — it stopped four times during session 26 alone, twice needing the Aria recovery below. | Every `db:*` command and every database-touching suite fails without it. `npm run check:models` and `npm run db:schema` still work (no connection needed). Worse, 19 suites answer an unreachable database by skipping their HTTP half and **exiting 0** (Known Issue 28), so a stopped server can read as a green run. | Start it from the XAMPP control panel, or `Start-Process C:\xampp\mysql\bin\mysqld.exe`. **If it refuses to start, read the error rather than reinstalling:** session 26 hit *"Aria recovery failed … Could not open mysql.plugin table … Aborting"* after an unclean shutdown. The `mysql` system schema is **Aria**; the project’s own data is **InnoDB** and was never at risk — InnoDB reported a clean start throughout. The recovery is the one the server itself prints: from the data directory run `aria_chk -r mysql/*.MAI`, then `aria_chk -o` on any table reporting *"aria_sort_buffer_size is too small"* — `-o` uses the keycache instead of the sort buffer, and passing `--sort_buffer_size` on the command line does **not** help because `my.ini` overrides it. Then move the `aria_log.########` files aside. Which tables need `-o` varies by occurrence — four the first time (`columns_priv`, `db`, `help_topic`, `proxies_priv`), three the second (`db` recovered under plain `-r`), so **read the run rather than working the list**. Both databases came back intact both times — 65 tables (64 domain + `sequelize_meta`), 109 permissions, 11 roles each. **Correction to the first recording of this procedure: quarantine the logs OUTSIDE the data directory.** They were first moved to `data/_aria_quarantine/`, and because MariaDB enumerates every subdirectory of the data directory as a schema, `SHOW DATABASES` then listed `_aria_quarantine` as a phantom database — harmless but wrong, and exactly the kind of thing that later gets counted. They now live in `C:\xampp\mysql\_aria_quarantine\`, one level up and outside the data directory, still moved rather than deleted. |
 | 3 | ~~**`docs/ARCHITECTURE.md` contained four inaccuracies.**~~ **Resolved in session 6.** Line 29's `xss-clean · mongo-sanitize-equivalent` (neither installed) now reads `sanitizeRequest (hand-written)`; the seeders row no longer claims "taxes, grade scale"; the upload row (now line 170) no longer claims a "magic-byte sniff" or "served non-executable" and states the real control plus the limitation; and a `src/services` row was added to the directory map. The request-flow diagram was also rewritten to the verified 11-step order from `createApp()` — it had omitted `cookieParser` and `activityAudit()` and put `hpp` before the body parsers. | Line 169 overstated a *security* control, which is the worst kind of drift. The code was always correct; the doc described something else. | Resolved. `docs/ARCHITECTURE.md` is now 216 lines and every claim in it is either code-backed or explicitly marked as not yet built. |
-| 4 | ~~**`npm test` fails**~~ **Resolved in session 26.** `tests/setup.js` was referenced by `setupFilesAfterEnv` but absent, and jest resolves that path during config normalization — so the run died with a ValidationError before discovering a single test. | None. `npm test` now runs the whole safety net: **5,358 jest tests, exit 0** — 5,162 assertions from the 38 `verify-*.js` suites, each a named test case, plus 196 suite-level and harness-integrity tests. | Done — checklist row 6.17. |
+| 4 | ~~**`npm test` fails**~~ **Resolved in session 26.** `tests/setup.js` was referenced by `setupFilesAfterEnv` but absent, and jest resolves that path during config normalization — so the run died with a ValidationError before discovering a single test. | None. `npm test` runs the whole safety net: **5,550 jest tests, exit 0** (session 27; it was 5,358 when this row was written) — 5,350 assertions from the 38 `verify-*.js` suites, each a named test case, plus five per suite and ten harness-integrity tests. | Done — checklist row 6.17. |
 | 5 | ~~**The `msms_test` database does not exist.**~~ **Resolved in session 26.** Created, migrated and seeded: **64 SRS tables plus `sequelize_meta`**, matching §29 exactly. | None. The jest harness runs every suite against it and proves the target with `SELECT DATABASE()` rather than trusting `DB_NAME`. | Done. **Note the harness does *not* use `NODE_ENV=test`** — see issue 28. |
 | 6 | ~~**`npm run lint` fails** — no ESLint config file exists~~ **Resolved in session 26.** Originally: no config file existed (`.eslintrc*` / `eslint.config.js`), though `eslint ^8.57.1` is installed. Note that several files already carry `// eslint-disable-next-line no-await-in-loop` comments in anticipation. | No lint enforcement. | **Scoped in session 26 and it is a small job, but the register had the target wrong.** `package.json:31` is `"lint": "eslint src tests"` — **`scripts/` is not linted at all** (41 files outside the target). Against `src` + `tests` (222 files) an `eslint:recommended` config on `{ env: {node, es2022}, parserOptions: {ecmaVersion: 2022, sourceType: "script"} }` produces **9 errors**, measured — not estimated — by running eslint with explicit flags. Three settings are load-bearing and each was measured: `sourceType: "script"` with `env.node` (the code is 100% CommonJS; `"module"` without it yields **1,477** errors), `ignoreRestSiblings: true` (4 errors from two deliberate rest-omit destructures that a docblock already explains), and a `tests/**` jest override rather than a global `env.jest` (36 `no-undef` errors otherwise, and a global would let jest globals into `src`). **Do not adopt the rules the existing `eslint-disable` comments name** — the register calls them "in anticipation", and they anticipate an airbnb-base config: enabling `no-await-in-loop`, `global-require` and `class-methods-use-this` takes 9 errors to **56**, adding 47 at sites with no disable comment. **Done. `npm run lint` exits 0.** `.eslintrc.json` is the measured config above, and all nine errors were resolved by fixing the code rather than by relaxing a rule: **seven dead requires** removed (`mailService` in `auth.service.js`, `path` and `env` in `payments.service.js`, `tenantWhere`, `QUESTION_STATUS` and `literal` in `reports.service.js`, and `Grade` from the association destructure in `models/index.js`), and **two deliberate constructs** given a disable comment that states its reason — the control-character class in `sanitize.js`, which is the subject of that rule rather than an accident, and the lazy `require('redis')` in `cache.js`, whose disable comment named `import/no-unresolved`, a rule from a plugin this project does not install, which is itself an ESLint error. Each of the seven was confirmed to appear exactly once outside a comment before removal, and `Grade` was checked further: the model **is** registered and **is** used at six call sites, and does carry `school`/`organization` associations — from the generic tenant loop, not from that destructure, which exists only for explicit ones. `npm test` is unchanged, so no removed require was load-bearing. `verify-deploy.js` part 6 now runs `eslint src tests --max-warnings 0` **in the loop** (2.5s over 222 files) and pins the target string, so "lint passes" cannot quietly become "lint passes over less". Four deliberate regressions, all detected — deleting the config, widening the target, reintroducing one dead require, and downgrading a rule to a warning, which is what `--max-warnings 0` is for. **Still outside the target: `scripts/`** — the 38 verification suites hold **45** errors of their own (22 `no-inner-declarations`, 19 `no-unused-vars`, 4 others) across 25 of 41 files. Measured, not fixed, and the pinned-target assertion is what stops that exclusion being forgotten. |
 | 7 | ~~**`npm start`, `npm run dev` fail**~~ **Resolved.** `src/server.js` exists and `npm start` is verified — a child process bound the port and answered `/api/v1/health` with 200 (`verify-app.js`). `npm run dev` is nodemon wrapping the same entry point; nodemon 3.1.7 is installed and in `node_modules/.bin`, but it was not run here because it never exits. **`npm run worker`, `npm run cron` and `npm run db:backup` still fail** — `src/jobs/` does not exist. | Expected at this phase, not a defect. | Phase 5 for the three remaining entry points. |
@@ -9203,7 +9406,7 @@ count, when in the period to issue, what due date to set and what to do in grace
 | 9 | ~~**`storage/uploads`, `storage/backups`, `storage/tmp` do not exist.**~~ **Resolved.** All four now exist: `logs/`, `uploads/`, `backups/`, `tmp/`. | None. | Done. `upload.js` is now blocked only on #14. |
 | 10 | ~~**The extracted SRS lives in a temp directory.**~~ **Resolved.** It was copied into the project as `docs/SRS-extracted.md` (72,799 bytes — byte-identical in size to `C:/Users/Z/AppData/Local/Temp/srs.md`) together with `docs/extract-srs.py`. The temp copies still exist but no longer matter. | None. The line-number references used during implementation are now version-safe, and the `.docx` remains the source of truth in the project root. | Done. Re-extract with `python docs/extract-srs.py` if the `.docx` is ever revised. |
 | 11 | **`SUPER_ADMIN_PASSWORD` in `backend/.env` is still the `.env.example` value** (`SuperAdmin@123`). The seeder warns in development and hard-refuses to seed with it when `NODE_ENV=production`. | Fine locally; a real deployment blocker by design. | Set a real value before any deployment. |
-| 12 | **The project is not a git repository.** `.gitignore` exists but nothing is version-controlled. **This is an unmet SRS requirement, not a convenience** — §32:1571 is "8. Create Git commit.", inside a list §32:1563 introduces as "The exact daily development workflow specified in the source". The checklist filed it under "not an SRS requirement" until session 26 and now carries it as row **7.14, Not Started**. | No history, no rollback. Session 3's two security fixes are therefore not recoverable from history, and the standing rule that documentation drift be dated from file mtimes exists only because of this absence. | `git init` and commit — which is literally what §32 step 8 says. |
+| 12 | ~~**The project is not a git repository.**~~ **Closed.** The repository exists, on branch `master`, with seven commits all dated 2026-09-09 — see Phase 7 in §4 for what the history does and does not cover. Originally: `.gitignore` exists but nothing is version-controlled. **This is an unmet SRS requirement, not a convenience** — §32:1571 is "8. Create Git commit.", inside a list §32:1563 introduces as "The exact daily development workflow specified in the source". The checklist filed it under "not an SRS requirement" until session 26 and now carries it as row **7.14, Not Started**. | No history, no rollback — for everything written before the first commit. Session 3's two security fixes are still not recoverable from history, and the standing rule that documentation drift be dated from file mtimes still applies to any file whose last change predates 2026-09-09. Work done since is diffable. | Done — `git init` and commit, which is literally what §32 step 8 says. Checklist row 7.14. |
 | 13 | ~~**`TRUST_PROXY` is not in `env.js` or `.env.example`.**~~ **Resolved.** `env.js:82-110` parses it (`trustProxy()`, supporting a hop count, a boolean, or a comma-separated address list), `.env.example:58` documents it, and `app.js:141` now calls `app.set('trust proxy', config.app.trustProxy)` as step 1 of the pipeline — before the rate limiter, which keys on `req.ip`. | None. | Done, including the wiring. |
 | 14 | ~~**No upload allowlists exist.**~~ **Resolved.** `constants.js` now defines `UPLOAD_MIME_EXTENSIONS` (MIME → the extensions it may carry), `UPLOAD_MIME_LIST`, `UPLOAD_PROFILES` / `UPLOAD_PROFILE_LIST` — **six** upload surfaces: `ai_source`, `payment_proof`, `person_photo`, `homework`, `submission`, `student_document` — and `UPLOAD_RULES` (per-surface types and file counts). Derived from what the SRS names — §21/FR-AI-001 is the only clause that enumerates types — and each rule carries its source clause. | None. `upload.js` is written and verified. (Earlier revisions of this file and of the checklist said "five surfaces"; that was a miscount, corrected in session 7.) | Done. |
 | 15 | **`package.json` declares `express ^4.21.1`; the installed version is 4.22.2.** Not a defect — the range permits it — but worth knowing, because session 3 empirically confirmed that `req.query`, `req.params` and `req.body` are all assignable in 4.22.2, which `validate.js` relies on. Express 5 makes `req.query` a getter. | An Express 5 upgrade would break `validate.js`. | Pin or re-verify before any major upgrade. |
@@ -9632,7 +9835,7 @@ The Phase 3.J module (SRS §15.3):
 | File | Purpose |
 |---|---|
 | `globalSetup.js` | Runs all 38 suites serially as child processes before jest evaluates any test file, then writes the parsed results. Proves the target with `SELECT DATABASE()` — `DB_NAME` states an intention, `SELECT DATABASE()` states a fact — and closes its own pool before the loop starts, because a pool left open is one the suites cannot use, and connection exhaustion reaches a suite as "database unreachable", which 19 of them answer by skipping and exiting 0. |
-| `verify.test.js` | Turns the run into named jest cases: one per assertion, carrying the label the suite printed, plus **five per-suite tests** (exited 0, did not time out, printed no FAIL line, ran its database half, ran all N of its assertions) and **six harness-integrity tests**. That is the arithmetic behind the total: 5,162 + (38 × 5) + 6 = **5,358**. Reads the results **synchronously at module scope** — jest builds its test tree by executing the module body, so a `test()` registered from an async callback or a `beforeAll` is never collected, and an `await` here would yield a file with zero tests that reads as "nothing to check". |
+| `verify.test.js` | Turns the run into named jest cases: one per assertion, carrying the label the suite printed, plus **five per-suite tests** (exited 0, did not time out, printed no FAIL line, ran its database half, ran all N of its assertions) and **six harness-integrity tests**. That is the arithmetic behind the total: 5,350 + (38 × 5) + **10** = **5,550**, measured from the session-27 run's own output. The harness-integrity count was **6** when this sentence was written and is now ten — it is counted from the run rather than carried, because it is the one term here that grows without any suite changing. Reads the results **synchronously at module scope** — jest builds its test tree by executing the module body, so a `test()` registered from an async callback or a `beforeAll` is never collected, and an `await` here would yield a file with zero tests that reads as "nothing to check". |
 | `setup.js` | `setupFilesAfterEnv`. Its **absence** was Known Issue #4: jest resolves that path during config normalization and threw before discovering any test. Contains guards, not fixtures — it runs once per test *file*. Asserts the timers are real, because `scripts/lib/settle.js` polls with a real `setTimeout` against a `Date.now()` deadline and would hang under `jest.useFakeTimers()`. |
 | `helpers/suiteRunner.js` | Discovery, spawning and parsing, shared by the harness and the baseline recorder so the two cannot disagree about what a suite's output means. Suites are **spawned, never required**: all 38 call `process.exit()` and none guards on `require.main`. Handles `verify-seed.js`'s `PASS (22)` summary explicitly rather than with a tolerant regex — that one format is the entire 21-line gap between 5,112 printed lines and 5,133 assertions, and a magic constant would absorb the next genuine 21-assertion regression. |
 | `baseline.json` | The recorded per-suite assertion count, written by `scripts/record-baseline.js`. Checked **exactly**, not as a floor. Not gitignored — `.last-run.json` is. |
@@ -10786,66 +10989,133 @@ Session 16 (2026-09-02, same calendar day) opened on that stop and found it alre
 324. Ran **seven** deliberate regressions, all caught on the first pass.
 325. Re-ran the whole loop **serially**: **4,828 / 0 FAIL / 0 SKIP / every script exit 0**.
 
-### Next task — what the backend still owes
+326. Opened session 27 by running the loop first, as the standing rule requires: **5,332 / 0 FAIL /
+     0 SKIP**, matching `tests/baseline.json` exactly. Nothing was stale in the code; §1 and §3 were
+     both stale about it, which is a different problem and is fixed below.
+327. Re-measured the ninety-nine-uncalled-routes queue against the **generated OpenAPI document**
+     rather than by walking `*.routes.js` — 150 mounted, 61 called, 89 not — and confirmed
+     `/subscriptions` as the largest single cluster at fourteen, which is what §2am then closed.
+328. Built `super-admin/subscriptions/[id]` in six files: the record and vocabulary, the six
+     transitions and the renewal, the plan change, the add-ons, the overrides, and the shell.
+     **All fourteen write routes now have a caller**; the measurement ends at 75 of 150.
+329. Added three vocabularies to `subscriptions.service.catalogue()` — `limitTargets`, `limitTypes`,
+     `priceTargets` — because `createOverride`'s schema restricts three of the four override types
+     to lists **no endpoint published**. The limit list is nine, and `GET /plans/catalogue`'s is
+     eight; reusing the plan catalogue would have made the SMS-credits override unwritable.
+330. Moved `PRICE_TARGETS` into `config/constants.js` as `PRICE_OVERRIDE_TARGETS`, now that the
+     schema and the catalogue both read it.
+331. **Wrote the same caller three ways before one of them satisfied the check that exists to catch
+     exactly this.** An interpolated verb, then a literal in a `path` field, then the request itself
+     per action. The coverage measurement is what said the second was no better than the first: 61 →
+     63, where the third gave 75. All three drafts are recorded in the file.
+332. Drove **six** of the fourteen end to end in a browser against the real API, reading each back out
+     of the database: override apply and revoke, pause and resume, add-on purchase and cancel. **Two
+     defects came out of that pass and neither was visible to any assertion** — a select stricter than
+     the API, which disabled every add-on the API would have sold, and an unreachable branch with a
+     comment justifying it from the wrong column. Both in §2am.
+333. Found and fixed a third by reading a dialog back rather than looking at it: `Modal`'s dismiss
+     control already carries the accessible name "Close", so a footer button labelled "Close" gives a
+     dialog two buttons a screen reader cannot tell apart.
+334. Re-recorded `tests/baseline.json` (+18: `verify-frontend` +14, `verify-subscriptions` +4) and
+     re-ran the whole loop: **38 suites, 5,350 assertions, 0 FAIL, 0 SKIP, every script exit 0**;
+     `npm test` 5,550 tests, exit 0.
+335. Re-derived **every** per-suite figure in §1's table from `tests/baseline.json` and found
+     **nineteen stale**, `verify-frontend.js` by 154. They had been green in `npm test` throughout:
+     the harness checks the *checklist* against the baseline and does not check this file.
+336. **Broke §6 doing it, and caught it from the script's own output.** One `re.sub` over
+     ``| `verify-*.js` | N |`` matched §6's **line-count** table as well and rewrote twenty-nine rows
+     with assertion counts. Restored from the printed log, then verified structurally: `git diff`
+     places no hunk after line 4656, and §6 begins at 9492.
 
-**All ninety of the SRS's functional requirements are Completed.** The checklist tracked only
-seventy-nine of them by name; the eleven cross-cutting requirements of §§24–28 were added in session
-26. FR-APIDOC-001 shipped in §2af and FR-DEPLOY-001 — the last one with nothing written — in §2ag.
-Phase 7 now stands at **12 of 13**; the only row left is 7.13, the final SRS re-read, which cannot
-start while Phase 4 is unfinished.
+### Next task — the queue, and what it is measured against
 
-**The work has moved to Phase 4, and that is now the whole of what remains.** §2ah built its
-foundation: `frontend/` scaffolds, builds and typechecks, and the three files every screen depends on
-— `apiClient.ts`, `auth.tsx`, `entitlements.tsx` — are done and verified by `verify-frontend.js`.
-Two of §33's thirty-three screens exist. **Thirty-one do not**, nor do the four role dashboards.
+**All ninety of the SRS's functional requirements are Completed**, and the checklist stands at three
+non-complete rows: **3.S.1** (demo seed data, optional and forbidden to invent), **5.2** (the Anthropic
+adapter's round trip, which needs a key this environment does not have) and **7.13** (the final SRS
+re-read, whose remainder is a decision on each of thirteen `real-blocked` findings plus 5.2).
 
-**Read that with one qualification, which the row itself carries.** FR-DEPLOY-001 is complete *as
-configuration* and has never been **run**. nginx, pm2, mysql and logrotate are absent from this
-machine, so no file was validated by the tool that will consume it; `verify-deploy.js` checks that
-each agrees with the application, which is a different claim and a weaker one. The first real deploy
-is where that gap closes, and the likeliest thing to break there is the backup user's privileges —
+**What is actually left is the work `docs/VERIFICATION.md` sized: write routes the product cannot
+reach.** It found 99 of 142; measured this session against the *generated OpenAPI document* — which is
+what the application mounts, rather than what the route files declare — the figure is now:
+
+> **150 write routes mounted. 75 have a frontend caller. 75 do not.**
+
+Session 27 closed the biggest single cluster, `/subscriptions`, all fourteen of them (§2am). The next
+ones, largest first, with the split `VERIFICATION.md` draws between *buildable* and *needs a decision*:
+
+- **exams (7)** — grade scales, marks entry and submission, exam edit, exam subjects. Buildable: the
+  Exams and Results screens both exist. This is the largest remaining cluster and the one a school
+  actually uses every term.
+- **schools (6)** — edit, delete, activate, suspend, archive, set principal. Buildable, and the shape
+  is the one `planLifecycle.tsx` and §2am's `LifecycleBar` have now both established twice.
+- **ai (6)** — the FR-AI-001 workflow. **Needs a decision**: §33 names no AI screen, and the workflow
+  is a nine-step state machine, not a form.
+- **taxes (5), quotations (5)** — needs a decision, both. §33 names neither.
+- **payments (5), invoices (4), coupons (3)** — buildable; all three screens exist and are read-only.
+- **finance (4), assignments (4), parents (3), classes (2), users (2), roles (2), addons (4)** and the
+  singletons — buildable, mostly one row action each.
+- **sessions (4), school-settings (1), notifications (3)** — needs a decision. Academic sessions is the
+  clearest case in the document: FR-SCHOOL-002 requires create / activate / close, and §33's School
+  list of seventeen names no screen to do it from.
+
+**One of the 75 is a false positive, and knowing why matters more than the one route.** `POST
+/auth/refresh` counts as uncalled because `apiClient.ts:302` reaches it with a raw `fetch` rather than
+through `api.post` — it *is* the refresh mechanism, so it cannot use the client that depends on it.
+The count therefore errs in both directions: a path built from a variable reads as uncalled when it is
+not, and a call made outside the client is invisible. Check a cluster before building it.
+
+Reproduce the measurement rather than trusting this paragraph — it moves with every screen shipped, and
+the script that produced it is six lines over `buildDocument(createApp())` and the `api.<method>('…')`
+literals in `frontend/src`. **Match the API's shape, not just its paths**: §2am found the collector must
+see the literal *at the call*, because a path assembled anywhere else is invisible to
+`verify-frontend.js` too, and the assertion that was supposed to catch an uncalled route would have
+passed while proving nothing.
+
+**Two qualifications carried forward, both still true.**
+
+FR-DEPLOY-001 is complete *as configuration* and has never been **run**. nginx, pm2, mysql and
+logrotate are absent from this machine, so no file was validated by the tool that will consume it;
+`verify-deploy.js` checks that each agrees with the application, which is a different claim and a
+weaker one. The likeliest thing to break at the first real deploy is the backup user's privileges —
 `mysqldump --single-transaction --routines --triggers` needs the global `PROCESS` grant.
 
-FR-SEC-003 is Completed but its two Phase 6 rows (6.3, 6.4) are still In Progress, because XSS
-coverage is spread across seven suites and SQL-injection coverage sits in one.
+FR-SEC-003 is Completed but its two Phase 6 rows (6.3, 6.4) are still In Progress, because XSS coverage
+is spread across seven suites and SQL-injection coverage sits in one.
 
-What is left, in the order it is worth doing:
+And **5.2 — the Anthropic adapter's round trip.** Everything but the network hop is exercised and
+regressed (§2af). When it is attempted, **start with `extract()`'s PDF path**: it calls `pdf-parse`,
+which fails with "Illegal character" on an untouched pdfkit document, and is the likeliest thing to
+break first.
 
-- ~~**A file-serving route.**~~ **Done** (§2ae). `src/utils/fileResponse.js` plus three
-  sub-resources. What it did **not** unblock, and this is worth knowing before picking it up: the two
-  queue jobs still cannot be registered, because `generate_report` and `generate_document` would need
-  somewhere to **write** a rendered Buffer, and this route only **reads** what an upload already
-  stored. Persisting a generated artefact is a separate decision nobody has made — `documents.file_path`
-  and `results.result_card_path` are still null by design, since §22's pattern streams instead.
-- **5.2 — the Anthropic adapter's round trip.** Everything but the network hop is now exercised and
-  regressed (§2af): the prompt, the reply extraction, the JSON recovery, both parse failures, the
-  missing-key refusal. What is left needs a real key and a real request, which this environment does
-  not have — a stub agreeing with itself is not evidence about the service. When it is attempted,
-  **start with `extract()`'s PDF path**: it calls `pdf-parse`, which fails with "Illegal character"
-  on an untouched pdfkit document, and is the likeliest thing to break first.
-- ~~**Scoped suite teardowns.**~~ **Largely done** — `X-Request-Id` tagging landed in part 3 and cut
-  a full loop's residue from 32/25 rows to 13/9. What is left is not a teardown problem:
-  `verify-plans` and `verify-subscriptions` assert *global* database state on purpose, so they
-  must stay serial whatever the teardown does, and the last 13/9 rows come from sweeps driven as
-  functions, whose audit rows carry no run context at all. Row 6.17's jest suite can now run the
-  other thirty-one in parallel.
+Standing practice, with what this session added:
 
-Then Phase 4 (frontend, 0%), the rest of Phase 6, and Phase 7 (deployment, 2/13).
-
-Standing practice, unchanged except where this session added to it:
-
-- **Run the loop serially** (Known Issues #25, largely fixed).
-- **Restart MariaDB as a *tracked* background process.**
+- **Run the loop serially** (Known Issues #25, largely fixed), and **re-record `tests/baseline.json`**
+  when a suite grows — `npm test` asserts each suite's exact count, so a grown suite fails the harness
+  until the baseline is deliberately re-recorded.
+- **Read a per-suite figure out of `tests/baseline.json`, never out of this file.** Session 27 found
+  **nineteen** of §1's thirty-eight cited counts stale, one by 154, and every one of them had been
+  green in `npm test` throughout — the harness checks the *checklist* against the baseline and does not
+  check this file at all.
+- **A sweeping regex over a document with two tables will edit both.** Session 27 re-derived §1's
+  assertion column with one `re.sub` over `| \`verify-*.js\` | N |` and silently rewrote **§6's line
+  counts** with assertion counts, twenty-nine rows of them. Caught because the script printed every
+  change and the second half of the list was obviously wrong. Scope an edit to the section, print what
+  it changed, and read the printout.
+- **Restart MariaDB as a *tracked* background process.** It stopped mid-session again; `mysqld
+  --defaults-file=C:/xampp/mysql/bin/my.ini --standalone` brings it back, and both dev servers must
+  then be restarted because they die with it.
 - **A module suite verifies a module.** §23's dead notification survived two green suites.
 - **Bound anything that can hang**, and give every spawned child a `timeout`.
-- **`includes()` on a label is almost always too weak.** Compare wrapped prose with whitespace
-  squashed on both sides, and everything else literally.
+- **`includes()` on a label is almost always too weak.** Compare wrapped prose with whitespace squashed
+  on both sides, and everything else literally.
 - **Wait on the thing, not on the scheduler.** `settle()` for the trail, `waitUntilIdle()` for the
   queue — anything written after a response needs one.
-- **Run the deliberate regressions, and treat a MISS as a defect in the test, in the fixture, or in
-  the design.** A MISS caused by a thin fixture once turned out to mean a rule had been copied into
-  two places.
-
+- **Run the deliberate regressions, and treat a MISS as a defect in the test, in the fixture, or in the
+  design.** A MISS caused by a thin fixture once turned out to mean a rule had been copied into two
+  places.
+- **A screen may be looser than the API; it may not be tighter.** §2am shipped a select that disabled
+  every add-on the API would have sold, and no assertion could see it — only driving the screen did.
+  Before disabling a control, find the line in the service that refuses it.
 
 ## 8. Log maintenance
 

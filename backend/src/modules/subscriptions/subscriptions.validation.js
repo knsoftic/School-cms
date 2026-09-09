@@ -97,13 +97,19 @@ const {
   MODULE_LIST,
   USAGE_LIMIT_KEYS,
   LIMIT_TYPES,
+  PRICE_OVERRIDE_TARGETS,
 } = require('../../config/constants');
 
 const EVENT_LIST = Object.freeze(Object.values(SUBSCRIPTION_EVENTS));
 const OVERRIDE_TYPE_LIST = Object.freeze(Object.values(OVERRIDE_TYPES));
 
-/** The only price component `subscriptions` carries — see the header. */
-const PRICE_TARGETS = Object.freeze(['cycle_amount']);
+/**
+ * The only price component `subscriptions` carries — see the header.
+ *
+ * Moved to `config/constants.js` once `catalogue()` began publishing it: the schema that refuses
+ * everything else and the endpoint that tells a screen what is accepted must read one list.
+ */
+const PRICE_TARGETS = PRICE_OVERRIDE_TARGETS;
 
 /**
  * A column this module refuses to write, with the reason in the message.

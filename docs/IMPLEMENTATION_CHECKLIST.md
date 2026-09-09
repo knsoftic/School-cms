@@ -47,15 +47,15 @@ every script exit 0, measured as one loop against live MariaDB:
 | `verify-attendance.js` | 82 |
 | `verify-auth-chain.js` | 84 |
 | `verify-auth-module.js` | 237 |
-| `verify-billing.js` | 220 |
-| `verify-deploy.js` | 52 |
+| `verify-billing.js` | 239 |
+| `verify-deploy.js` | 58 |
 | `verify-documents.js` | 133 |
 | `verify-entitlement.js` | 272 |
 | `verify-error-handler.js` | 54 |
 | `verify-exams.js` | 219 |
 | `verify-fees.js` | 174 |
 | `verify-finance.js` | 163 |
-| `verify-frontend.js` | 51 |
+| `verify-frontend.js` | 204 |
 | `verify-homework.js` | 109 |
 | `verify-jobs.js` | 57 |
 | `verify-library.js` | 161 |
@@ -67,18 +67,18 @@ every script exit 0, measured as one loop against live MariaDB:
 | `verify-performance.js` | 16 |
 | `verify-plans.js` | 175 |
 | `verify-platform-modules.js` | 313 |
-| `verify-reports.js` | 106 |
+| `verify-reports.js` | 112 |
 | `verify-school-setup.js` | 168 |
 | `verify-security.js` | 28 |
 | `verify-seed.js` | 22 |
 | `verify-staff.js` | 89 |
 | `verify-students.js` | 136 |
-| `verify-subscriptions.js` | 208 |
+| `verify-subscriptions.js` | 212 |
 | `verify-teachers.js` | 87 |
 | `verify-timetable.js` | 115 |
 | `verify-users-roles.js` | 236 |
 | `verify-validate.js` | 35 |
-| **Total** | **5,162** |
+| **Total** | **5,350** |
 
 Regenerated from `backend/tests/baseline.json`, the manifest `npm test` checks each run
 against. The previous table listed **30** suites totalling **4,613** — stale by 8 suites and
@@ -418,10 +418,10 @@ client cannot hard-code them either, and `PUT /:id/limits` accepts only the eigh
 ### 3.G Subscription Lifecycle — §12
 
 **Complete and verified.** One module, nineteen endpoints, mounted below the authentication boundary in
-`buildApiRouter()` at index 15: `src/modules/subscriptions/` — `subscriptions.routes.js` (304 lines),
-`subscriptions.controller.js` (482), `subscriptions.service.js` (2,608) and
-`subscriptions.validation.js` (596), 3,990 lines in all, the largest module in the project. Covered by
-`scripts/verify-subscriptions.js` — **208 checks, 0 failures, exit 0**: the sixteen Joi schemas
+`buildApiRouter()` at index 15: `src/modules/subscriptions/` — `subscriptions.routes.js` (306 lines),
+`subscriptions.controller.js` (482), `subscriptions.service.js` (2,675) and
+`subscriptions.validation.js` (607), 4,070 lines in all, the largest module in the project. Covered by
+`scripts/verify-subscriptions.js` — **212 checks, 0 failures, exit 0**: the sixteen Joi schemas
 directly, the route table by name and function identity, `runLifecycleSweep()` called directly against
 hand-built fixtures, and the rest over real HTTP against the real database.
 
@@ -636,7 +636,7 @@ because §29/§35 fix the catalogue at 109 permissions and a new route would wan
 |---|---|---|---|---|
 | 4.1 | Responsive dashboard (Next.js + Tailwind) | §3 | Completed | |
 | 4.2 | Auth pages (login, forgot/reset password, verify email) | §7 | Completed | |
-| 4.3 | Super Admin: 16 MVP screens | §33 | Completed | **All sixteen exist and are reachable — fourteen functional, one a dashboard placeholder, and the sixteenth documents a gap in the SRS rather than inventing past it.** *(Reports was counted among the fourteen while running **one** of §22’s seven reports and offering **none** of its three export formats; it now runs all seven and offers all three — see §3.R and the note below.)* §33 lists **Settings** among the sixteen, so the screen and its nav entry are required; but nothing specifies what it contains. The role table (SRS line 96) defers to "global settings (see Section 9)", and §9 defines only 9.1 Dashboard, 9.2 School Management and 9.3 Principal Creation — the cross-reference points at nothing. No platform-scoped settings endpoint exists (`/school-settings` is §14.1, school-scoped, Principal actor, and refuses a platform caller with `SCHOOL_CONTEXT_REQUIRED`), A permission **does** exist and an earlier version of this row said otherwise: `settings.platform.manage` — "Manage global settings", `permissions.js:39` — is one of the fixed 109 and is granted to `super_admin` via `ALL`. The nav now gates on it. It had previously borrowed `schools.view`, which `organization_admin` also holds, so an org admin was shown a link into a **platform** screen; and the false claim was rendered to the signed-in user on the screen itself. The permission was never the gap — the specification is. A form would have had to invent the requirement, the fields **and** an endpoint to save them to. The screen instead states the gap and links to the six places platform configuration genuinely lives (Plans, Modules, Features, Limits, Add-ons, Coupons), following the precedent the Reports screen set: naming an absence beats claiming a capability the system does not have. **The link was previously dead** — the nav pointed at a page that did not exist and returned a bare 404, found by running the app. **The create screens are built too (session 26).** This row previously carried a warning that every "Add"/"New" button pointed at a route that did not exist — eighteen dead links, no create path through the UI at all. All eighteen now exist, each built against its module’s own create schema, with the field set and the required-ness taken from the API rather than chosen. `next build` generates 61 pages (was 43) and `verify-frontend.js` asserts **zero** unresolved internal links. Known Issue 30 is closed. |
+| 4.3 | Super Admin: 16 MVP screens | §33 | Completed | **All sixteen exist and are reachable — fourteen functional, one a dashboard placeholder, and the sixteenth documents a gap in the SRS rather than inventing past it.** *(Reports was counted among the fourteen while running **one** of §22’s seven reports and offering **none** of its three export formats; it now runs all seven and offers all three — see §3.R and the note below.)* §33 lists **Settings** among the sixteen, so the screen and its nav entry are required; but nothing specifies what it contains. The role table (SRS line 96) defers to "global settings (see Section 9)", and §9 defines only 9.1 Dashboard, 9.2 School Management and 9.3 Principal Creation — the cross-reference points at nothing. No platform-scoped settings endpoint exists (`/school-settings` is §14.1, school-scoped, Principal actor, and refuses a platform caller with `SCHOOL_CONTEXT_REQUIRED`), A permission **does** exist and an earlier version of this row said otherwise: `settings.platform.manage` — "Manage global settings", `permissions.js:39` — is one of the fixed 109 and is granted to `super_admin` via `ALL`. The nav now gates on it. It had previously borrowed `schools.view`, which `organization_admin` also holds, so an org admin was shown a link into a **platform** screen; and the false claim was rendered to the signed-in user on the screen itself. The permission was never the gap — the specification is. A form would have had to invent the requirement, the fields **and** an endpoint to save them to. The screen instead states the gap and links to the six places platform configuration genuinely lives (Plans, Modules, Features, Limits, Add-ons, Coupons), following the precedent the Reports screen set: naming an absence beats claiming a capability the system does not have. **The link was previously dead** — the nav pointed at a page that did not exist and returned a bare 404, found by running the app. **The create screens are built too (session 26).** This row previously carried a warning that every "Add"/"New" button pointed at a route that did not exist — eighteen dead links, no create path through the UI at all. All eighteen now exist, each built against its module’s own create schema, with the field set and the required-ness taken from the API rather than chosen. `next build` generates 61 pages (was 43) and `verify-frontend.js` asserts **zero** unresolved internal links. Known Issue 30 is closed. **The subscription detail screen was added after that (session 27), and it is the largest single piece of the ninety-nine-uncalled-routes queue `docs/VERIFICATION.md` sized.** `super-admin/subscriptions/[id]` — four tabs over one record — gives a caller to **all fourteen** of the module's write routes, which had none: FR-SUB-009 through FR-SUB-015 plus §33's three override kinds. Before it, a school could be put on a plan and then never activated, suspended, paused, resumed, cancelled, upgraded, downgraded or renewed from any screen, no add-on could be sold onto a subscription, and no override applied. `verify-frontend.js` now asserts each of the fourteen by method and path (51 → 204 assertions across the session's work and the sessions before it); six of them were additionally driven end to end in a browser against the real API — override apply and revoke, pause and resume, add-on purchase and cancel — and that pass found two defects in the new screen that no assertion had (see IMPLEMENTATION_PROGRESS.md §2am). `next build` generates **63** pages. |
 
 **15 of 16 built** (session 26). Six by hand — the dashboard placeholder and **Schools**, the exemplar — and nine by a workflow following it: Organizations, Principals, Users, Plans, Add-ons, Subscriptions, Invoices, Payments, Coupons. All build, typecheck and pass `verify-frontend.js`.
 
@@ -726,7 +726,7 @@ twenty of the fifty status words; and `pass`/`fail` untoned because `RESULT_OUTC
 
 `frontend/` is scaffolded and **builds** — Next.js 16.3.4 App Router, React 19.2.8, Tailwind 4.3.3,
 TypeScript 5.9.3. `npm run build` and `tsc --noEmit` both pass. Verified by
-`backend/scripts/verify-frontend.js` (190 assertions, 43 deliberate regressions all caught), which
+`backend/scripts/verify-frontend.js` (204 assertions, 43 deliberate regressions all caught), which
 checks the client against the **generated OpenAPI document** rather than a hand-written list, so a
 renamed route fails the suite the same day and names the frontend file still calling the old path.
 

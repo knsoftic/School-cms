@@ -361,6 +361,17 @@ const OVERRIDE_TYPES = Object.freeze({
   PRICE: 'price',
 });
 
+/**
+ * What a `price` override may target — the only price component a `subscriptions` row carries.
+ *
+ * Declared here rather than in `subscriptions.validation.js`, which is where it began, because it
+ * now has two readers: the schema that refuses anything else, and `subscriptions.service.catalogue()`
+ * which publishes the vocabulary so a screen offers exactly what the schema accepts. Two frozen
+ * one-element arrays that must agree is how they come to disagree, and every other vocabulary these
+ * two read is already here.
+ */
+const PRICE_OVERRIDE_TARGETS = Object.freeze(['cycle_amount']);
+
 /* ─────────────────────────────── Billing (SRS §13) ─────────────────────────────── */
 
 /** SRS §13.1 — Invoice Status. */
@@ -910,6 +921,7 @@ module.exports = {
   RENEWAL_MODES,
   SUBSCRIPTION_EVENTS,
   OVERRIDE_TYPES,
+  PRICE_OVERRIDE_TARGETS,
   INVOICE_STATUS,
   PAYMENT_METHODS,
   PAYMENT_METHOD_LIST,

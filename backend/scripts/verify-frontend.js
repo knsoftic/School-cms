@@ -1882,6 +1882,36 @@ const UNREACHABLE = [
   ['PUT', '/plans/:id/modules', 'a plan\'s modules can be chosen (FR-SUB-007)'],
   ['PUT', '/plans/:id/features', 'a plan\'s features can be configured (FR-SUB-007)'],
   ['PUT', '/plans/:id/limits', 'a plan\'s limits can be set (SRS §11.2)'],
+
+  /*
+   * The subscription cluster — fourteen routes, the largest single group with no caller, closed by
+   * `super-admin/subscriptions/[id]`.
+   *
+   * Worth naming as a group for the same reason the plan cluster is: the module was **create-only**
+   * without them. A school could be put on a plan and then never activated, suspended, paused,
+   * resumed, cancelled, upgraded, downgraded or renewed from any screen in the product; no add-on
+   * could be sold onto a subscription, and none of §33's three override kinds could be applied.
+   * That is FR-SUB-009 through FR-SUB-015 — seven requirements — plus §33's SaaS engine.
+   *
+   * Two of the fourteen are reached through a table of per-action senders rather than by a call
+   * written at the point of use. That is deliberate and the file says so: this collector matches
+   * `api.<method>(` followed **immediately** by the literal, so a path assembled anywhere else is
+   * invisible to it however literal it is.
+   */
+  ['PATCH', '/subscriptions/:id', 'a trial and grace period can be configured (FR-SUB-011 / FR-SUB-012)'],
+  ['POST', '/subscriptions/:id/activate', 'a subscription can be activated (FR-SUB-010)'],
+  ['POST', '/subscriptions/:id/suspend', 'a subscription can be suspended (FR-SUB-010)'],
+  ['POST', '/subscriptions/:id/reactivate', 'a subscription can be reactivated (FR-SUB-010)'],
+  ['POST', '/subscriptions/:id/pause', 'a subscription can be paused (FR-SUB-010)'],
+  ['POST', '/subscriptions/:id/resume', 'a paused subscription can be resumed (FR-SUB-010)'],
+  ['POST', '/subscriptions/:id/cancel', 'a subscription can be cancelled (FR-SUB-010)'],
+  ['POST', '/subscriptions/:id/upgrade', 'a school can be upgraded (FR-SUB-013)'],
+  ['POST', '/subscriptions/:id/downgrade', 'a school can be downgraded (FR-SUB-014)'],
+  ['POST', '/subscriptions/:id/renew', 'a subscription can be renewed by hand (FR-SUB-015)'],
+  ['POST', '/subscriptions/:id/addons', 'an add-on can be sold onto a subscription (FR-SUB-009)'],
+  ['POST', '/subscriptions/:id/addons/:id/cancel', 'a purchased add-on can be cancelled (§11.3)'],
+  ['POST', '/subscriptions/:id/overrides', 'a §33 override can be applied'],
+  ['POST', '/subscriptions/:id/overrides/:id/revoke', 'a §33 override can be revoked'],
 ];
 
 for (const [method, path, what] of UNREACHABLE) {

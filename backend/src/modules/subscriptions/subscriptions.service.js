@@ -104,6 +104,9 @@ const {
   PLAN_STATUS,
   LIMIT_TYPES,
   LIMIT_UNITS,
+  LIMIT_LABELS,
+  USAGE_LIMIT_KEYS,
+  PRICE_OVERRIDE_TARGETS,
 } = require('../../config/constants');
 
 const SORTABLE = Object.freeze([
@@ -319,6 +322,32 @@ function catalogue() {
     downgradeTimings: Object.values(DOWNGRADE_TIMING),
     renewalModes: Object.values(RENEWAL_MODES),
     overrideTypes: Object.values(OVERRIDE_TYPES),
+
+    /*
+     * What each override type may *target*, because `createOverride`'s schema restricts three of the
+     * four and no endpoint published the lists it restricts them to.
+     *
+     * The limit list is the reason this exists: it is `USAGE_LIMIT_KEYS`, the eight §11.2 plan limits
+     * **plus** the add-on-only `sms_limit`, and `GET /plans/catalogue` publishes only the eight —
+     * `plan_limits.limit_key` is restricted to those. A screen that reused the plan catalogue here
+     * would silently be unable to write the one override an SMS negotiation needs.
+     *
+     * `module` is absent deliberately: its targets are §11.1's twenty keys, which the frontend
+     * already holds as a copy `verify-frontend.js` asserts against `MODULE_LABELS` in both
+     * directions. Publishing them a second way would be a third copy to keep in step.
+     *
+     * `feature` is absent because it has no list. `plan_features` carries its own `name` and
+     * `module_key` per row — a feature is self-describing and there is no fixed vocabulary anywhere
+     * in §11 or §29 to offer. The schema does not restrict it either, and those two facts are the
+     * same fact.
+     */
+    limitTargets: USAGE_LIMIT_KEYS.map((key) => ({
+      key,
+      label: LIMIT_LABELS[key] || key,
+      unit: LIMIT_UNITS[key] || null,
+    })),
+    limitTypes: Object.values(LIMIT_TYPES),
+    priceTargets: PRICE_OVERRIDE_TARGETS.slice(),
     /* What each operator action is legal from, so the screen can disable rather than guess. */
     transitions: Object.entries(TRANSITIONS).map(([action, spec]) => ({
       action,
