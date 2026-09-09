@@ -3,7 +3,7 @@
 /**
  * The verification loop, as jest test cases. Checklist row 6.17.
  *
- * `tests/globalSetup.js` has already run all 38 suites serially and written `.last-run.json`. This
+ * `tests/globalSetup.js` has already run all 39 suites serially and written `.last-run.json`. This
  * file turns that into named tests: one per suite for the suite-level signals, then **one per
  * assertion**, carrying the label the suite itself printed.
  *
@@ -233,7 +233,7 @@ describe('harness integrity', () => {
     /*
      * Three things must agree here, and the first draft only compared two: it checked
      * `baseline.recordedUnder` against literals typed into this file. Editing `SUITE_ENV` would then
-     * change what all 38 suites actually ran under — a different database, a different application
+     * change what all 39 suites actually ran under — a different database, a different application
      * composition — while this test kept passing, because the two constants it compared still
      * matched each other and neither described the run.
      *
@@ -334,7 +334,7 @@ for (const script of [...results.discovered].sort()) {
       describe('assertions', () => {
         /*
          * A plain loop rather than `test.each`. `test.each` interprets `%s`, `%d` and `$prop` in the
-         * name as format tokens, and these labels are free text written by 38 different suites —
+         * name as format tokens, and these labels are free text written by 39 different suites —
          * several contain `%` and `$`. A mangled test name is a small problem; `test.each` silently
          * shifting its arguments is not.
          */

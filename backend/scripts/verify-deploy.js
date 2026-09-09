@@ -528,8 +528,12 @@ function verifyLint() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'backend', 'package.json'), 'utf8'));
   /*
    * Pinned, because the target is easy to widen by accident and easy to narrow by accident. It is
-   * `src tests` today and **not** `scripts` — the 38 verification suites are outside it and hold 45
-   * errors of their own (22 `no-inner-declarations`, 19 `no-unused-vars`), which is a separate job.
+   * `src tests` today and **not** `scripts` — the 39 verification suites are outside it and hold 46
+   * errors of their own, measured 2026-09-09: 22 `no-inner-declarations`, 19 `no-unused-vars`, 2
+   * `no-useless-escape`, and one each of `no-regex-spaces`, `import/no-dynamic-require` and
+   * `no-irregular-whitespace`. The whole breakdown is recorded rather than the two largest, because
+   * the previous note said "45" and listed 41 of them, and the four it did not name are exactly the
+   * ones that could drift without anyone noticing. Clearing them is a separate job.
    * Recording the exclusion here means "lint passes" cannot be read as "everything is linted".
    */
   check('and the lint target is the one this check measured', pkg.scripts.lint, 'eslint src tests');

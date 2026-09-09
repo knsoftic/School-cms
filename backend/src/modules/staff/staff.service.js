@@ -199,11 +199,38 @@ async function create(req, payload) {
 
   let row;
   try {
-    row = await db.Staff.create({
-      school_id: school.id,
-      organization_id: school.organization_id,
-      ...pickEditable(payload),
-      is_active: payload.is_active !== undefined ? payload.is_active : true,
+    row = await db.sequelize.transaction(async (t) => {
+      /*
+       * The insert is wrapped in a transaction it did not previously have, so the limit check can be
+       * atomic with it — Known Issues #21, and the same shape the students module now uses.
+       *
+       * `enforceLimit` still guards the route and is still worth having: it refuses cheaply and
+       * phrases the refusal for the school. But it is middleware and returns before any write begins, so two
+       * concurrent creates can both pass a ceiling of N. `reserveHeadcount()` locks the `schools` row
+       * and counts under that lock, and must be the transaction's first statement — a plain read
+       * before it would fix the snapshot ahead of the lock and the count would miss the competing row.
+       */
+      /*
+       * Reserved **only when the new row will actually count**.
+       *
+       * The headcount is `is_active: true`, so a row created inactive adds nothing to it and must
+       * not be measured against the ceiling — `verify-staff.js` asserts exactly that, and an
+       * unconditional reservation broke it. The guard is the same predicate
+       * `usageService.HEADCOUNT_SOURCES` counts by, which is the only way the two cannot drift.
+       */
+      if (payload.is_active !== undefined ? payload.is_active : true) {
+        await usageService.reserveHeadcount(school.id, LIMITS.STAFF_LIMIT, 1, t);
+      }
+
+      return db.Staff.create(
+        {
+          school_id: school.id,
+          organization_id: school.organization_id,
+          ...pickEditable(payload),
+          is_active: payload.is_active !== undefined ? payload.is_active : true,
+        },
+        { transaction: t }
+      );
     });
   } catch (err) {
     rethrow(err, payload);

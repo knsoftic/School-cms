@@ -34,7 +34,7 @@ The six legend words are used with these specific meanings, so a row cannot be r
 | `Pending` | Not started |
 | `Needs Fix` | Implemented, but a known defect makes it wrong |
 
-"An executable check" means one of the thirty-eight `backend/scripts/verify-*.js` suites or
+"An executable check" means one of the thirty-nine `backend/scripts/verify-*.js` suites or
 `scripts/check-models.js`. As of **2026-09-03 (session 22)** they total **4,613 assertions, 0 failures, 0 skips**,
 every script exit 0, measured as one loop against live MariaDB:
 
@@ -48,6 +48,7 @@ every script exit 0, measured as one loop against live MariaDB:
 | `verify-auth-chain.js` | 84 |
 | `verify-auth-module.js` | 237 |
 | `verify-billing.js` | 239 |
+| `verify-concurrency.js` | 11 |
 | `verify-deploy.js` | 61 |
 | `verify-documents.js` | 133 |
 | `verify-entitlement.js` | 272 |
@@ -78,7 +79,7 @@ every script exit 0, measured as one loop against live MariaDB:
 | `verify-timetable.js` | 115 |
 | `verify-users-roles.js` | 236 |
 | `verify-validate.js` | 35 |
-| **Total** | **5,429** |
+| **Total** | **5,440** |
 
 Regenerated from `backend/tests/baseline.json`, the manifest `npm test` checks each run
 against. The previous table listed **30** suites totalling **4,613** — stale by 8 suites and
@@ -847,8 +848,13 @@ was never true and never what anyone meant.
 
 Against the legend's own bar for `Completed` — *"the code exists **and** an executable check covers
 it **and** that check passes today"* — all fifteen qualify and did when they were written. Each row's
-Notes name the suite that covers it, all thirty-eight run under `npm test`, and the loop was measured
-at **5,512 assertions, 0 failures, six consecutive serial runs** on 2026-09-09. Rows 6.3 and 6.4
+Notes name the suite that covers it, all thirty-nine run under `npm test`, and the loop was measured
+at **5,440 assertions, 0 failures, 0 skips, every script exit 0** on 2026-09-09, re-recorded into
+`backend/tests/baseline.json` in the same run. **This sentence previously claimed 5,512 assertions over
+six consecutive serial runs, and that figure cannot be reproduced**: the baseline of the moment summed
+to 5,429 across thirty-eight suites, and 5,440 across thirty-nine after `verify-concurrency.js` was
+added. There is no history in this project, so where 5,512 came from is **unknown** and is not guessed
+at here — only that it disagreed with the manifest `npm test` actually checks against. Rows 6.3 and 6.4
 already read `Completed` on identical evidence, which is what made the inconsistency visible.
 
 | # | Requirement | SRS | Status | Notes |

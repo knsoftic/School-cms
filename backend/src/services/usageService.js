@@ -185,9 +185,10 @@ function periodFor(snapshot, limitKey) {
  *
  * @param {number} schoolId
  * @param {string} limitKey
+ * @param {object} [transaction]  counts inside the caller's transaction — see `reserveHeadcount()`
  * @returns {Promise<number>}
  */
-async function countHeadcount(schoolId, limitKey) {
+async function countHeadcount(schoolId, limitKey, transaction) {
   const source = HEADCOUNT_SOURCES[limitKey];
   if (!source) {
     throw new Error(`usageService.countHeadcount(): ${limitKey} is not a headcount limit`);
@@ -199,6 +200,7 @@ async function countHeadcount(schoolId, limitKey) {
   }
 
   const query = { where: { school_id: schoolId, ...source.where } };
+  if (transaction) query.transaction = transaction;
 
   if (source.roleSlugs) {
     query.include = [
@@ -257,7 +259,7 @@ function overageFor(limit, used) {
  *   source: string, periodStart: string|null, periodEnd: string|null, tracked: boolean
  * }>}
  */
-async function getUsage(schoolId, limitKey) {
+async function getUsage(schoolId, limitKey, transaction) {
   entitlementService.assertKnownLimitKeys([limitKey], 'usageService.getUsage');
 
   const snapshot = await entitlementService.getSnapshot(schoolId);
@@ -274,7 +276,7 @@ async function getUsage(schoolId, limitKey) {
     /* Nothing accumulates — see the header. `used` stays 0 and `remaining` is the whole allowance. */
     tracked = false;
   } else if (measurement === MEASUREMENT.HEADCOUNT) {
-    used = await countHeadcount(schoolId, limitKey);
+    used = await countHeadcount(schoolId, limitKey, transaction);
   } else if (period) {
     const row = await findUsageRow(schoolId, limitKey, period.start);
     used = row ? toCount(row.used_value) : 0;
@@ -336,7 +338,7 @@ async function getUsageSummary(schoolId) {
  *   remaining: number|null, unlimited: boolean, wouldOverage: number, overageAllowed: boolean
  * }>}
  */
-async function checkLimit(schoolId, limitKey, increment = 1) {
+async function checkLimit(schoolId, limitKey, increment = 1, transaction) {
   const requested = Number(increment);
   if (!Number.isFinite(requested) || requested < 0) {
     throw new Error(
@@ -344,7 +346,7 @@ async function checkLimit(schoolId, limitKey, increment = 1) {
     );
   }
 
-  const usage = await getUsage(schoolId, limitKey);
+  const usage = await getUsage(schoolId, limitKey, transaction);
 
   const base = {
     limitKey,
@@ -392,8 +394,8 @@ async function checkLimit(schoolId, limitKey, increment = 1) {
  * @returns {Promise<object>} the same result `checkLimit` returns, when permitted
  * @throws {ApiError} 403 PLAN_LIMIT_EXCEEDED
  */
-async function assertWithinLimit(schoolId, limitKey, increment = 1) {
-  const result = await checkLimit(schoolId, limitKey, increment);
+async function assertWithinLimit(schoolId, limitKey, increment = 1, transaction) {
+  const result = await checkLimit(schoolId, limitKey, increment, transaction);
   if (result.allowed) return result;
 
   /*
@@ -623,11 +625,79 @@ async function syncAllSchoolHeadcounts() {
   return { schools: schools.length, synced, failed };
 }
 
+/**
+ * Check a **headcount** limit inside the caller's own transaction, holding a lock that makes the
+ * check and the write that follows it one atomic step — Known Issues #21.
+ *
+ * ## The defect this closes, reproduced before it was written
+ *
+ * `enforceLimit` is express middleware: it counts, decides, and returns, and only then does the
+ * handler open a transaction and write. Two requests can both pass a ceiling of N and leave the
+ * school at N+1. Measured at the service layer against `msms_test` with `student_limit = 1` and
+ * eight concurrent admissions: **eight admitted, eight rows written**, three runs out of three.
+ *
+ * ## Why the lock is on `schools` and not on the subscription
+ *
+ * A previous plan proposed locking the subscription row and justified it with "it is one row per
+ * school", which is false — `subscriptions.school_id` is a **non-unique** index and a school
+ * accumulates cancelled and expired rows beside its live one, so a lock without an `order` and a
+ * state filter can lock a different row in each of two concurrent requests and serialise nothing.
+ *
+ * `schools.id` is the primary key. There is exactly one row, it always exists (the caller is already
+ * scoped to it), and locking it serialises admissions **for that school only** — two schools admitting
+ * at once are unaffected, which is the whole of what this needs to do.
+ *
+ * ## The order of the two statements is load-bearing
+ *
+ * The locking read comes first and the count second, and under InnoDB's REPEATABLE READ that is not
+ * interchangeable. A locking read is a *current* read and does **not** establish the transaction's
+ * consistent snapshot; the first plain `SELECT` does. So taking the lock first means the snapshot is
+ * established after the lock is granted — that is, after any competing transaction has committed —
+ * and the count therefore sees its row. Counting first would fix the snapshot before the lock and
+ * the count would miss exactly the write this exists to see.
+ *
+ * That is also why this must be the **first** thing the caller's transaction does. A plain read
+ * before it establishes the snapshot early and reintroduces the defect silently.
+ *
+ * ## What it does not cover
+ *
+ * `ai_limit` — the fourth racing key — is deliberately out of scope. Its window is an entire LLM
+ * provider round trip, and holding a row lock across a network call to a third party is a worse
+ * failure than the one it fixes. That half needs a reservation row, which is a different design and
+ * is left open in Known Issues #21.
+ *
+ * @param {number} schoolId
+ * @param {string} limitKey   a HEADCOUNT limit; anything else is a programming error
+ * @param {number} increment
+ * @param {object} transaction  the caller's transaction, which must not have read anything yet
+ * @returns {Promise<object>} the same shape `assertWithinLimit` returns
+ */
+async function reserveHeadcount(schoolId, limitKey, increment, transaction) {
+  if (measurementFor(limitKey) !== MEASUREMENT.HEADCOUNT) {
+    throw new Error(
+      `usageService.reserveHeadcount(): ${limitKey} is not a headcount limit`
+    );
+  }
+  if (!transaction) {
+    throw new Error('usageService.reserveHeadcount(): a transaction is required');
+  }
+
+  /*
+   * The serialisation point. `findByPk` with `lock` emits `SELECT … FOR UPDATE`; a school that has
+   * vanished between the request's scoping and here is a 404 the caller already models, so the
+   * absence is left to the write that follows rather than invented here.
+   */
+  await db.School.findByPk(schoolId, { transaction, lock: transaction.LOCK.UPDATE });
+
+  return assertWithinLimit(schoolId, limitKey, increment, transaction);
+}
+
 module.exports = {
   getUsage,
   getUsageSummary,
   checkLimit,
   assertWithinLimit,
+  reserveHeadcount,
   checkPerRequestLimit,
   recordUsage,
   syncHeadcount,

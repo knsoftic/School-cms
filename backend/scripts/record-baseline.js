@@ -112,7 +112,7 @@ async function main() {
   /*
    * `assertions.length === 0` counts as broken.
    *
-   * Without it, a regression in `parseOutput()` produces 38 suites that all exit 0, print no FAIL and
+   * Without it, a regression in `parseOutput()` produces 39 suites that all exit 0, print no FAIL and
    * parse to nothing — and this script would write a baseline of all zeros, against which every
    * future run passes. The shrink gate below catches that on a re-record, but not on a first one,
    * and "the parser stopped working" is exactly the failure that must not be the thing that

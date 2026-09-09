@@ -415,6 +415,23 @@ async function create(req, payload) {
   let row;
   try {
     row = await db.sequelize.transaction(async (t) => {
+      /*
+       * The limit check, **inside this transaction and before anything else reads** — Known Issues
+       * #21.
+       *
+       * `enforceLimit` has already checked on the way in, and that check is still worth having: it
+       * refuses cheaply and phrases the refusal for the school. But it is middleware, it returns
+       * before this transaction exists, and two concurrent admissions can both pass it. Measured
+       * with `student_limit = 1` and eight concurrent admissions: eight were admitted.
+       *
+       * `reserveHeadcount()` locks the `schools` row and counts under that lock, which makes the
+       * check and the insert below one atomic step. It must be first: a plain read before it would
+       * fix this transaction's snapshot ahead of the lock and the count would miss the very row it
+       * exists to see. `allocateStudentId` and `allocateRollNumber` therefore run after it, not
+       * before.
+       */
+      await usageService.reserveHeadcount(school.id, LIMITS.STUDENT_LIMIT, 1, t);
+
       const fields = pickEditable(payload);
       const admissionDate = dateOnly(payload.admission_date);
 

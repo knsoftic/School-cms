@@ -129,7 +129,7 @@ module.exports = async function globalSetup() {
      * The environment the suites actually ran under, recorded rather than assumed.
      *
      * Without this the harness could only compare `baseline.json` against literals written in the
-     * test file, which means editing `SUITE_ENV` would change what all 38 suites run under while
+     * test file, which means editing `SUITE_ENV` would change what all 39 suites run under while
      * every test kept passing — the baseline untouched, the assertion comparing two constants that
      * still matched each other. Writing the live value here lets the test tie the code, the run and
      * the baseline together instead of checking two of them against a third that never moves.
