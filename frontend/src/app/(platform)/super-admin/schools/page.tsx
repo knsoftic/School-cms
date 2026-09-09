@@ -21,6 +21,7 @@
  * one request and short enough to feel immediate.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
@@ -77,7 +78,19 @@ export default function SchoolsPage() {
 
   const columns = useMemo<Column<School>[]>(
     () => [
-      { key: 'name', header: 'School', cell: (row) => <span className="font-medium">{row.name}</span> },
+      {
+        key: 'name',
+        header: 'School',
+        /* The way into the school's own screen — its details, its status and its Principal. */
+        cell: (row) => (
+          <Link
+            href={`/super-admin/schools/${row.id}`}
+            className="font-medium underline-offset-2 hover:underline focus-visible:underline"
+          >
+            {row.name}
+          </Link>
+        ),
+      },
       { key: 'code', header: 'Code', cell: (row) => <code className="text-xs text-muted">{row.code}</code> },
       { key: 'city', header: 'City', cell: (row) => row.city ?? <span className="text-muted-soft">—</span> },
       { key: 'email', header: 'Email', cell: (row) => row.email ?? <span className="text-muted-soft">—</span> },

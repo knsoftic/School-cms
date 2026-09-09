@@ -26,6 +26,7 @@
  * screen that appeared to choose its own school would misrepresent where the boundary is.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { api } from '@/lib/apiClient';
@@ -231,7 +232,20 @@ export default function ExamsPage() {
       {
         key: 'name',
         header: 'Exam',
-        cell: (row) => <span className="font-medium">{row.name}</span>,
+        /*
+         * The way into the exam's own screen, where its papers are configured and its marks are
+         * entered. The name is the link rather than a trailing "View" column, for the reason the
+         * Students list gives: a row whose most identifying cell is not clickable teaches people to
+         * hunt for an action column.
+         */
+        cell: (row) => (
+          <Link
+            href={`/school/exams/${row.id}`}
+            className="font-medium underline-offset-2 hover:underline focus-visible:underline"
+          >
+            {row.name}
+          </Link>
+        ),
       },
       {
         key: 'exam_type',
@@ -399,14 +413,26 @@ export default function ExamsPage() {
            * from the database on the request itself, so forcing this button into existence would
            * still meet a 403 from `requirePermission`.
            */
-          can('exams.manage') ? (
-            <a
-              href="/school/exams/new"
-              className="btn btn-primary"
-            >
-              Add exam
-            </a>
-          ) : null
+          <div className="flex gap-2">
+            {/*
+              * Grade scales are school-wide rather than per exam — `exams.grade_scale` is a name
+              * pointing at a set of bands several exams share — so the screen is reached from here
+              * rather than being a tab on one exam. Gated on the same key as its two routes.
+              */}
+            {can('exams.manage') ? (
+              <Link href="/school/exams/grade-scales" className="btn btn-secondary">
+                Grade scales
+              </Link>
+            ) : null}
+            {can('exams.manage') ? (
+              <a
+                href="/school/exams/new"
+                className="btn btn-primary"
+              >
+                Add exam
+              </a>
+            ) : null}
+          </div>
         }
       />
 

@@ -1912,6 +1912,52 @@ const UNREACHABLE = [
   ['POST', '/subscriptions/:id/addons/:id/cancel', 'a purchased add-on can be cancelled (§11.3)'],
   ['POST', '/subscriptions/:id/overrides', 'a §33 override can be applied'],
   ['POST', '/subscriptions/:id/overrides/:id/revoke', 'a §33 override can be revoked'],
+
+  /*
+   * The exam cluster — seven routes, closed by `school/exams/[id]` and `school/exams/grade-scales`.
+   *
+   * §19 was reachable only at its two ends: an exam could be created, and its results could be
+   * calculated and published. Everything between — the papers it examines and the marks on them —
+   * had no caller, so FR-EXAM-002 (a teacher entering marks) could not be performed from the
+   * product at all, and FR-EXAM-003's calculation had nothing to calculate from.
+   */
+  ['PATCH', '/exams/:id', 'an exam can be corrected (§19.1)'],
+  ['POST', '/exams/:id/subjects', 'a paper can be added to an exam (§19.1)'],
+  ['PATCH', '/exams/:id/subjects/:id', 'a paper can be corrected (§19.1)'],
+  ['POST', '/exams/marks', 'a teacher can enter marks (FR-EXAM-002)'],
+  ['POST', '/exams/marks/submit', 'the marks on a paper can be submitted (§19.2)'],
+  ['POST', '/exams/grade-scales', 'a grade band can be defined (§19.1)'],
+  ['PATCH', '/exams/grade-scales/:id', 'a grade band can be corrected (§19.1)'],
+
+  /*
+   * The school cluster — six routes, closed by `super-admin/schools/[id]`.
+   *
+   * §33 names Schools and the screen existed as a **directory**: a school could be created and then
+   * never corrected, suspended, archived, deleted, or given the Principal FR-SADMIN-007 requires.
+   * Four different permission keys guard the six, which is why the screen gates each control on its
+   * own rather than on one flag.
+   */
+  ['PATCH', '/schools/:id', 'a school can be corrected (FR-SADMIN-003)'],
+  ['POST', '/schools/:id/activate', 'a school can be activated (FR-SADMIN-005)'],
+  ['POST', '/schools/:id/suspend', 'a school can be suspended (FR-SADMIN-005)'],
+  ['POST', '/schools/:id/archive', 'a school can be archived (FR-SADMIN-006)'],
+  ['DELETE', '/schools/:id', 'a school can be deleted (FR-SADMIN-006)'],
+  ['PUT', '/schools/:id/principal', 'a Principal can be assigned to a school (FR-SADMIN-007)'],
+
+  /*
+   * §13's invoice actions, closed on the Invoices list screen, plus the coupon preview.
+   *
+   * `POST /coupons/validate` is the interesting one. `docs/VERIFICATION.md` classified it as
+   * *deliberately* uncalled — "a checkout-time call and there is no checkout screen" — which was
+   * right about the absence and wrong about the conclusion: the apply-coupon dialog is that moment,
+   * and the invoice row carries every field the endpoint needs. What it adds is the figure, which
+   * `POST /:id/coupon` will not give you without committing first.
+   */
+  ['POST', '/invoices/:id/finalise', 'a draft invoice can be issued (FR-BILL-001)'],
+  ['POST', '/invoices/:id/cancel', 'an invoice can be cancelled (§13.1)'],
+  ['POST', '/invoices/:id/coupon', 'a coupon can be applied to an invoice (§13.3)'],
+  ['DELETE', '/invoices/:id/coupon', 'a coupon can be taken off an invoice (§13.3)'],
+  ['POST', '/coupons/validate', 'a coupon can be checked before it is applied (FR-BILL-005)'],
 ];
 
 for (const [method, path, what] of UNREACHABLE) {
