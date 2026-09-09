@@ -39,6 +39,7 @@
  * and removing it would make a lowered page size silently truncate the catalogue.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
@@ -157,14 +158,21 @@ export default function AddonsPage() {
         header: 'Add-on',
         primary: true,
         /*
-         * Plain text, not a link.
-         *
-         * This linked to `/super-admin/addons/{id}`, and that route does not exist — the screen's only
-         * affordance landed on the not-found page. FR-SUB-009's two actions are `POST /:id/activate`
-         * and `POST /:id/deactivate`, so they are offered on the row itself rather than behind a
-         * detail page nobody has built: one click instead of two, and no dead URL.
+         * A link again — and the history is worth keeping, because it is the reason the link is
+         * safe now. This linked to `/super-admin/addons/{id}` when no such route existed, so the
+         * screen's only affordance landed on the not-found page; the link was removed and the two
+         * FR-SUB-009 actions were put on the row instead, which is still where they are. The detail
+         * screen now exists and carries the two things a row action cannot: the editable fields and
+         * the price set. On-sale and off-sale stay here.
          */
-        cell: (row) => <span className="font-medium">{row.name}</span>,
+        cell: (row) => (
+          <Link
+            href={`/super-admin/addons/${row.id}`}
+            className="font-medium underline-offset-2 hover:underline focus-visible:underline"
+          >
+            {row.name}
+          </Link>
+        ),
       },
       {
         key: 'key',
@@ -394,10 +402,19 @@ function SaleDialog({
     setBusy(true);
     setFailure(null);
     try {
-      await api.post(
-        `/addons/${addon.id}/${takingOff ? 'deactivate' : 'activate'}`,
-        takingOff ? { reason: reason.trim() || undefined } : {}
-      );
+      /*
+       * Two calls, not one path with the verb interpolated into it.
+       *
+       * The interpolated form worked and was **invisible to `verify-frontend.js`**, which collects
+       * `api.<method>(` followed immediately by a path literal — so both routes reported as having
+       * no caller for as long as this dialog has existed. Fourth occurrence of the same blind spot
+       * in this product; the first is recorded in `subscriptions/[id]/lifecycle.tsx`.
+       */
+      if (takingOff) {
+        await api.post(`/addons/${addon.id}/deactivate`, { reason: reason.trim() || undefined });
+      } else {
+        await api.post(`/addons/${addon.id}/activate`, {});
+      }
       success(takingOff ? `${addon.name} taken off sale` : `${addon.name} put on sale`);
       onDone();
     } catch (caught) {

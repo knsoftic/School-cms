@@ -344,13 +344,24 @@ function RecordEntryDialog({
     setFieldErrors({});
 
     try {
-      await api.post(`/finance/${kind}`, {
+      /*
+       * The two ledgers are two calls rather than one interpolated path, for the reason the add-ons
+       * dialog now records: `verify-frontend.js` looks for the literal **at** the call, so
+       * `/finance/${kind}` left both §18 create routes reporting as uncalled while this form was
+       * creating rows with them.
+       */
+      const body = {
         title: title.trim(),
         amount,
         [isIncome ? 'income_date' : 'expense_date']: date,
         category: entryCategory,
         description: description.trim() || undefined,
-      });
+      };
+      if (isIncome) {
+        await api.post('/finance/incomes', body);
+      } else {
+        await api.post('/finance/expenses', body);
+      }
       success(isIncome ? 'Income recorded' : 'Expense recorded');
       onRecorded();
     } catch (caught) {

@@ -43,6 +43,7 @@
  * would therefore assert a currency the coupon does not have — the cap is shown as a bare figure.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
@@ -181,7 +182,15 @@ export default function CouponsPage() {
       {
         key: 'code',
         header: 'Code',
-        cell: (row) => <code className="text-xs font-medium">{row.code}</code>,
+        /* The way into the coupon's own screen, where it can be corrected or removed. */
+        cell: (row) => (
+          <Link
+            href={`/super-admin/coupons/${row.id}`}
+            className="underline-offset-2 hover:underline focus-visible:underline"
+          >
+            <code className="text-xs font-medium">{row.code}</code>
+          </Link>
+        ),
       },
       {
         key: 'name',

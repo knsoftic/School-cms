@@ -40,9 +40,13 @@
 
 import { useMemo, useState } from 'react';
 
+import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
-import { FilterBar, FilterSelect } from '@/components/form';
+import { EditDialog } from '@/components/editDialog';
+import { FilterBar, FilterSelect, Notice } from '@/components/form';
+import { Modal } from '@/components/overlay';
+import { useToast } from '@/components/toast';
 import {
   Column,
   DataTable,
@@ -98,6 +102,22 @@ type ActiveFilter = '' | 'true' | 'false';
 
 export default function ClassesPage() {
   const { can } = useAuth();
+  const { success } = useToast();
+
+  /*
+   * Editing and removing a class — `PATCH /classes/:id` and `DELETE /classes/:id`, neither of which
+   * had a caller. A class could be created and then never renamed, re-capped, given a class teacher
+   * or retired, and one created by mistake stayed for good.
+   *
+   * `academic_session_id` and `class_teacher_id` are accepted by the schema and are **not offered**.
+   * Both take a numeric id, and a control that asks a school administrator to type `17` is worse
+   * than no control; the session picker in particular belongs with the sessions screen §33 does not
+   * name. Recorded rather than guessed at — see the log's §7 brief.
+   */
+  const [editing, setEditing] = useState<SchoolClass | null>(null);
+  const [removing, setRemoving] = useState<SchoolClass | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const [page, setPage] = useState(1);
   const [active, setActive] = useState<ActiveFilter>('');
@@ -234,9 +254,63 @@ export default function ClassesPage() {
         header: 'Status',
         cell: (row) => <StatusBadge status={row.is_active ? 'active' : 'inactive'} />,
       },
+      ...(can('classes.manage')
+        ? [
+            {
+              key: 'actions',
+              header: 'Actions',
+              cell: (row: SchoolClass) => (
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => setEditing(row)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger-ghost"
+                    onClick={() => {
+                      setRemoving(row);
+                      setRemoveError(null);
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              ),
+            } as Column<SchoolClass>,
+          ]
+        : []),
     ],
-    []
+    [can]
   );
+
+  async function remove() {
+    if (!removing || removeBusy) return;
+    setRemoveBusy(true);
+    setRemoveError(null);
+    try {
+      await api.delete(`/classes/${removing.id}`);
+      success(`${removing.name} deleted`);
+      setRemoving(null);
+      reload();
+    } catch (caught) {
+      /*
+       * The refusal worth reading here is the one about students: a class holding enrolments cannot
+       * be deleted, and the API says so with the count. That is actionable — move or promote them
+       * first — and it is the answer to "why can I not delete this?", so it stays in the dialog.
+       */
+      setRemoveError(
+        caught instanceof ApiError
+          ? caught.message
+          : 'Could not reach the server. Check your connection and try again.'
+      );
+    } finally {
+      setRemoveBusy(false);
+    }
+  }
 
   return (
     <div>
@@ -309,6 +383,87 @@ export default function ClassesPage() {
           {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
         </>
       )}
+
+      <EditDialog
+        row={editing}
+        title={editing ? `Edit ${editing.name}` : ''}
+        description="What the class is called, where it sits in the order, and how many students it holds."
+        success="Class updated"
+        onClose={() => setEditing(null)}
+        onSaved={reload}
+        save={(row, body) => api.patch(`/classes/${row.id}`, body)}
+        initial={(row) => ({
+          name: row.name,
+          code: row.code ?? '',
+          numeric_order: String(row.numeric_order),
+          capacity: row.capacity === null ? '' : String(row.capacity),
+          is_active: row.is_active,
+        })}
+        fields={[
+          { name: 'name', label: 'Name', required: true },
+          {
+            name: 'code',
+            label: 'Code',
+            nullable: true,
+            hint: 'Short form used on reports. Optional.',
+          },
+          {
+            name: 'numeric_order',
+            label: 'Order',
+            kind: 'number',
+            min: 0,
+            hint: 'Where this class sits in the sequence — 1 before 2. Promotion reads it.',
+          },
+          {
+            name: 'capacity',
+            label: 'Capacity',
+            kind: 'number',
+            min: 0,
+            nullable: true,
+            hint: 'Blank for no ceiling. Admission does not enforce it; the plan’s student limit does.',
+          },
+          {
+            name: 'is_active',
+            kind: 'checkbox',
+            label: 'Active',
+            hint: 'A retired class keeps its students and its history and stops being offered.',
+          },
+        ]}
+      />
+
+      <Modal
+        open={removing !== null}
+        onClose={() => {
+          if (!removeBusy) setRemoving(null);
+        }}
+        title={`Delete ${removing ? removing.name : 'this class'}?`}
+        description="Its sections go with it. A class that still has students enrolled cannot be deleted — move or promote them first, and the API will say so if any remain."
+        size="sm"
+        busy={removeBusy}
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={removeBusy}
+              onClick={() => setRemoving(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={removeBusy}
+              aria-busy={removeBusy}
+              onClick={() => void remove()}
+            >
+              {removeBusy ? 'Deleting…' : 'Delete class'}
+            </button>
+          </>
+        }
+      >
+        {removeError ? <Notice tone="error">{removeError}</Notice> : null}
+      </Modal>
     </div>
   );
 }

@@ -38,7 +38,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
+import { api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { EditDialog } from '@/components/editDialog';
 import { useCollection } from '@/lib/useCollection';
 import {
   SearchField,
@@ -132,6 +134,17 @@ export default function OrganizationsPage() {
     query
   );
 
+  /*
+   * Editing an organization — `PATCH /organizations/:id`, which had no caller. FR-SADMIN-002 creates
+   * one; nothing could correct it afterwards, so a typo in the name or a changed contact address was
+   * permanent.
+   *
+   * `notes` is accepted by the schema and is not offered: `GET /organizations` does not return it, so
+   * the dialog would open with the field blank and saving would **erase** whatever was there. A field
+   * that silently destroys data it cannot show is worse than a missing field.
+   */
+  const [editing, setEditing] = useState<Organization | null>(null);
+
   const columns = useMemo<Column<Organization>[]>(
     () => [
       {
@@ -178,8 +191,21 @@ export default function OrganizationsPage() {
           );
         },
       },
+      ...(can('organizations.manage')
+        ? [
+            {
+              key: 'actions',
+              header: 'Actions',
+              cell: (row: Organization) => (
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setEditing(row)}>
+                  Edit
+                </button>
+              ),
+            } as Column<Organization>,
+          ]
+        : []),
     ],
-    []
+    [can]
   );
 
   return (
@@ -277,6 +303,49 @@ export default function OrganizationsPage() {
           {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
         </>
       )}
+
+      <EditDialog
+        row={editing}
+        title={editing ? `Edit ${editing.name}` : ''}
+        description="The organization's own record. Its schools, and their status, are managed on the Schools screen."
+        success="Organization updated"
+        onClose={() => setEditing(null)}
+        onSaved={reload}
+        save={(row, body) => api.patch(`/organizations/${row.id}`, body)}
+        initial={(row) => ({
+          name: row.name,
+          code: row.code,
+          email: row.email ?? '',
+          phone: row.phone ?? '',
+          website: row.website ?? '',
+          status: row.status,
+        })}
+        fields={[
+          { name: 'name', label: 'Name', required: true },
+          {
+            name: 'code',
+            label: 'Code',
+            required: true,
+            hint: 'Unique across the platform. Nothing that already refers to this organization does so by code.',
+          },
+          { name: 'email', label: 'Email', kind: 'email', nullable: true },
+          { name: 'phone', label: 'Phone', kind: 'tel', nullable: true },
+          {
+            name: 'website',
+            label: 'Website',
+            nullable: true,
+            hint: 'Must carry its scheme — http:// or https://. The API refuses anything else.',
+          },
+          {
+            name: 'status',
+            label: 'Status',
+            kind: 'select',
+            required: true,
+            options: STATUSES.map((value) => ({ value, label: value })),
+            hint: 'Suspending an organization does not suspend its schools; each school carries its own status.',
+          },
+        ]}
+      />
     </div>
   );
 }

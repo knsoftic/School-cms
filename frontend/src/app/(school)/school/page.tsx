@@ -34,6 +34,15 @@ export default function SchoolDashboard() {
     { href: '/school/exams', label: 'Exams', permission: 'exams.view', module: 'exams' },
     { href: '/school/classes', label: 'Classes', permission: 'classes.view', module: null },
     { href: '/school/teachers', label: 'Teachers', permission: 'teachers.view', module: 'teachers' },
+    /*
+     * School settings and academic sessions — FR-SCHOOL-001 and FR-SCHOOL-002.
+     *
+     * Reached from here rather than from the sidebar, deliberately. §33 fixes the School nav at
+     * seventeen entries and `verify-frontend.js` asserts that count in both directions, so an
+     * eighteenth would be this product adding a screen to a list the source defines. The two
+     * requirements are real and their routes now have a caller; the nav is not the place to say so.
+     */
+    { href: '/school/settings', label: 'School settings', permission: 'school.settings.view', module: null },
   ].filter(
     (item) => can(item.permission) && (item.module === null || hasModule(item.module))
   );

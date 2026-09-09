@@ -1575,7 +1575,8 @@ const CREATE_PAGES = sourceFiles(APP).filter(
 );
 
 check('every create screen is found where the audit said they were',
-  CREATE_PAGES.length, 18);
+  /* 18 when the audit was written; the nineteenth is `payments/new`, FR-BILL-002 and FR-BILL-003. */
+  CREATE_PAGES.length, 19);
 
 /*
  * The required marker is a red asterisk on screen and the word "(required)" to a screen reader.
@@ -1958,6 +1959,57 @@ const UNREACHABLE = [
   ['POST', '/invoices/:id/coupon', 'a coupon can be applied to an invoice (§13.3)'],
   ['DELETE', '/invoices/:id/coupon', 'a coupon can be taken off an invoice (§13.3)'],
   ['POST', '/coupons/validate', 'a coupon can be checked before it is applied (FR-BILL-005)'],
+
+  /*
+   * The rest of §13's money, and §13.3's catalogue.
+   *
+   * `POST /payments/:id/approve` and `/reject` are in this list even though the review dialog has
+   * called them since it was written: it built **one** URL from the decision, which this collector
+   * cannot see, so both FR-BILL-004 routes reported as uncalled for as long as the screen existed.
+   * That is the same blind spot the subscription lifecycle recorded, found here a second time — the
+   * two calls are now written out.
+   */
+  ['POST', '/payments/record', 'the platform can record a payment (FR-BILL-002)'],
+  ['POST', '/payments', 'a manual payment can be submitted with proof (FR-BILL-003)'],
+  ['POST', '/payments/:id/approve', 'a submitted payment can be approved (FR-BILL-004)'],
+  ['POST', '/payments/:id/reject', 'a submitted payment can be rejected (FR-BILL-004)'],
+  ['POST', '/payments/:id/refunds', 'a refund can be raised against a payment (§33)'],
+  ['PATCH', '/coupons/:id', 'a coupon can be corrected (§13.3)'],
+  ['DELETE', '/coupons/:id', 'an unredeemed coupon can be deleted (§13.3)'],
+
+  /*
+   * The add-on catalogue, and two routes that were being called all along.
+   *
+   * `POST /addons/:id/activate` and `/deactivate` are listed because the on-sale dialog built one
+   * path from a ternary — the fourth occurrence of that blind spot, after the subscription
+   * lifecycle, the plan change and the payment review. `PUT /:id/prices` is the consequential new
+   * one: every add-on in this product had **zero** prices, so nothing could be sold, only granted.
+   */
+  ['PATCH', '/addons/:id', 'an add-on can be corrected (§11.3)'],
+  ['POST', '/addons/:id/activate', 'an add-on can be put on sale (FR-SUB-009)'],
+  ['POST', '/addons/:id/deactivate', 'an add-on can be taken off sale (FR-SUB-009)'],
+  ['PUT', '/addons/:id/prices', 'an add-on can be priced (§11.3)'],
+
+  /*
+   * §14's two clusters, which `docs/VERIFICATION.md` filed under *needs a decision* because §33's
+   * School list of seventeen names neither screen. That is a fact about the screen list and not
+   * about the requirements: FR-SCHOOL-001 enumerates ten settings and FR-SCHOOL-002 requires create,
+   * activate and close. Both were `Tested` against an API nothing could reach.
+   */
+  ['PATCH', '/school-settings', 'a school can configure itself (FR-SCHOOL-001)'],
+  ['POST', '/sessions', 'an academic session can be created (FR-SCHOOL-002)'],
+  ['PATCH', '/sessions/:id', 'an academic session can be corrected (FR-SCHOOL-002)'],
+  ['POST', '/sessions/:id/activate', 'an academic session can be made current (FR-SCHOOL-002)'],
+  ['POST', '/sessions/:id/close', 'an academic session can be closed (FR-SCHOOL-002)'],
+
+  /* §18's two ledgers, likewise called through an interpolated path until now. */
+  ['POST', '/finance/incomes', 'income can be recorded (FR-FIN-001)'],
+  ['POST', '/finance/expenses', 'an expense can be recorded (FR-FIN-001)'],
+
+  /* The simple edits — one route each, on the list screen that already shows the row. */
+  ['PATCH', '/organizations/:id', 'an organization can be corrected (§9.1)'],
+  ['PATCH', '/classes/:id', 'a class can be corrected (§14.3)'],
+  ['DELETE', '/classes/:id', 'an empty class can be removed (§14.3)'],
 ];
 
 for (const [method, path, what] of UNREACHABLE) {

@@ -47,6 +47,7 @@
  * finance record must not have. The month is spelled, so nothing depends on reading 03/04 correctly.
  */
 
+import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
@@ -136,6 +137,21 @@ export default function PaymentsPage() {
   /** The payment open in the review dialog, or `null`. */
   const [reviewing, setReviewing] = useState<Payment | null>(null);
 
+  /*
+   * The refund, which is a separate operation on a payment that has already been approved — §33's
+   * Refunds, `POST /payments/:id/refunds`, which had no caller.
+   *
+   * Its own state rather than a mode of the review dialog: reviewing decides whether money was
+   * received, refunding gives money back, and they apply to payments in different states. Sharing a
+   * dialog would mean one set of copy trying to say both.
+   */
+  const [refunding, setRefunding] = useState<Payment | null>(null);
+  const [refundAmount, setRefundAmount] = useState('');
+  const [refundDestination, setRefundDestination] = useState('original_method');
+  const [refundReason, setRefundReason] = useState('');
+  const [refundBusy, setRefundBusy] = useState(false);
+  const [refundError, setRefundError] = useState<string | null>(null);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebounced(search);
@@ -172,6 +188,42 @@ export default function PaymentsPage() {
     },
     [success, reload]
   );
+
+  /** `refunds.manage` — its own key, held by super_admin alone in the seeded catalogue. */
+  const canRefund = can('refunds.manage');
+
+  function askRefund(row: Payment) {
+    setRefunding(row);
+    /* Blank means "all of it": the service defaults to the whole refundable balance. */
+    setRefundAmount('');
+    setRefundDestination('original_method');
+    setRefundReason('');
+    setRefundError(null);
+  }
+
+  async function submitRefund() {
+    if (!refunding || refundBusy) return;
+    setRefundBusy(true);
+    setRefundError(null);
+    try {
+      const body: Record<string, unknown> = { destination: refundDestination };
+      if (refundAmount.trim()) body.amount = refundAmount.trim();
+      if (refundReason.trim()) body.reason = refundReason.trim();
+
+      await api.post(`/payments/${refunding.id}/refunds`, body);
+      success(`Refund raised against ${refunding.payment_number}`);
+      setRefunding(null);
+      reload();
+    } catch (caught) {
+      setRefundError(
+        caught instanceof ApiError
+          ? caught.message
+          : 'Could not reach the server. Check your connection and try again.'
+      );
+    } finally {
+      setRefundBusy(false);
+    }
+  }
 
   const columns = useMemo<Column<Payment>[]>(() => {
     const base: Column<Payment>[] = [
@@ -250,27 +302,44 @@ export default function PaymentsPage() {
       },
     ];
 
-    if (!canReview) return base;
+    if (!canReview && !canRefund) return base;
 
     return [
       ...base,
       {
         key: 'review',
         header: 'Review',
-        cell: (row) =>
-          /* Only `pending` is reviewable — the service answers anything else with a 409
-             `PAYMENT_NOT_PENDING`, so offering the button on a settled row would promise a refusal. */
-          row.status === 'pending' ? (
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setReviewing(row)}>
-              <Icon name="check-circle" size={14} />
-              Review
-            </button>
-          ) : (
-            <span className="text-muted-soft">—</span>
-          ),
+        cell: (row) => (
+          <div className="flex flex-wrap gap-1">
+            {/* Only `pending` is reviewable — the service answers anything else with a 409
+                `PAYMENT_NOT_PENDING`, so offering the button on a settled row would promise a
+                refusal. */}
+            {canReview && row.status === 'pending' ? (
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setReviewing(row)}>
+                <Icon name="check-circle" size={14} />
+                Review
+              </button>
+            ) : null}
+            {/*
+              * Only money actually received can be given back. `RECEIVED_STATUSES` is what the
+              * service checks, and `partially_refunded` is in it: a payment refunded in part can be
+              * refunded again up to what is left, which is why it is offered here and not only on
+              * `approved`.
+              */}
+            {canRefund && (row.status === 'approved' || row.status === 'partially_refunded') ? (
+              <button type="button" className="btn btn-danger-ghost btn-sm" onClick={() => askRefund(row)}>
+                Refund
+              </button>
+            ) : null}
+            {(canReview && row.status === 'pending') ||
+            (canRefund && (row.status === 'approved' || row.status === 'partially_refunded')) ? null : (
+              <span className="text-muted-soft">—</span>
+            )}
+          </div>
+        ),
       },
     ];
-  }, [canReview, nameFor]);
+  }, [canReview, canRefund, nameFor]);
 
   const filtered = Boolean(debounced || status || method || schoolId);
   const clearFilters = () => {
@@ -288,19 +357,30 @@ export default function PaymentsPage() {
         title="Payments"
         description="Every payment recorded or submitted across the platform, newest first."
         action={
-          canReview && status !== 'pending' ? (
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => {
-                setStatus('pending');
-                setPage(1);
-              }}
-            >
-              <Icon name="clock" size={14} />
-              Awaiting review
-            </button>
-          ) : null
+          <div className="flex gap-2">
+            {canReview && status !== 'pending' ? (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  setStatus('pending');
+                  setPage(1);
+                }}
+              >
+                <Icon name="clock" size={14} />
+                Awaiting review
+              </button>
+            ) : null}
+            {/*
+              * FR-BILL-002 and FR-BILL-003 both land here, and the screen behind this link decides
+              * which by what the account can do. Shown if either key is held rather than both.
+              */}
+            {can('payments.record') || can('payments.submit') ? (
+              <Link href="/super-admin/payments/new" className="btn btn-primary btn-sm">
+                Record a payment
+              </Link>
+            ) : null}
+          </div>
         }
       />
 
@@ -436,6 +516,104 @@ export default function PaymentsPage() {
         onDone={onReviewed}
         onFailed={errorToast}
       />
+
+      <Modal
+        open={refunding !== null}
+        onClose={() => {
+          if (!refundBusy) setRefunding(null);
+        }}
+        title={`Refund ${refunding ? refunding.payment_number : 'this payment'}?`}
+        description="Money already received is given back. A refund is a record of its own — the payment stays, and its status becomes refunded or partially refunded depending on how much is returned."
+        size="sm"
+        busy={refundBusy}
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={refundBusy}
+              onClick={() => setRefunding(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger"
+              disabled={refundBusy}
+              aria-busy={refundBusy}
+              onClick={() => void submitRefund()}
+            >
+              {refundBusy ? <Spinner size={14} /> : null}
+              {refundBusy ? 'Refunding…' : 'Raise refund'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          {refundError ? <Notice tone="error">{refundError}</Notice> : null}
+
+          {refunding ? (
+            <p className="text-sm text-muted">
+              {nameFor(refunding.school_id)} paid{' '}
+              <strong>{formatAmountWithCode(refunding.amount, refunding.currency)}</strong> by{' '}
+              {spell(refunding.method)}.
+            </p>
+          ) : null}
+
+          <div>
+            <label className="mb-1 block text-sm font-medium" htmlFor="refund-amount">
+              Amount
+            </label>
+            <input
+              id="refund-amount"
+              type="number"
+              step="0.01"
+              min={0}
+              className="field-input"
+              value={refundAmount}
+              onChange={(event) => setRefundAmount(event.target.value)}
+            />
+            <p className="mt-1 text-xs text-muted">
+              {/*
+                * Blank is a real answer and the useful default: `requestRefund()` refunds the whole
+                * remaining balance when no amount is given. The screen does not compute that balance
+                * itself — `GET /payments` returns `amount` but not `refunded_amount`, so a figure
+                * shown here would be the full payment rather than what is left on a partly refunded
+                * one, and would be wrong exactly where it mattered.
+                */}
+              Leave blank to refund everything still refundable on this payment. A larger amount is
+              refused with the figure that is actually available.
+            </p>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium" htmlFor="refund-destination">
+              Destination
+            </label>
+            <select
+              id="refund-destination"
+              className="field-select"
+              value={refundDestination}
+              onChange={(event) => setRefundDestination(event.target.value)}
+            >
+              <option value="original_method">Back to the original method</option>
+              <option value="wallet">To the school’s wallet</option>
+            </select>
+            <p className="mt-1 text-xs text-muted">
+              The two the API accepts. Returning money the way it arrived is the default.
+            </p>
+          </div>
+
+          <TextAreaField
+            id="refund-reason"
+            label="Reason"
+            rows={2}
+            value={refundReason}
+            onChange={(event) => setRefundReason(event.target.value)}
+            hint="Recorded on the refund and in the audit trail. This is what explains the money leaving."
+          />
+        </div>
+      </Modal>
     </div>
   );
 }
@@ -568,12 +746,23 @@ function ReviewDialog({
     setFailure(null);
 
     try {
-      const body =
-        decision === 'approve'
-          ? { note: note.trim() || undefined }
-          : { rejection_reason: reason.trim(), note: note.trim() || undefined };
-
-      await api.post(`/payments/${payment.id}/${decision}`, body);
+      /*
+       * The two calls are written out rather than built from `decision`, and the bodies with them.
+       *
+       * This read `api.post(\`/payments/${payment.id}/${decision}\`, body)`, which works and is
+       * invisible to `verify-frontend.js`: that suite collects `api.<method>(` followed
+       * **immediately** by a path literal, so both FR-BILL-004 routes went on reporting as having no
+       * caller for as long as this screen has existed. The same trap is recorded in
+       * `subscriptions/[id]/lifecycle.tsx`, which hit it twice before getting it right.
+       */
+      if (decision === 'approve') {
+        await api.post(`/payments/${payment.id}/approve`, { note: note.trim() || undefined });
+      } else {
+        await api.post(`/payments/${payment.id}/reject`, {
+          rejection_reason: reason.trim(),
+          note: note.trim() || undefined,
+        });
+      }
       onDone(
         decision === 'approve'
           ? `Payment ${payment.payment_number} approved`
