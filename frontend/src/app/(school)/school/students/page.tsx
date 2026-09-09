@@ -43,13 +43,24 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import type { FormEvent } from 'react';
 
+import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
+import { useClassSections } from '@/lib/useTimetablePickers';
+import { Modal } from '@/components/overlay';
+import { useToast } from '@/components/toast';
 import {
+  Field,
+  Notice,
   SearchField,
+  SelectField,
+  SubmitButton,
+  TextAreaField,
   FilterBar,
   FilterSelect,
+  focusFirstInvalidField,
 } from '@/components/form';
 import {
   Column,
@@ -199,8 +210,17 @@ export default function StudentsPage() {
     query
   );
 
-  const columns = useMemo<Column<StudentRow>[]>(
-    () => [
+  /*
+   * `students.progression` — the narrower of the two student keys. See the actions column.
+   */
+  const canProgress = can('students.progression');
+
+  const [promoting, setPromoting] = useState<StudentRow | null>(null);
+  const [transferring, setTransferring] = useState<StudentRow | null>(null);
+  const [leaving, setLeaving] = useState<StudentRow | null>(null);
+
+  const columns = useMemo<Column<StudentRow>[]>(() => {
+    const base: Column<StudentRow>[] = [
       {
         key: 'name',
         header: 'Name',
@@ -275,9 +295,55 @@ export default function StudentsPage() {
         header: 'Status',
         cell: (row) => <StatusBadge status={row.status} />,
       },
-    ],
-    []
-  );
+    ];
+
+    /*
+     * FR-STUDENT-002 — the three transitions, and the reason this column matters more than most.
+     *
+     * The filter above offers `transferred` and `left`, and until now **nothing in the product could
+     * produce either value**: `students.progression` guards all three routes and no screen called
+     * them. So a filter offered two states the data could never reach, which is the same
+     * dead-control problem the STATUSES note above was written about — one layer further out.
+     *
+     * The consequence was not only cosmetic. `student_limit` counts active students, and nothing
+     * returns a student to `active`, so a school that had lost a cohort had no way to record it and
+     * no way to free the allowance.
+     *
+     * **`students.progression`, not `students.manage`.** They are different keys and the difference
+     * is deliberate: a receptionist holds `manage` and can admit, and does not hold `progression`
+     * and cannot decide that a child has left. Gating this column on the wrong one would hand a
+     * receptionist the transition.
+     *
+     * Offered only on an `active` student. The three are terminal or forward-only — nothing returns
+     * a student to `active` — so a transferred row has nothing to offer but a history.
+     */
+    if (!canProgress) return base;
+
+    return [
+      ...base,
+      {
+        key: 'actions',
+        header: 'Actions',
+        cell: (row) =>
+          row.status === 'active' ? (
+            <span className="flex flex-wrap gap-1">
+              <button type="button" onClick={() => setPromoting(row)} className="btn btn-ghost btn-sm">
+                Promote
+              </button>
+              <button type="button" onClick={() => setTransferring(row)} className="btn btn-ghost btn-sm">
+                Transfer
+              </button>
+              <button type="button" onClick={() => setLeaving(row)} className="btn btn-ghost btn-sm">
+                Leaving
+              </button>
+            </span>
+          ) : (
+            /* Terminal. A transferred or departed student is a record, not a workflow. */
+            <span className="text-muted-soft">—</span>
+          ),
+      },
+    ];
+  }, [canProgress]);
 
   const filtered = Boolean(debounced || status);
 
@@ -410,6 +476,416 @@ export default function StudentsPage() {
           {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
         </>
       )}
+
+      <PromoteDialog
+        student={promoting}
+        onClose={() => setPromoting(null)}
+        onDone={() => {
+          setPromoting(null);
+          reload();
+        }}
+      />
+
+      <TransferDialog
+        student={transferring}
+        onClose={() => setTransferring(null)}
+        onDone={() => {
+          setTransferring(null);
+          reload();
+        }}
+      />
+
+      <LeaveDialog
+        student={leaving}
+        onClose={() => setLeaving(null)}
+        onDone={() => {
+          setLeaving(null);
+          reload();
+        }}
+      />
     </div>
+  );
+}
+
+/* ─────────────────────── FR-STUDENT-002, the three transitions ─────────────────────── */
+
+function fullName(row: StudentRow): string {
+  return [row.first_name, row.last_name].filter(Boolean).join(' ');
+}
+
+/**
+ * `POST /students/:id/promote`.
+ *
+ * ## Promotion keeps the student active, and that is the point
+ *
+ * `students.service.js` writes `status: 'active'` on a promotion rather than `promoted`, and the
+ * module's own note gives the reason: writing `promoted` would drop the student out of the
+ * `student_limit` headcount and let a school evade its ceiling by promoting everyone. So this moves
+ * a child to the next class and changes nothing about whether they are here.
+ *
+ * The class is **required** — a promotion is by definition a move to a named class. `numeric_order`
+ * on `classes` is what makes "the next class" meaningful (the model's own comment says it "drives
+ * default promotion target"), and the picker is ordered by it, but nothing here guesses: naming the
+ * target is the operator's decision and a wrong guess silently moves a cohort.
+ */
+function PromoteDialog({
+  student,
+  onClose,
+  onDone,
+}: {
+  student: StudentRow | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { success } = useToast();
+  const [classId, setClassId] = useState('');
+  const [sectionId, setSectionId] = useState('');
+  const [rollNumber, setRollNumber] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  /* The pickers load only while a student is open — this is a per-row action, not a screen. */
+  const { classes, sections } = useClassSections(classId, student !== null);
+
+  useEffect(() => {
+    if (!student) return;
+    setClassId('');
+    setSectionId('');
+    setRollNumber('');
+    setReason('');
+    setBusy(false);
+    setFailure(null);
+    setFieldErrors({});
+  }, [student]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!student) return;
+    setBusy(true);
+    setFailure(null);
+    setFieldErrors({});
+
+    try {
+      await api.post(`/students/${student.id}/promote`, {
+        class_id: Number(classId),
+        section_id: sectionId ? Number(sectionId) : undefined,
+        /* Blank keeps whatever the student already had; the service does not clear it. */
+        roll_number: rollNumber.trim() || undefined,
+        reason: reason.trim() || undefined,
+      });
+      success(`${fullName(student)} promoted`);
+      onDone();
+    } catch (caught) {
+      if (!(caught instanceof ApiError)) throw caught;
+      const perField = caught.fieldErrors();
+      setFieldErrors(perField);
+      setFailure(Object.keys(perField).length ? null : caught.message);
+      if (Object.keys(perField).length) focusFirstInvalidField();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={student !== null}
+      onClose={onClose}
+      title={student ? `Promote ${fullName(student)}` : 'Promote'}
+      description="Moves the student to another class. They stay active and keep counting towards your student allowance — a promotion is a move, not a departure."
+      busy={busy}
+      footer={
+        <>
+          <button type="button" onClick={onClose} disabled={busy} className="btn btn-secondary">
+            Cancel
+          </button>
+          <SubmitButton form="promote-student" busy={busy} busyLabel="Promoting…">
+            Promote
+          </SubmitButton>
+        </>
+      }
+    >
+      <form id="promote-student" onSubmit={submit} className="space-y-4" noValidate>
+        {failure ? <Notice tone="error">{failure}</Notice> : null}
+
+        <SelectField
+          id="promote-class"
+          label="Class"
+          required
+          value={classId}
+          onChange={(event) => {
+            setClassId(event.target.value);
+            /* The section belongs to the class; carrying one over names another class's section. */
+            setSectionId('');
+          }}
+          error={fieldErrors.class_id}
+          disabled={classes.state === 'loading'}
+          hint="Ordered the way classes are ordered — by `numeric_order`, which is what makes “the next class” mean anything."
+        >
+          <option value="">{classes.state === 'loading' ? 'Loading…' : 'Choose a class'}</option>
+          {classes.state === 'ready'
+            ? classes.rows.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {row.name}
+                  {row.code ? ` (${row.code})` : ''}
+                  {row.is_active ? '' : ' — inactive'}
+                </option>
+              ))
+            : null}
+        </SelectField>
+
+        <SelectField
+          id="promote-section"
+          label="Section"
+          value={sectionId}
+          onChange={(event) => setSectionId(event.target.value)}
+          error={fieldErrors.section_id}
+          disabled={!classId || sections.state === 'loading'}
+          hint="Optional. Leave it unset to place them in the class without a section."
+        >
+          <option value="">No section</option>
+          {sections.state === 'ready'
+            ? sections.rows.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {row.name}
+                  {row.is_active ? '' : ' — inactive'}
+                </option>
+              ))
+            : null}
+        </SelectField>
+
+        <Field
+          id="promote-roll"
+          label="Roll number"
+          maxLength={40}
+          value={rollNumber}
+          onChange={(event) => setRollNumber(event.target.value)}
+          error={fieldErrors.roll_number}
+          hint="Optional. Left blank the student keeps the roll number they had, which is rarely what a new class wants."
+        />
+
+        <Field
+          id="promote-reason"
+          label="Reason"
+          maxLength={255}
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          error={fieldErrors.reason}
+          hint="Optional. Recorded against the promotion."
+        />
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * `POST /students/:id/transfer`.
+ *
+ * Sets `status = 'transferred'`, which is **terminal**: nothing in the module returns a student to
+ * `active`, so re-admitting them means a fresh admission against the allowance. The copy says so,
+ * because that is the part an administrator would otherwise learn afterwards.
+ *
+ * `transfer_to` is free text up to 180 characters and is deliberately not a school picker: the
+ * receiving school is usually not on this platform, and offering a list of the ones that are would
+ * make the common case look like the unsupported one.
+ */
+function TransferDialog({
+  student,
+  onClose,
+  onDone,
+}: {
+  student: StudentRow | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { success } = useToast();
+  const [transferTo, setTransferTo] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!student) return;
+    setTransferTo('');
+    setReason('');
+    setBusy(false);
+    setFailure(null);
+    setFieldErrors({});
+  }, [student]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!student) return;
+    setBusy(true);
+    setFailure(null);
+    setFieldErrors({});
+
+    try {
+      await api.post(`/students/${student.id}/transfer`, {
+        transfer_to: transferTo.trim() || null,
+        reason: reason.trim() || undefined,
+      });
+      success(`${fullName(student)} recorded as transferred`);
+      onDone();
+    } catch (caught) {
+      if (!(caught instanceof ApiError)) throw caught;
+      const perField = caught.fieldErrors();
+      setFieldErrors(perField);
+      setFailure(Object.keys(perField).length ? null : caught.message);
+      if (Object.keys(perField).length) focusFirstInvalidField();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={student !== null}
+      onClose={onClose}
+      title={student ? `Transfer ${fullName(student)}` : 'Transfer'}
+      description="Records that the student has moved to another school. This frees a place against your student allowance, and it cannot be undone — a student who comes back is a fresh admission."
+      size="sm"
+      busy={busy}
+      footer={
+        <>
+          <button type="button" onClick={onClose} disabled={busy} className="btn btn-secondary">
+            Cancel
+          </button>
+          <SubmitButton form="transfer-student" busy={busy} busyLabel="Recording…">
+            Record transfer
+          </SubmitButton>
+        </>
+      }
+    >
+      <form id="transfer-student" onSubmit={submit} className="space-y-4" noValidate>
+        {failure ? <Notice tone="error">{failure}</Notice> : null}
+
+        <Field
+          id="transfer-to"
+          label="Transferred to"
+          maxLength={180}
+          value={transferTo}
+          onChange={(event) => setTransferTo(event.target.value)}
+          error={fieldErrors.transfer_to}
+          hint="Optional, and free text rather than a picker — the receiving school is usually not on this platform."
+        />
+
+        <Field
+          id="transfer-reason"
+          label="Reason"
+          maxLength={255}
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          error={fieldErrors.reason}
+          hint="Optional. Recorded against the transfer."
+        />
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * `POST /students/:id/leave`.
+ *
+ * Sets `status = 'left'` — terminal, on the same reasoning as a transfer. The two are separate
+ * operations because §15's outcomes are different facts: a transfer names a destination, a leaving
+ * names a reason, and collapsing them would lose whichever the school actually knows.
+ */
+function LeaveDialog({
+  student,
+  onClose,
+  onDone,
+}: {
+  student: StudentRow | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { success } = useToast();
+  const [leavingReason, setLeavingReason] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!student) return;
+    setLeavingReason('');
+    setReason('');
+    setBusy(false);
+    setFailure(null);
+    setFieldErrors({});
+  }, [student]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!student) return;
+    setBusy(true);
+    setFailure(null);
+    setFieldErrors({});
+
+    try {
+      await api.post(`/students/${student.id}/leave`, {
+        leaving_reason: leavingReason.trim() || null,
+        reason: reason.trim() || undefined,
+      });
+      success(`${fullName(student)} recorded as left`);
+      onDone();
+    } catch (caught) {
+      if (!(caught instanceof ApiError)) throw caught;
+      const perField = caught.fieldErrors();
+      setFieldErrors(perField);
+      setFailure(Object.keys(perField).length ? null : caught.message);
+      if (Object.keys(perField).length) focusFirstInvalidField();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={student !== null}
+      onClose={onClose}
+      title={student ? `Record that ${fullName(student)} has left` : 'Record a leaving'}
+      description="Frees a place against your student allowance and cannot be undone — a student who returns is a fresh admission. Their records, fees and results are all kept."
+      size="sm"
+      busy={busy}
+      footer={
+        <>
+          <button type="button" onClick={onClose} disabled={busy} className="btn btn-secondary">
+            Cancel
+          </button>
+          <SubmitButton form="leave-student" busy={busy} busyLabel="Recording…">
+            Record leaving
+          </SubmitButton>
+        </>
+      }
+    >
+      <form id="leave-student" onSubmit={submit} className="space-y-4" noValidate>
+        {failure ? <Notice tone="error">{failure}</Notice> : null}
+
+        <TextAreaField
+          id="leaving-reason"
+          label="Leaving reason"
+          rows={2}
+          maxLength={255}
+          value={leavingReason}
+          onChange={(event) => setLeavingReason(event.target.value)}
+          error={fieldErrors.leaving_reason}
+          hint="Optional, up to 255 characters. Kept on the student record — this is the one place it is asked for."
+        />
+
+        <Field
+          id="leave-reason"
+          label="Reason"
+          maxLength={255}
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          error={fieldErrors.reason}
+          hint="Optional. Recorded against the audit entry rather than on the student."
+        />
+      </form>
+    </Modal>
   );
 }
