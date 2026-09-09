@@ -8950,7 +8950,46 @@ clean.
 **Audit queue: 93 of 174 closed, 81 open.** The nine findings behind the ten named features are
 closed with what closes each recorded in `docs/UI-AUDIT-FINDINGS.md`. What is left is 46 `ux`, 12
 `stale-comment`, 9 `missing-state`, 4 `type-lie`, 3 `a11y`, 3 `money`, 2 `dead-link` and 2 `mobile` —
-per-screen judgement, with no remaining case of an endpoint the product cannot reach.
+per-screen judgement.
+
+#### Correction to the sentence that stood here
+
+It read *"with no remaining case of an endpoint the product cannot reach"*. **That is false**, and it
+was false when written. What is true is narrower: the **nine findings in the register** about an
+unreachable endpoint are closed. The register never enumerated unreachable endpoints — it filed
+findings against screens that exist, so a capability with no screen at all, or a screen with no row
+action nobody had audited, produced no finding to close.
+
+Measured afterwards, by walking every `*.routes.js` and matching each mounted verb against every
+`api.*` call in `frontend/src` (interpolated segments treated as wildcards, so the count errs toward
+*reachable*): **142 write routes are mounted and 43 have a caller. Ninety-nine do not.**
+
+The first attempt at that measurement said 106, and was wrong in an instructive way: it normalised a
+call's `${…}` to `:id` and compared strings, so `api.post(\`/finance/${kind}\`)` with
+`kind: 'incomes' | 'expenses'` became `/finance/:id`, matched nothing, and reported two working
+screens as broken. Segments are matched as wildcards now.
+
+Spot-checked rather than trusted: the Attendance screen contains **no form and no write call of any
+kind** — §16's attendance cannot be marked from the product. Platform Settings cannot be saved.
+`/plans` has nine write routes and one caller (`POST /plans`), so the Features, Limits and Modules
+sub-screens are read-only.
+
+The largest clusters are **subscriptions (14)**, **plans (9)**, **exams (7)**, **AI (6)**,
+**students (5)**, **taxes (5)**, **quotations (5)**, **classes and sections (4)**, **academic
+sessions (4)**, **invoices (4)** and **assignments (4)**. Some are deliberate — `POST /coupons/validate`
+is a checkout-time call with no checkout screen, and the §9 platform lifecycle routes belong to
+screens §33 does not list. Most are not. **This is the honest size of what the frontend still owes,
+and it is larger than any queue in this document had recorded.**
+
+Two of them are worth separating out, because they are not the same kind of gap:
+
+  * **Academic sessions** (`POST`, `PATCH`, `/activate`, `/close`) have **no screen at all**, and
+    §33's School list — seventeen entries, checked — does not name one. FR-SCHOOL-002 requires the
+    operations. Where they belong is a specification question, not an omission, which is why
+    `FR-SCHOOL-002` correctly still reads `Tested`.
+  * **Classes and Sections** edit/delete are the opposite: §33 names both screens, both exist, and
+    they simply have no row action — the same shape as the subject and timetable actions closed in
+    this part, and buildable with no decision to make.
 
 ---
 
