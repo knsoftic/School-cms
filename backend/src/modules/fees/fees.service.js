@@ -293,6 +293,27 @@ async function updateStructure(req, id, payload) {
  * it. Running inside the assignment's transaction narrows the window to that transaction's lifetime,
  * which is what `invoices` settles for and for the same reason — the index that would close it outright
  * cannot be added. Stated rather than papered over.
+ *
+ * ## The null-period consequence, which is a real limitation and is not a bug to be fixed here
+ *
+ * `period_month` is optional (`fees.validation.js`, no `.required()`) and is normalised to `null`. When
+ * it is absent this `where` emits `period_month IS NULL`, so the triple degenerates to
+ * `(student, component)` and matches **every** prior period-less fee of that component for that
+ * student. The consequence is observable: a school that assigns an `exam_fee` with no period for the
+ * mid-term is refused `FEE_PERIOD_ALREADY_ASSIGNED` when it assigns an `exam_fee` for the final — and
+ * the message reads *"already carry this fee for this period"* when the caller named no period. The
+ * same holds for a second `admission_fee` or `transport_fee`. The escapes are to supply a
+ * `period_month`, which no message suggests, or to waive the first.
+ *
+ * It is left as it stands because **every available repair is a business rule §17 does not state**, and
+ * §35 forbids inventing one. Making `period_month` required adds a mandatory field §17 never names.
+ * Exempting a null period from the guard reopens the double-click double-bill the guard exists for, and
+ * does so for exactly the components most likely to be assigned without a period. Falling back to
+ * `fee_structure_id` when the period is null contradicts the paragraph above — two different structures
+ * charging `monthly_fee` for May are the same double-bill. `verify-fees.js` pins the current behaviour
+ * so the choice is recorded rather than incidental; `docs/SRS-TRIAGE-VERDICTS.md` finding 20 holds the
+ * open question, which is what identifies two distinct fees of one component for one student when
+ * neither names a period.
  */
 async function alreadyAssigned(schoolId, studentIds, component, periodMonth, transaction) {
   const rows = await db.StudentFee.findAll({

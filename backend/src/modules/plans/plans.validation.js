@@ -19,14 +19,17 @@
  *    the two in step through one transition table, exactly as `schools.service.js` does, and that is
  *    only true if `status` has no second way in.
  *
- *    On **create** it is neither accepted nor refused: `status` is simply absent from the `create`
- *    schema below, and `validate.js` applies `stripUnknown: true` to bodies, so a create naming it
- *    answers **201 having silently discarded it**. This paragraph used to claim it was "refused on
- *    create as well", which is the shape this codebase argues against everywhere else —
- *    `coupons.validation.js:60-62`, "a stripped key answers 200 having changed nothing, which a
- *    caller cannot distinguish from success". The service still overrides the column
- *    (`subscription_plans.status` defaults to `active`), so the BEHAVIOUR is right and only the
- *    disclosure was wrong; making it a `forbiddenField` is triage finding 11 and is a separate change. A plan created active would be
+ *    On **create** it is now refused by name, and that is triage finding 11 applied. It used to be
+ *    *stripped*: `status` was simply absent from the `create` schema and `validate.js` applies
+ *    `stripUnknown: true` to bodies, so a create naming it answered **201 having silently discarded
+ *    it** — a caller who submitted the seven fields §10.2 names got back a plan whose Status was not
+ *    the one they sent, with no error and no warning. That is the shape this codebase argues against
+ *    everywhere else — `coupons.validation.js:60-62`, "a stripped key answers 200 having changed
+ *    nothing, which a caller cannot distinguish from success". The behaviour was always right and
+ *    only the disclosure was wrong, so what changed is the disclosure. Note what this does **not**
+ *    settle: whether `status` should be *accepted* on create is still open, because §10.2 never
+ *    enumerates its legal values and never says whether a plan may be born active — both recorded in
+ *    `docs/SRS-TRIAGE-VERDICTS.md` finding 11. A plan created active would be
  *    *"available for new subscriptions"* — FR-SUB-004's own words — while carrying no `plan_prices` row
  *    to bill against and no `plan_limits` rows, which resolve to zero and forbid the school everything.
  *    The Plan Builder sequence in §10.2 is create, then configure (FR-SUB-006, FR-SUB-007), then
@@ -145,6 +148,41 @@ const fields = {
   reason: Joi.string().trim().max(255).empty('').allow(null),
 };
 
+/**
+ * A key the body may not carry, refused with the reason rather than stripped.
+ *
+ * The shape `addons.validation.js:86` and `ai.validation.js:43` already use, brought here by triage
+ * finding 11 — which found `status` silently discarded on create, so a caller who submitted the seven
+ * fields SRS §10.2 names got a 201 carrying a status they did not send.
+ */
+const forbiddenField = (because) =>
+  Joi.any().forbidden().messages({ 'any.unknown': because });
+
+/**
+ * Why `status` is refused here rather than accepted — and what this deliberately does NOT decide.
+ *
+ * §10.2:385 and FR-SUB-001:412 do list Status among the fields a Super Admin submits, so refusing it
+ * is a deviation and is disclosed as one. What it is not is a *new* deviation: the create schema has
+ * never accepted the field, and `plans.service.js` has always hard-coded `PLAN_STATUS.INACTIVE`. The
+ * only thing that changes is that a caller is now **told**, instead of getting a 201 whose `status`
+ * silently disagrees with the body they sent — which is the argument this codebase makes everywhere
+ * else, in `coupons.validation.js:60-62`: *"a stripped key answers 200 having changed nothing, which
+ * a caller cannot distinguish from success"*.
+ *
+ * Accepting it would need two answers the SRS does not give, and refusing it needs neither, which is
+ * the whole reason this half is separable from the blocked half: (1) §10.2 never enumerates Status's
+ * legal values — `PLAN_STATUS` has three, and whether `POST /plans` may take `archived` (and then
+ * whether it must stamp `archived_at` to keep the column and the timestamp in step) is unstated; and
+ * (2) whether a plan may be born `active` while holding no `plan_prices` row, given that FR-SUB-006
+ * makes pricing a separate later operation and FR-SUB-004 defines Active as *"available for new
+ * subscriptions"*. Both stay open in `docs/SRS-TRIAGE-VERDICTS.md` finding 11.
+ */
+const refusedStatus = forbiddenField(
+  '"status" is not a create field: a plan is born inactive and reaches active through FR-SUB-004 ' +
+    '(POST /plans/:id/activate) or archived through FR-SUB-005, each of which keeps status and ' +
+    'archived_at in step. See SRS-TRIAGE-VERDICTS.md finding 11.'
+);
+
 /* ─────────────────────── FR-SUB-001 / FR-SUB-002 — the plan record ─────────────────────── */
 
 const create = Joi.object({
@@ -158,6 +196,7 @@ const create = Joi.object({
   grace_period_days: fields.grace_period_days,
   default_renewal_mode: fields.default_renewal_mode,
   tier_rank: fields.tier_rank,
+  status: refusedStatus,
 });
 
 const update = Joi.object({
@@ -171,6 +210,7 @@ const update = Joi.object({
   grace_period_days: fields.grace_period_days,
   default_renewal_mode: fields.default_renewal_mode,
   tier_rank: fields.tier_rank,
+  status: refusedStatus,
 })
   .min(1)
   .messages({ 'object.min': 'Provide at least one field to update' });
@@ -197,6 +237,7 @@ const duplicate = Joi.object({
   is_recommended: fields.is_recommended,
   display_order: fields.display_order,
   tier_rank: fields.tier_rank,
+  status: refusedStatus,
 });
 
 /* ───────────────── FR-SUB-004 / FR-SUB-005 — status transitions ───────────────── */

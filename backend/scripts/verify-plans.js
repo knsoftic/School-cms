@@ -29,8 +29,10 @@ process.env.CACHE_TTL = '600';
  * ## What is asserted, and why each part exists
  *
  *  - **Part 1 — the schemas, directly.** The decisions no HTTP response can show. That `status` is
- *    *stripped* rather than refused on create and duplicate, so a client sending it gets an inactive
- *    plan instead of a 422 it cannot act on. That the `settings` map survives `stripUnknown: true` —
+ *    **refused** on create, update and duplicate, with a message naming FR-SUB-004 and FR-SUB-005 as
+ *    the operations that do write it. It was *stripped* until triage finding 11: the outcome was the
+ *    same either way, since the service hard-codes `inactive`, but a caller sending the seven fields
+ *    §10.2 names got a 201 whose status disagreed with their body and no way to tell. That the `settings` map survives `stripUnknown: true` —
  *    a bare `Joi.object()` there would arrive as `{}` with no error, which is the footgun
  *    `plans.validation.js` documents. And the eight §11.2 limit keys being mandatory, with the
  *    rejection message naming the missing one.
@@ -48,11 +50,15 @@ process.env.CACHE_TTL = '600';
  *
  * ## The four assertions worth reading before changing anything
  *
- *  - **A new plan is inactive even when the caller asks for `active`.** `subscription_plans.status`
- *    defaults to `active` at the column, so this only passes because `plans.service.create()` overrides
- *    it. A plan that were born active would be advertised as available for new subscriptions while
- *    holding no price and no limits — and an absent `plan_limits` row resolves to **zero**, not to
- *    unlimited, so it would permit its schools nothing.
+ *  - **A new plan is inactive, and asking for `active` is refused rather than ignored.**
+ *    `subscription_plans.status` defaults to `active` at the column, so the inactive birth only holds
+ *    because `plans.service.create()` overrides it — asserted here, and separately from the refusal,
+ *    so removing the override would still fail even though the schema would still reject the field. A
+ *    plan born active would be advertised as available for new subscriptions while holding no price
+ *    and no limits — and an absent `plan_limits` row resolves to **zero**, not to unlimited, so it
+ *    would permit its schools nothing. Whether the SRS *wants* `status` accepted on create is a
+ *    separate and still-open question (SRS-TRIAGE-VERDICTS.md finding 11); this pins only that the
+ *    answer today is disclosed rather than silent.
  *
  *  - **Activating a priceless plan is refused.** `PLAN_NOT_PRICEABLE`, 409. A subscription denormalises
  *    its billing terms from a `plan_prices` row, so an active plan with no active price is an offer the
@@ -161,15 +167,33 @@ function verifyPlanSchemas() {
   const created = run(schemas.create, {
     name: 'Starter',
     code: 'starter-2026',
-    status: PLAN_STATUS.ACTIVE,
     tier_rank: 10,
   });
   check('a plan validates with a name and a code', created.ok, true);
   check('the code is uppercased before it reaches a unique index', created.value.code, 'STARTER-2026');
+
+  /*
+   * `status` is REFUSED, not stripped — triage finding 11 applied.
+   *
+   * These three assertions used to read "status is stripped, not refused" and pinned the opposite
+   * behaviour. Stripping was never wrong about the *outcome* — the service hard-codes `inactive`
+   * either way — but §10.2:385 and FR-SUB-001:412 both name Status among the fields a Super Admin
+   * submits, so a caller sending it got a 201 whose status disagreed with their body, silently. That
+   * is the shape `coupons.validation.js:60-62` argues against in this same codebase.
+   *
+   * Refusing settles the disclosure and settles nothing else: whether `status` should be *accepted*
+   * on create is still open, and stays open, in SRS-TRIAGE-VERDICTS.md finding 11.
+   */
+  const withStatus = run(schemas.create, {
+    name: 'Starter',
+    code: 'starter-2026',
+    status: PLAN_STATUS.ACTIVE,
+  });
+  check('a create naming status is refused rather than silently discarding it', withStatus.ok, false);
   check(
-    'and status is stripped, not refused — FR-SUB-004 is the only way to active',
-    Object.prototype.hasOwnProperty.call(created.value, 'status'),
-    false
+    '  with a message naming the operations that do write it',
+    withStatus.messages.some((m) => m.includes('FR-SUB-004') && m.includes('FR-SUB-005')),
+    true
   );
 
   check('a name alone is not enough', run(schemas.create, { name: 'Starter' }).ok, false);
@@ -186,11 +210,8 @@ function verifyPlanSchemas() {
     ['Provide at least one field to update']
   );
   check(
-    'status is not reachable through the edit either',
-    Object.prototype.hasOwnProperty.call(
-      run(schemas.update, { name: 'Starter Plus', status: PLAN_STATUS.ARCHIVED }).value,
-      'status'
-    ),
+    'status is not reachable through the edit either, and is refused there too',
+    run(schemas.update, { name: 'Starter Plus', status: PLAN_STATUS.ARCHIVED }).ok,
     false
   );
   check(
@@ -215,11 +236,8 @@ function verifyPlanSchemas() {
   check('a duplicate needs its own code', run(schemas.duplicate, {}).ok, false);
   check('a code alone is enough — the name falls back to "(Copy)"', run(schemas.duplicate, { code: 'X2' }).ok, true);
   check(
-    'and the copy cannot be born active',
-    Object.prototype.hasOwnProperty.call(
-      run(schemas.duplicate, { code: 'X2', status: PLAN_STATUS.ACTIVE }).value,
-      'status'
-    ),
+    'and the copy cannot be born active — asking is refused, not ignored',
+    run(schemas.duplicate, { code: 'X2', status: PLAN_STATUS.ACTIVE }).ok,
     false
   );
 
@@ -782,7 +800,6 @@ async function verifyHttp() {
         name: 'Verify Plans Starter',
         code: 'vpl-starter',
         description: 'Created by scripts/verify-plans.js',
-        status: PLAN_STATUS.ACTIVE,
         visibility: PLAN_VISIBILITY.PUBLIC,
         tier_rank: 10,
         trial_days: 14,
@@ -794,11 +811,22 @@ async function verifyHttp() {
     created.plans.push(plan.id);
 
     check('the code is stored uppercase', plan.code, 'VPL-STARTER');
-    check(
-      'and the status is inactive even though the body said active',
-      plan.status,
-      PLAN_STATUS.INACTIVE
-    );
+    check('and the plan is born inactive — FR-SUB-004 is the only way to active', plan.status,
+      PLAN_STATUS.INACTIVE);
+
+    /*
+     * Over HTTP as well as at the schema, because `validate.js` is what turns a `forbidden()` into a
+     * 422 and a schema assertion alone would not prove the middleware surfaces it. The body used to
+     * carry `status: active` and this suite asserted the response came back `inactive` — which was
+     * true, and was the silent discard triage finding 11 named.
+     */
+    const bornActive = await call('/plans', {
+      method: 'POST',
+      token: platform,
+      body: { name: 'Verify Plans Born Active', code: 'vpl-born', status: PLAN_STATUS.ACTIVE },
+    });
+    check('a create naming status is refused over HTTP', bornActive.status, 422);
+    check('  naming the field', bornActive.body.error.details[0].field, 'status');
     check('with no archive stamp', plan.archived_at, null);
     check('it carries no prices yet', plan.prices, []);
     check('no modules', plan.modules, []);

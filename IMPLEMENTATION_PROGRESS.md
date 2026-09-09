@@ -16,7 +16,7 @@ All fourteen middleware files plus the barrel are implemented; the authenticatio
 chain, the subscription entitlement engine, and the upload / rate-limit / CSRF / activity-log hardening
 layer each have their own verification suite; `src/app.js` / `src/server.js` wire them into a running
 process.
-**5,470 checks pass, 0 fail, 0 skip, across thirty-nine scripts**, every script exit 0, measured as one
+**5,476 checks pass, 0 fail, 0 skip, across thirty-nine scripts**, every script exit 0, measured as one
 **serial** loop against a live MariaDB in **session 28**. **SRS §14 through §23 are closed in full**, and
 so is **Known Issues #26** — the six columns that accepted a caller-supplied filesystem path. **Every SRS
 section of the backend is now implemented**; what remains of the backend is Phase 5, and the entire
@@ -93,7 +93,7 @@ table back to 0, `users` 1, `activity_logs` 1.
 | `verify-auth-module.js` | 237 | SRS §7 — the nine auth endpoints, end to end |
 | `verify-platform-modules.js` | 313 | SRS §9 — the eighteen platform endpoints, end to end |
 | `verify-users-roles.js` | 236 | SRS §33 "Users" / §29 roles — the nine endpoints, end to end |
-| `verify-plans.js` | 175 | SRS §10 / §11 — the thirteen plan endpoints, end to end |
+| `verify-plans.js` | 178 | SRS §10 / §11 — the thirteen plan endpoints, end to end |
 | `verify-addons.js` | 176 | SRS §11.3 — the six add-on endpoints, end to end |
 | `verify-subscriptions.js` | 212 | SRS §12 / §30 / §33 — the nineteen subscription endpoints plus the lifecycle sweep |
 | `verify-billing.js` | 239 | SRS §13 / §33 — billing math, route tables, schemas, scheduled sweeps, and the HTTP money path |
@@ -103,7 +103,7 @@ table back to 0, `users` 1, `activity_logs` 1.
 | `verify-parents.js` | 116 | SRS §15.2 — the eight parent endpoints, the account the module creates, and the children join |
 | `verify-staff.js` | 89 | SRS §15.4 — the four staff endpoints, the four categories, and the ceiling on both paths |
 | `verify-attendance.js` | 82 | SRS §16 — the five attendance endpoints, the bulk upsert, and the three report periods |
-| `verify-fees.js` | 174 | SRS §17 — the eight fee endpoints, the ledger arithmetic, and the per-school receipt series |
+| `verify-fees.js` | 177 | SRS §17 — the eight fee endpoints, the ledger arithmetic, and the per-school receipt series |
 | `verify-finance.js` | 163 | SRS §18 — the nine finance endpoints, the net balance, and the report window |
 | `verify-exams.js` | 219 | SRS §19 — the nineteen exam endpoints, the FR-EXAM-003 calculation, and the merit list |
 | `verify-timetable.js` | 115 | SRS §20.1 — the six timetable endpoints and all three FR-TT-002 conflicts |
@@ -122,11 +122,11 @@ table back to 0, `users` 1, `activity_logs` 1.
 | `verify-pdf.js` | 20 | Phase 5.4's renderer, on its own terms. It exists separately because §22 **cannot exercise it**: the student report fits on one page, so four guards — the footer's pagination fix, the repeated header, the page break and the measured row height — were unprovable through the reports suite. All four are about the *second* page. Reads the PDF back by inflating its content streams, because `pdf-parse` cannot parse pdfkit output at all |
 | `verify-performance.js` | 16 | SRS §25 — indexes, pagination bounds and caching (row 6.15). **No timing assertion, deliberately**: §25 sets no numeric target, and "under 50 ms" would measure this machine on this afternoon. Structural instead — all **50** tables carrying `school_id` have a `school_id`-**leading** index (leading, because MySQL reads a composite left to right), no tenant list query is a full scan forced by a missing index, and the cache is measured by **counting queries** rather than by the clock: first read hits the database, second reads none of it, and `invalidateSchool` sends the next one back |
 | `verify-concurrency.js` | 19 | Known Issues #21 — the limit check and the write it guards. The only suite in the loop that runs anything **in parallel**: it fires eight concurrent creates at a school whose `student_limit`, `teacher_limit` and `staff_limit` are each **1**, and reads the table afterwards. It is one suite rather than three assertions in three module suites because what races is the guard, not any module. Its central assertion is the **row count**, not the number of successful calls — a create that succeeded and rolled back would move one and not the other, and it is the table that decides whether a school is over its plan — with a third assertion that the other seven were refused by the **limit** and not by a deadlock or a unique-key collision, so a "fix" that merely made concurrent creates fail some other way cannot pass. Proved against the defect: with the three `reserveHeadcount()` calls commented out it reports **8 rows against a ceiling of 1, on all three modules, 9 FAILED** |
-| **Total** | **5,470** | Thirty-nine scripts, measured in one **serial** loop in session 28 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25. **Every figure in this column was re-derived from `tests/baseline.json` in session 27**, which is the file `npm test` checks each suite against; nineteen of them had drifted, `verify-frontend.js` by 154 |
+| **Total** | **5,476** | Thirty-nine scripts, measured in one **serial** loop in session 28 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25. **Every figure in this column was re-derived from `tests/baseline.json` in session 27**, which is the file `npm test` checks each suite against; nineteen of them had drifted, `verify-frontend.js` by 154 |
 
 Counts are assertions, not output lines. Thirty-eight of the thirty-nine scripts print one `PASS` line per
 assertion; `verify-seed.js` prints a single `PASS (22)` summary line followed by 22 sub-bullets, so
-counting output lines undercounts the loop by 21 — a serial run prints 5,449 `PASS` lines for **5,470**
+counting output lines undercounts the loop by 21 — a serial run prints 5,455 `PASS` lines for **5,476**
 assertions.
 
 **The per-script list above was re-measured in session 26**, in the alphabetical order the loop
@@ -160,7 +160,7 @@ fixed two live-DB defects, ran Part 5 over HTTP, and re-measured the whole fourt
 
 **Session 16 (same calendar day again) opened on unrecorded Phase 3.I work already on disk**, ran the
 fifteen-script loop as its first action — which is what surfaced it — then audited and repaired it. The
-table above is the session-28 figure: **5,470 / 0 FAIL / 0 SKIP / every script exit 0**, from a serial run.
+table above is the session-28 figure: **5,476 / 0 FAIL / 0 SKIP / every script exit 0**, from a serial run.
 
 The server itself now runs:
 
@@ -10023,7 +10023,7 @@ The Phase 3.J module (SRS §15.3):
 | `verify-auth-module.js` | 1399 | 231 checks on SRS §7 in four parts: the five Joi schemas (32), route wiring by function identity and the refresh cookie's attributes (22), `mailService`'s two drivers (5), and 170 assertions over real HTTP against the nine endpoints on an ephemeral port, plus 2 fixture checks. Creates five users (`@verify-auth.invalid`) with real bcrypt hashes, baselines both log tables before writing, and removes everything in a `finally`. Proves that login and forgot-password cannot be used to discover whether an account exists — comparing the two refusal bodies **byte-for-byte with the request id stripped** — that a rotated refresh token ends the whole session, that a password change ends every other session, that no response carries a hash or a reset token, and that the seeded Super Admin's forced-change flag really does gate everything but two endpoints. Found §5a defects 6, 7 and 8 |
 | `verify-platform-modules.js` | 1663 | 313 checks on SRS §9 in three parts: the three modules' Joi schemas directly, the four route tables by function identity, and the rest over real HTTP. Creates two organizations, three schools and three Principals **through the endpoints themselves** (a fixture built with `User.create` would not exercise FR-SADMIN-009), plus three users under `@verify-platform.local`. Proves FR-SADMIN-005 with a live token — suspending a school refuses the Principal's *existing* token, which only holds if `setStatus` awaited `tenantService.invalidateSchool` — and pins each of the eighteen routes' permission key from its own 403 body, using a `super_admin` fixture with all eleven §9 keys in `denied_permissions`, since `requirePermission` is `asyncHandler`-wrapped and identifiable by neither name nor identity. Also asserts the guard *order* (a caller lacking both scope and key gets `PLATFORM_SCOPE_REQUIRED`, not `INSUFFICIENT_PERMISSION`). Teardown uses `force: true` on schools so the soft-deleted row from the DELETE test also goes; the database was confirmed back at 0 organizations / 0 schools / 1 user afterwards. Also carries the only assertions on `utils/pagination.js` — 13 checks on page arithmetic, offset, `sortOrder`, an out-of-range page, an over-`MAX_LIMIT` refusal, and the two §24 ORDER BY cases. Found §5a defect 9 |
 | `verify-users-roles.js` | 1792 | 236 checks on SRS §33 "Users" and §29 roles in four parts: the two Joi schema sets directly (31), the two route tables by name and by function identity (29), 162 assertions over real HTTP against the nine endpoints, and 9 against `users.service.list()` **called directly** — because `enforceTenant` refuses a cross-tenant `?school_id=` at layer 3 before the service's own widening refusal can run, and a test that only went over HTTP would not notice layer 4 disappearing. Five users under `@verify-users.local` across two organizations and two schools. Pins `CACHE_TTL=600` deliberately: the two invalidation assertions are meaningful only if a revocation bites *before* the TTL expires, and a short TTL would let them pass for the wrong reason. Proves that a role edit is honoured on the next request with an unchanged token (`permissionService.invalidateRole`), that a per-user override is honoured with **no** cache call at all, that `users.manage` is not a route to privilege escalation (`PERMISSION_GRANT_EXCEEDS_OWN`, refused for granting and allowed for denying), and that a cross-tenant read writes an `access_denied` activity row without the route declaring one. **Mutates two seeded rows** — the `principal` role's grants and the `librarian` role's labels — and restores both unconditionally in a `finally`, asserting the restore rather than assuming it. Found no defect in shipped code; found one of its own assertions passing for the wrong reason (§5a session 9) |
-| `verify-plans.js` | 1385 | 175 checks on SRS §10 / §11 in four parts: the eleven Joi schemas directly (41), the route table by name (9), `plans.service.scopeFor()` and the copy-field lists called directly (7), and 118 assertions over real HTTP against the thirteen endpoints. Two users under `@verify-plans.local`, one organization, one school. Pins `CACHE_TTL=600` for the same reason `verify-users-roles.js` does: the invalidation assertions read a school's entitlement snapshot, change the plan and read it again, and a short TTL would let them pass whether or not `invalidatePlan()` was ever called. Proves that a plan is born inactive whatever the body says, that activating a priceless plan is refused, that a price row a subscription points at is retired rather than deleted (all three referencing columns are `SET NULL`, so a delete would silently blank a live pointer), that a duplicate copies all four collections in one transaction and rolls back whole on a taken code, that a school already on a plan keeps its entitlement when the plan is archived, and that the five `plans.*` keys are five distinct keys — denying `plans.pricing.manage` on the Super Admin fixture breaks `PUT /:id/prices` and leaves `PUT /:id/limits` working, which holds only because `buildPermissionGuard` has no super-admin bypass. **Mutates one seeded row** — the `principal` role gains `plans.view` — restored in the `finally` with the restore asserted. Hard-deletes its plans with `force: true`, since `subscription_plans` is paranoid. Found no defect in shipped code |
+| `verify-plans.js` | 1385 | 178 checks on SRS §10 / §11 in four parts: the eleven Joi schemas directly (41), the route table by name (9), `plans.service.scopeFor()` and the copy-field lists called directly (7), and 118 assertions over real HTTP against the thirteen endpoints. Two users under `@verify-plans.local`, one organization, one school. Pins `CACHE_TTL=600` for the same reason `verify-users-roles.js` does: the invalidation assertions read a school's entitlement snapshot, change the plan and read it again, and a short TTL would let them pass whether or not `invalidatePlan()` was ever called. Proves that a plan is born inactive whatever the body says, that activating a priceless plan is refused, that a price row a subscription points at is retired rather than deleted (all three referencing columns are `SET NULL`, so a delete would silently blank a live pointer), that a duplicate copies all four collections in one transaction and rolls back whole on a taken code, that a school already on a plan keeps its entitlement when the plan is archived, and that the five `plans.*` keys are five distinct keys — denying `plans.pricing.manage` on the Super Admin fixture breaks `PUT /:id/prices` and leaves `PUT /:id/limits` working, which holds only because `buildPermissionGuard` has no super-admin bypass. **Mutates one seeded row** — the `principal` role gains `plans.view` — restored in the `finally` with the restore asserted. Hard-deletes its plans with `force: true`, since `subscription_plans` is paranoid. Found no defect in shipped code |
 | `verify-addons.js` | 1348 | 169 checks on SRS §11.3 / FR-SUB-009 in four parts: the six Joi schemas directly, the route table by name, `addons.service` called directly, then real HTTP against the six endpoints. Two users under `@verify-addons.local`, one organization, one school, one plan built through `/plans`, and one subscription with a purchased add-on. Pins `CACHE_TTL=600` — here to prove a **negative**: that a catalogue edit does *not* move an already-resolved ceiling, which a short TTL would let pass regardless. Proves that a plan granting `student_limit: 100` plus a 500-unit purchase resolves to 600, that changing the block size to 1,000 leaves that 600 untouched because `subscription_addons` holds the copy, and that deactivating the add-on still leaves it at 600 because resolution reads `subscription_addons.status`, not `addons.is_active`. Also proves the four SRS-fixed columns are refused with a reason rather than stripped, that a deactivated add-on is 404 to a school and 200 to the platform admin, and that `?is_active=false` from a school returns `[]` **and** a total of 0. **Mutates the seeded catalogue itself** — the only suite that does — plus `addons.view` on the `principal` role; both restored in the `finally`, the add-on restore asserted column by column against a baseline captured before the first write. **Had never passed before session 12**: it aborted on a `TypeError` at check 76. Found no defect in shipped code; four defects and one false positive in itself — §5a sessions 11–12 |
 | `verify-subscriptions.js` | 3,040 | 208 checks on SRS §12 / §30 / §33 in five parts: the sixteen Joi schemas directly, the nineteen-route table by name, `subscriptions.service` and the state/event constants offline, then real HTTP against all nineteen endpoints, then `runLifecycleSweep()` called directly against five hand-built subscriptions. Four plans built through `/plans` (`VSB-BASIC`, `VSB-PRO`, `VSB-SAME` and `VSB-DRAFT`, the last never activated so `PLAN_NOT_AVAILABLE` is asserted against a real inactive plan), one organization, six schools, four users under `@verify-subs.local`. Pins `CACHE_TTL=600` so a missing `invalidateSchool()` cannot pass by TTL expiry, and uses `custom_days`/30 for every fixture cycle rather than `monthly` — `monthly` yields 28–31 days depending on the date, so the §12.3 proration expectations would have to be re-derived from the function under test instead of stated as constants. Proves the §12.3 arithmetic number by number (`periodDays 30`, `elapsedDays 15`, `unusedCredit 15`, `amountDue 15`, `creditBalance 0`) **and that the period boundary does not move**; that a §12.4 deferred downgrade writes only the `scheduled_*` group and leaves the school resolving to Pro at 650 students; that the next renewal applies it, nulls all five `scheduled_*`, and starts the new period exactly at the old period's end; that an override replaces rather than duplicates (200, same id, one row per target); that a suspended school is `isUsable: false` in the entitlement snapshot **and** `suspended` in `tenantService`'s cache; and that the sweep's renewal pass runs before its past-due pass, asserted by checking the renewed subscription is **not** past due. `governingStateFor()` and the snapshot are compared four times. **Mutates `addons.units_per_quantity` and creates `addon_prices` rows** — restored in the `finally`, add-on columns asserted back per column and the price count back to baseline, along with 0 remaining fixture plans, schools, organizations, users and subscriptions. Found no defect in shipped code; three defects in itself, one of which manufactured seven false entitlement defects — §5a session 13 |
 
@@ -11401,6 +11401,50 @@ Session 16 (2026-09-02, same calendar day) opened on that stop and found it alre
      it — putting the charge back after the transaction returns 8 admitted, counter 8, **6 FAILED**.
 373. Re-recorded and re-ran: **39 suites, 5,470 assertions, 0 FAIL, 0 SKIP, every script exit 0**;
      `npm test` **5,675 tests, exit 0**.
+374. **Re-triaged the 13 `real-blocked` §36 findings against the tree as it is now, and two were
+     stale.** Findings 18 and 60 asked the same question — does §33's MVP screen list *bound* the
+     frontend surface, or does §32's "Connect frontend UI" step oblige a screen for every FR with a
+     human actor? Session 27 had already answered it while closing the uncalled-route queue, for a
+     different reason and without noticing it settled these: **a screen list is not the requirement**.
+375. Verified that rather than inferring it: `school/settings` exists and calls `PATCH /school-settings`
+     plus all four session writes, so FR-SCHOOL-001 **and** FR-SCHOOL-002 are reachable; `school/ai`
+     and `school/assignments` likewise. Finding 18's stated consequence — "nine working endpoints have
+     no caller in the product" — is simply no longer true, and `verify-frontend.js` asserts five of
+     those nine by method and path.
+376. **Did the unblocked half of every one of the remaining eleven.** Each verdict ends by separating
+     the part that needs an answer from the part that needs only honesty, and the second part was
+     outstanding in all eleven. Two of them were code.
+377. **Finding 11 — `status` was silently discarded on create.** §10.2:385 and FR-SUB-001:412 both name
+     Status among the fields a Super Admin submits, and `validate.js` strips unknown body keys, so a
+     caller sending the seven got a 201 whose Status was not the one they sent. It is now **refused**
+     on create, update and duplicate, with a message naming FR-SUB-004 and FR-SUB-005 as the operations
+     that do write it. Six assertions replace four that pinned the strip; regressed, six failures.
+     **This settles the disclosure and not the question**: whether Status should be *accepted* needs
+     §10.2 to enumerate its legal values and to say whether a plan may be born active, and it does
+     neither. Still open.
+378. **Finding 20 — the fee guard's null-period consequence.** `alreadyAssigned()` matches on
+     `(student, component, period_month)`, so a period-less fee degenerates to `(student, component)`
+     and a school assigning a second `exam_fee` with no period is refused *"already carry this fee for
+     this period"* when it named none. Documented beside the guard with why each available repair is a
+     business rule §17 does not state, and pinned by four assertions — the first assigns, the second
+     is refused 409, and naming a period is the one escape.
+379. Recorded findings 16, 17, 39, 47, 52, 53, 63 and 64 in the checklist rows they belong to rather
+     than only in the triage file, and said in `models/other.js` that the null-`school_id` platform
+     notification is a shape **defined and unused** — three of FR-NOTIF-001's five recipient classes
+     are reached and two are empty, which §23 leaves as an implementation choice.
+380. **Retired the last eight `Tested` statuses, and two of them moved *down*.** `Tested` means "not
+     reachable in the running application", which stopped being true when the uncalled-route queue
+     closed; six rows became `Completed`, checked one at a time against the tree. **FR-SUB-008 became
+     `In Progress`** — `enforceLimit` guards six of §11.2's eight keys and its own note already said the
+     coverage was incomplete while its status said otherwise — and **FR-STUDENT-001** likewise, because
+     §15.1's "Documents" half has no code path at all. An accurate legend costs something when it is
+     applied rather than assumed.
+381. Gave the legend a **`Will not be built`** status and moved row 3.S.1 to it. Demo seed data had sat
+     at `Pending` while its own note said §35 forbids inventing the plans, classes and students it would
+     contain — a row that will never be built is not a backlog entry, and saying so is not the same as
+     saying it is done.
+382. Re-recorded and re-ran: **39 suites, 5,476 assertions, 0 FAIL, 0 SKIP, every script exit 0**;
+     `npm test` **5,681 tests, exit 0**; both lints green.
 
 ### Next task — what is left, and why each item is where it is
 
@@ -11417,8 +11461,10 @@ Reproduce that before trusting it. The script is short — `buildDocument(create
 this session found twice: a path built from a variable reads as uncalled when it is not, and a call
 made outside the client is invisible.
 
-**Three rows in `docs/IMPLEMENTATION_CHECKLIST.md` are not `Completed`, and two of them cannot be
-finished here.**
+**Three rows in `docs/IMPLEMENTATION_CHECKLIST.md` are not `Completed`, and none of the three can be
+finished here.** Session 28 also moved two rows *down* to `In Progress` on an accurate reading of the
+legend — FR-SUB-008 (six of §11.2's eight keys are enforced) and FR-STUDENT-001 (§15.1's "Documents"
+half has no code path) — and gave 3.S.1 the terminal `Will not be built` status it had earned.
 
 - **5.2 — the Anthropic adapter's round trip.** Everything but the network hop is exercised and
   regressed (§2af). What is left needs a real key and a real request, which this environment does not
@@ -11426,10 +11472,23 @@ finished here.**
   with `extract()`'s PDF path**: it calls `pdf-parse`, which fails with "Illegal character" on an
   untouched pdfkit document, and is the likeliest thing to break first.
 - **3.S.1 — demo seed data.** Optional, and §35 forbids inventing the plans, classes and students it
-  would contain. The CLI warns *"No demo seeders found"* and no-ops, which is correct behaviour.
+  would contain. The CLI warns *"No demo seeders found"* and no-ops, which is correct behaviour. It now
+  reads **`Will not be built`** rather than `Pending`: it had sat in the backlog while its own note
+  said the work must not be done, and a row nobody will ever pick up is not a backlog entry.
 - **7.13 — the final SRS re-read.** Its pass has been run and its output written. What remains is a
-  decision on each of **thirteen `real-blocked` findings** in `docs/SRS-TRIAGE-VERDICTS.md`, where the
-  SRS lists a capability without specifying it — and 5.2 above, which the row also waits on.
+  decision on each of **eleven `real-blocked` findings** in `docs/SRS-TRIAGE-VERDICTS.md` — down from
+  thirteen — and 5.2 above, which the row also waits on. Session 28 closed **18** and **60** (§33's
+  screen list is not a ceiling; the four screens beyond the seventeen exist and are asserted) and did
+  the half of each remaining finding that its own verdict listed as *available without a decision*, so
+  the eleven are now blocked on nothing but the answers. Each open question is stated there in a form
+  a person who knows what the product should do could answer in a sentence: what identifies two
+  period-less fees of one component (20), whether `status` may be submitted on plan create and with
+  which values (11), what `premium_reports` unlocks (64), which of §23's nine types reaches a Teacher
+  or the Super Admin (63), what an `override_type: 'price'` row changes and from which cycle (39),
+  whether a Principal's tenancy moves when they are assigned to another school (10), whether
+  `transaction_id` is mandatory per payment method (52), whether §5's role prose or an FR's Actor line
+  governs (47), whether FR-SUB-009's Description or its Actor line governs (53), what document type
+  and permission an uploaded student document takes (16), and whether admission requires a class (17).
 
 **What is genuinely buildable and not yet built**, in the order it is worth doing:
 

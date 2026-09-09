@@ -24,7 +24,8 @@ therefore `real-blocked`:
 | 17 | real-fixable | **real-blocked** | `class_id` is optional on admission where SRS:818 says "Student is assigned to a Class and Section". But §15.1 lists **Admission**, **Class Assignment** and **Section Assignment** as three separate features — which is what the code implements — and `verify-students.js:122` deliberately asserts the permissive contract. The source answers the question two ways. |
 
 The pattern is now consistent enough to name: **where the SRS lists a capability without specifying
-it, a "fix" is a specification decision wearing implementation clothes.** Thirteen findings sit there.
+it, a "fix" is a specification decision wearing implementation clothes.** Thirteen findings sat there;
+**eleven still do** — 18 and 60 were closed in session 28, see the section below.
 
 ## All 44 `real-fixable` findings have now been applied
 
@@ -43,6 +44,44 @@ Two corrections were made to the verdicts themselves while applying them, both a
 
 What remains open is the **13 `real-blocked`** findings above and below, each needing a decision the
 SRS does not supply.
+
+## Session 28: two are no longer blocked, and the other eleven have had their unblocked half done
+
+**Findings 18 and 60 were answered by a decision the project made for a different reason, and are
+closed.** Both asked the same question in different words: does §33's MVP screen list *bound* the
+frontend surface, so that FR-SCHOOL-001/002, FR-ASG-001 and FR-AI-001/002 are deliberately API-only —
+or does §32's per-feature "Connect frontend UI" step oblige a screen for every FR with a human actor?
+Session 27 answered it while closing the ninety-nine uncalled write routes: **§33 fixes two screen
+*lists*, and a screen list is not the requirement.** Four screens beyond the seventeen now exist —
+`school/settings` (which covers both FR-SCHOOL-001 and FR-SCHOOL-002's create/activate/close),
+`school/assignments`, `school/ai` and `school/notifications` — each reached from the Principal
+dashboard or a sibling screen rather than from the nav, which `verify-frontend.js` still pins at
+exactly §33's seventeen in both directions. Finding 18's stated consequence — *"nine working endpoints
+have no caller in the product"* — no longer holds; `verify-frontend.js` asserts five of those nine by
+method and path.
+
+**The remaining eleven are still blocked, and every action each of them named as available without a
+decision has now been taken.** Each verdict below ends with a "Fix / open question" that separates the
+part needing an answer from the part needing only honesty; the second part is done in all eleven:
+
+| # | What was available without a decision | Where it landed |
+|---|---|---|
+| 10 | Nothing beyond what the verdict records | The 422's remediation hint still names an operation no endpoint offers; recorded here |
+| 11 | Stop *silently* discarding `status` on create | `plans.validation.js` now **refuses** it on create, update and duplicate, with a message naming FR-SUB-004 and FR-SUB-005. Six assertions in `verify-plans.js` replace four that pinned the strip; regressed both ways. The checklist row no longer says "stripped" |
+| 16 | Record that §15.1's "Documents" half has no code path | FR-STUDENT-001 moved from `Tested` to **`In Progress`** — the first status in this file to move *down* — with the Notes naming which half is missing |
+| 17 | Record that the source answers twice | Already recorded in the FR-STUDENT-001 row |
+| 20 | Document the null-period consequence beside the guard; pin the behaviour in the suite | A long note in `fees.service.js` next to `alreadyAssigned()`, and four assertions in `verify-fees.js`: a period-less fee assigns, a **second** of the same component is refused 409, and the one escape — naming a period — goes through |
+| 39 | Correct `entitlementService.js`'s claim that invoice generation consumes a price override; attribute §33 "Custom Pricing" to §10.4's Custom Price model | The comment was corrected earlier; the checklist's two §33 rows now attribute the capability to `PRICING_MODELS.CUSTOM` and record the override path as **accepted-but-inert** |
+| 47 | Add a "narrower than §5's Teacher row, deliberately" note | In the FR-TT-001 row, in the form FR-ATT-003 already uses |
+| 52 | Disclose that the transaction id is optional, not only the screenshot | In the FR-BILL-003 row |
+| 53 | Re-attribute the "Super Admin and/or school" quotation to FR-SUB-009's Description | Already done in the FR-SUB-009 row |
+| 60 | State the gap in the FR-ASG-001 / FR-AI-001 / FR-AI-002 rows | Superseded: the gap is closed, and all three rows now say so |
+| 63 | Record each type's audience as an implementation choice; say the null-`school_id` shape is defined and unused | A note beside the column in `models/other.js`, and in the FR-NOTIF-001 row: three of FR-NOTIF-001's five recipient classes are reached and **two are empty** — no Teacher, and no platform notification |
+| 64 | Record `premium_reports` as inert | In the FR-SUB-009 row, with `custom_domain` beside it: both are `feature_unlock` add-ons and `requireFeature()` has **no route mounting it anywhere** |
+
+So the eleven are now blocked on nothing but the answers themselves. Each open question is stated in
+its own section below, in the form a person who knows what the product should do could answer in a
+sentence.
 
 ## The 13 `real-blocked` findings were re-triaged adversarially, and none was overturned
 

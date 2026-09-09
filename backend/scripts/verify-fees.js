@@ -1000,6 +1000,65 @@ async function verifyHttp() {
     check('but the next month is a different fee, and is allowed', dataOf(june).fees[0].period_month, '2025-06-01');
 
     /*
+     * ── The null-period consequence, pinned rather than left incidental — triage finding 20 ──
+     *
+     * `period_month` is optional and normalises to `null`, so `alreadyAssigned()` emits
+     * `period_month IS NULL` and the guard's triple degenerates to `(student, component)`. A second
+     * period-less fee of the same component is therefore refused **for the life of the record**, and
+     * the refusal says "for this period" when the caller named none.
+     *
+     * This is asserted because it is a limitation, not because it is desirable. §17 states no
+     * once-per-student rule and every available repair invents one — see the long note beside the
+     * guard in `fees.service.js`. What an assertion buys is that the behaviour cannot change by
+     * accident: whoever settles the open question will have to come here and say so.
+     *
+     * Deliberately on `exam_fee`, which the §17 component list names and which a school assigns per
+     * examination rather than per month — the case where a null period is most natural.
+     */
+    const firstExam = await expectOk(
+      '/fees/assignments',
+      {
+        method: 'POST',
+        token: accountant,
+        body: { fee_structure_id: exam.id, student_ids: [kids[2].id], due_date: '2025-07-01' },
+      },
+      201
+    );
+    check('a fee may be assigned with no period at all', dataOf(firstExam).fees[0].period_month, null);
+
+    const secondExam = await call('/fees/assignments', {
+      method: 'POST',
+      token: accountant,
+      body: { fee_structure_id: exam.id, student_ids: [kids[2].id], due_date: '2025-12-01' },
+    });
+    check(
+      'and a SECOND period-less fee of the same component is then refused — the known limitation',
+      [secondExam.status, codeOf(secondExam)],
+      [409, 'FEE_PERIOD_ALREADY_ASSIGNED']
+    );
+    /*
+     * The escape that does exist, asserted so the limitation is bounded rather than absolute: naming a
+     * period sidesteps it, because the triple stops degenerating. No error message says so, which is
+     * part of what finding 20 records.
+     */
+    const datedExam = await expectOk(
+      '/fees/assignments',
+      {
+        method: 'POST',
+        token: accountant,
+        body: {
+          fee_structure_id: exam.id,
+          student_ids: [kids[2].id],
+          due_date: '2025-12-01',
+          period_month: '2025-12-01',
+        },
+      },
+      201
+    );
+    check('  while the same fee WITH a period goes through, which is the only escape',
+      dataOf(datedExam).fees[0].period_month, '2025-12-01');
+
+    /*
      * The pairing a platform caller could otherwise break: the structure and the students coming from
      * different schools.
      *

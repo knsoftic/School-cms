@@ -6,8 +6,8 @@
   },
   "database": "msms_test",
   "suiteCount": 39,
-  "totalAssertions": 5470,
-  "totalPassLines": 5449,
+  "totalAssertions": 5476,
+  "totalPassLines": 5455,
   "suites": {
     "verify-addons.js": {
       "assertions": 176,
@@ -66,8 +66,8 @@
       "passLines": 219
     },
     "verify-fees.js": {
-      "assertions": 174,
-      "passLines": 174
+      "assertions": 177,
+      "passLines": 177
     },
     "verify-finance.js": {
       "assertions": 163,
@@ -114,8 +114,8 @@
       "passLines": 16
     },
     "verify-plans.js": {
-      "assertions": 175,
-      "passLines": 175
+      "assertions": 178,
+      "passLines": 178
     },
     "verify-platform-modules.js": {
       "assertions": 313,
