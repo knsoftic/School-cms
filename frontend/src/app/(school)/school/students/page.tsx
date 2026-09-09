@@ -42,6 +42,7 @@
  * instant, where the local hour is the correct answer.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 
@@ -214,6 +215,8 @@ export default function StudentsPage() {
    * `students.progression` — the narrower of the two student keys. See the actions column.
    */
   const canProgress = can('students.progression');
+  /* `students.manage` — the key both the edit and the photo route are mounted behind. */
+  const canManage = can('students.manage');
 
   const [promoting, setPromoting] = useState<StudentRow | null>(null);
   const [transferring, setTransferring] = useState<StudentRow | null>(null);
@@ -229,11 +232,28 @@ export default function StudentsPage() {
          * two are joined through a filter rather than a template — `${first} ${last}` renders a
          * trailing space and, when the column is null, the literal text "null".
          */
-        cell: (row) => (
-          <span className="font-medium">
-            {[row.first_name, row.last_name].filter(Boolean).join(' ')}
-          </span>
-        ),
+        /*
+         * The way into the record, and until now there was none: `PATCH /students/:id` and
+         * `POST /students/:id/photo` had no caller anywhere, so a student could be admitted and
+         * then never corrected — a mistyped name, a guardian's changed phone number, all permanent.
+         *
+         * A link only for somebody who can act on it. A reader with `students.view` alone would
+         * reach a screen that refuses them, and a name that looks clickable and answers with a
+         * refusal is worse than a name that does not.
+         */
+        cell: (row) =>
+          canManage ? (
+            <Link
+              href={`/school/students/${row.id}`}
+              className="font-medium text-brand-text underline-offset-4 hover:underline"
+            >
+              {[row.first_name, row.last_name].filter(Boolean).join(' ')}
+            </Link>
+          ) : (
+            <span className="font-medium">
+              {[row.first_name, row.last_name].filter(Boolean).join(' ')}
+            </span>
+          ),
       },
       {
         key: 'student_id',
@@ -343,7 +363,7 @@ export default function StudentsPage() {
           ),
       },
     ];
-  }, [canProgress]);
+  }, [canProgress, canManage]);
 
   const filtered = Boolean(debounced || status);
 
