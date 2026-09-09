@@ -390,12 +390,12 @@ export default function StudentsPage() {
            * plan's arithmetic in a page, and it would be stale the moment another admission lands.
            */
           can('students.manage') ? (
-            <a
+            <Link
               href="/school/students/new"
               className="btn btn-primary"
             >
               Admit student
-            </a>
+            </Link>
           ) : null
         }
       />

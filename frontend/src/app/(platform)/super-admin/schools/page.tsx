@@ -121,12 +121,12 @@ export default function SchoolsPage() {
            * into existence would still be refused by the API.
            */
           can('schools.manage') ? (
-            <a
+            <Link
               href="/super-admin/schools/new"
               className="btn btn-primary"
             >
               Add school
-            </a>
+            </Link>
           ) : null
         }
       />

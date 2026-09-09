@@ -279,12 +279,12 @@ export default function CouponsPage() {
            * twice over.
            */
           can('coupons.manage') ? (
-            <a
+            <Link
               href="/super-admin/coupons/new"
               className="btn btn-primary"
             >
               Add coupon
-            </a>
+            </Link>
           ) : null
         }
       />

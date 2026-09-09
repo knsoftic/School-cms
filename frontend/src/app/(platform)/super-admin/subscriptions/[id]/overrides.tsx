@@ -43,7 +43,7 @@
  * effective (a window starting next month), which looks like a broken save if only one is shown.
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { formatCodeWithAmount } from '@/lib/money';
@@ -210,8 +210,12 @@ export function OverridesPanel({
     }
   }
 
-  /** What one override row actually sets, in the terms of its own type. */
-  function valueOf(row: SubscriptionOverrideRow) {
+  /**
+   * What one override row actually sets, in the terms of its own type.
+   *
+   * `useCallback` because the columns memo captures it — see the note the taxes screen carries.
+   */
+  const valueOf = useCallback((row: SubscriptionOverrideRow) => {
     if (row.override_type === 'limit') {
       if (row.limit_type === 'unlimited') return 'unlimited';
       return row.limit_value === null ? '—' : Number(row.limit_value).toLocaleString();
@@ -222,7 +226,7 @@ export function OverridesPanel({
         : formatCodeWithAmount(subscription.currency, row.amount);
     }
     return row.is_enabled ? 'enabled' : 'disabled';
-  }
+  }, [subscription.currency]);
 
   const columns = useMemo<Column<SubscriptionOverrideRow>[]>(
     () => [
@@ -308,7 +312,7 @@ export function OverridesPanel({
           ]
         : []),
     ],
-    [canManage, subscription.currency]
+    [canManage, valueOf]
   );
 
   return (

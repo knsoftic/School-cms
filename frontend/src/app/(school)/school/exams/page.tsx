@@ -425,12 +425,12 @@ export default function ExamsPage() {
               </Link>
             ) : null}
             {can('exams.manage') ? (
-              <a
+              <Link
                 href="/school/exams/new"
                 className="btn btn-primary"
               >
                 Add exam
-              </a>
+              </Link>
             ) : null}
           </div>
         }

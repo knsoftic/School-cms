@@ -319,12 +319,12 @@ export default function SubjectsPage() {
            * itself, so a user who forced this link into existence still gets a 403.
            */
           canManage ? (
-            <a
+            <Link
               href="/school/subjects/new"
               className="btn btn-primary"
             >
               Add subject
-            </a>
+            </Link>
           ) : null
         }
       />

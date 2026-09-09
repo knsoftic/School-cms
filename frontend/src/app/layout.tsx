@@ -59,7 +59,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
          * asserts nothing in `frontend/src` calls that API, and that assertion is half of §24's
          * cross-site defence. Render-blocking on purpose — `defer` or `async` would let the paint
          * happen first and defeat the point.
+         *
+         * `@next/next/no-sync-scripts` flags exactly that blocking, and it is right about what it
+         * sees and wrong about this one case: the rule exists to stop a script delaying paint, and
+         * here delaying paint **is the requirement**. Disabled on the line rather than in
+         * `eslint.config.mjs`, so the exception is one script rather than a project-wide licence.
          */}
+        {/* eslint-disable-next-line @next/next/no-sync-scripts */}
         <script src="/theme-init.js" />
       </head>
       <body className="min-h-screen">

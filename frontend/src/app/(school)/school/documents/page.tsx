@@ -21,7 +21,7 @@
  * path would be showing a value the API deliberately withholds — and one that was null anyway.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { ApiError, api, saveFile } from '@/lib/apiClient';
@@ -118,7 +118,12 @@ export default function DocumentsPage() {
   /** The row whose PDF is being fetched, so only that button spins. */
   const [downloading, setDownloading] = useState<number | null>(null);
 
-  async function downloadPdf(row: DocumentRow) {
+  /*
+   * `useCallback`, because the columns memo captures it. See the note on the taxes screen:
+   * without it the memo holds whichever copy existed when its own dependencies last changed,
+   * and is correct only by accident of what the handler happens to read.
+   */
+  const downloadPdf = useCallback(async (row: DocumentRow) => {
     setDownloading(row.id);
     try {
       const file = await api.download(
@@ -135,7 +140,8 @@ export default function DocumentsPage() {
     } finally {
       setDownloading(null);
     }
-  }
+
+  }, [errorToast]);
 
   const columns = useMemo<Column<DocumentRow>[]>(
     () => [
@@ -222,7 +228,7 @@ export default function DocumentsPage() {
         ),
       },
     ],
-    [downloading]
+    [downloading, downloadPdf]
   );
 
   return (

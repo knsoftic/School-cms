@@ -33,7 +33,7 @@
  */
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
@@ -95,7 +95,16 @@ export default function NotificationsPage() {
 
   const canRetry = can('notifications.send');
 
-  async function markRead(row: NotificationRow) {
+  /*
+   * `useCallback`, because these two are captured by the `useMemo` that builds the columns.
+   *
+   * Without it the memo closes over whichever version existed when its own dependencies last
+   * changed, and stays correct only by accident of what the function happens to read — `busy` here,
+   * which is in the dependency list for other reasons. `react-hooks/exhaustive-deps` is what named
+   * it, on the first ESLint run this frontend has ever had. Making the handler stable turns "safe
+   * because of what it reads today" into "safe because of how it is built".
+   */
+  const markRead = useCallback(async (row: NotificationRow) => {
     if (busy) return;
     setBusy(true);
     setError(null);
@@ -111,7 +120,7 @@ export default function NotificationsPage() {
     } finally {
       setBusy(false);
     }
-  }
+  }, [busy, reload]);
 
   async function markAllRead() {
     if (busy) return;
@@ -132,7 +141,7 @@ export default function NotificationsPage() {
     }
   }
 
-  async function retry(row: NotificationRow) {
+  const retry = useCallback(async (row: NotificationRow) => {
     if (busy) return;
     setBusy(true);
     setError(null);
@@ -149,7 +158,7 @@ export default function NotificationsPage() {
     } finally {
       setBusy(false);
     }
-  }
+  }, [busy, reload, success]);
 
   const columns = useMemo<Column<NotificationRow>[]>(
     () => [
@@ -233,7 +242,7 @@ export default function NotificationsPage() {
         ),
       },
     ],
-    [busy, canRetry]
+    [busy, canRetry, markRead, retry]
   );
 
   const unreadCount = rows.filter((row) => !row.read_at).length;

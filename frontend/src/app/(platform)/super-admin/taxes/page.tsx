@@ -33,7 +33,7 @@
  */
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
@@ -137,7 +137,11 @@ export default function TaxesPage() {
     }
   }
 
-  async function makeDefault(row: Tax) {
+  /*
+   * `useCallback`: the columns memo captures this, and a plain function would be a new value every
+   * render that the memo silently keeps the old copy of. Named by `react-hooks/exhaustive-deps`.
+   */
+  const makeDefault = useCallback(async (row: Tax) => {
     if (busy) return;
     setBusy(true);
     setError(null);
@@ -154,7 +158,7 @@ export default function TaxesPage() {
     } finally {
       setBusy(false);
     }
-  }
+  }, [busy, reload, success]);
 
   async function clearDefault() {
     if (busy) return;
@@ -282,7 +286,7 @@ export default function TaxesPage() {
           ]
         : []),
     ],
-    [canManage, busy]
+    [canManage, busy, makeDefault]
   );
 
   const hasDefault = rows.some((row) => row.is_default);

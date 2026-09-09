@@ -318,12 +318,12 @@ export default function SubscriptionsPage() {
            * button whose only job is to start a new one.
            */
           can('subscriptions.manage') ? (
-            <a
+            <Link
               href="/super-admin/subscriptions/new"
               className="btn btn-primary"
             >
               New subscription
-            </a>
+            </Link>
           ) : null
         }
       />

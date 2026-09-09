@@ -353,12 +353,12 @@ export default function PlansPage() {
           /* `plans.manage` is one of the five keys in `config/permissions.js`; the API re-reads it on
            * the request, so hiding the button is a courtesy rather than the control. */
           can('plans.manage') ? (
-            <a
+            <Link
               href="/super-admin/plans/new"
               className="btn btn-primary"
             >
               New plan
-            </a>
+            </Link>
           ) : null
         }
       />

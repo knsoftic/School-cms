@@ -668,7 +668,17 @@ function AssignDialog({
       label: [row.first_name, row.last_name].filter(Boolean).join(' '),
       hint: row.student_id,
     }));
-  }, [students, onlyThisClass, structure?.class_id]);
+    /*
+     * `structure`, not `structure?.class_id`.
+     *
+     * The React Compiler refuses to keep a manual memo whose stated dependencies are *narrower* than
+     * what it infers — it reads a whole `structure` here and was told only one property of it, which
+     * means the memo could hold a stale value if `structure` changed identity without that property
+     * changing. Widening it costs one extra recompute when a different structure is chosen, which is
+     * exactly when this list should be recomputed anyway. Named by
+     * `react-hooks/preserve-manual-memoization` on the first ESLint run this frontend has had.
+     */
+  }, [students, onlyThisClass, structure]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();

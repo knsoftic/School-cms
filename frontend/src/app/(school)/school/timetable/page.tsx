@@ -353,12 +353,12 @@ export default function TimetablePage() {
            * link would still be refused by Express.
            */
           can('timetable.manage') ? (
-            <a
+            <Link
               href="/school/timetable/new"
               className="btn btn-primary"
             >
               Add entry
-            </a>
+            </Link>
           ) : null
         }
       />

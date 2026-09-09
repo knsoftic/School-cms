@@ -36,7 +36,7 @@
  */
 
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
@@ -164,6 +164,7 @@ export default function SchoolDetailPage() {
   const params = useParams<{ id: string }>();
   const id = typeof params.id === 'string' ? params.id : null;
 
+  const router = useRouter();
   const { can } = useAuth();
   const { success } = useToast();
   const [tab, setTab] = useActiveTab(TABS);
@@ -328,8 +329,15 @@ export default function SchoolDetailPage() {
     try {
       await api.delete(`/schools/${record.id}`);
       success('School deleted', `${record.name} no longer appears anywhere in the product.`);
-      /* Nothing here left to show, so back to the list rather than an empty detail screen. */
-      window.location.href = '/super-admin/schools';
+      /*
+       * Nothing here left to show, so back to the list rather than an empty detail screen.
+       *
+       * `router.push`, not `window.location.href`. The latter was written first and is a **full page
+       * reload**: it discards the in-memory access token, so the next screen begins by refreshing the
+       * session it did not need to lose. `@next/next/no-location-assign-relative-destination` is the
+       * rule that flagged it, on the first run of a linter this frontend had never had.
+       */
+      router.push('/super-admin/schools');
     } catch (caught) {
       setDeleteError(
         caught instanceof ApiError

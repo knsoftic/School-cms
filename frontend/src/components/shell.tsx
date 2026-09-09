@@ -177,10 +177,20 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
     const firstLink = drawerRef.current?.querySelector<HTMLElement>('a, button');
     firstLink?.focus();
 
+    /*
+     * The trigger is captured **here**, not read in the cleanup.
+     *
+     * `react-hooks/exhaustive-deps` names the reason: a ref read during cleanup gives whatever the
+     * ref points at when the drawer closes, which need not be the element that opened it. Focus
+     * belongs on the control the user actually pressed, and capturing it at open is what guarantees
+     * that. Found by the first ESLint run this frontend has had.
+     */
+    const trigger = triggerRef.current;
+
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = '';
-      triggerRef.current?.focus();
+      trigger?.focus();
     };
   }, [drawerOpen]);
 

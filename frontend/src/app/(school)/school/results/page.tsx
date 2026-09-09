@@ -62,7 +62,7 @@
  * `Student`), not in a per-row fetch from this component.
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { ApiError, api, saveFile } from '@/lib/apiClient';
 import { useCollection } from '@/lib/useCollection';
@@ -232,7 +232,12 @@ export default function ResultsPage() {
    * A plain `<a href>` cannot reach it: `readBearerToken` reads the `Authorization` header only, so
    * an unadorned navigation is a 401.
    */
-  async function downloadCard(row: ExamResult) {
+  /*
+   * `useCallback`, because the columns memo captures it. See the note on the taxes screen:
+   * without it the memo holds whichever copy existed when its own dependencies last changed,
+   * and is correct only by accident of what the handler happens to read.
+   */
+  const downloadCard = useCallback(async (row: ExamResult) => {
     setDownloading(row.id);
     try {
       const file = await api.download(
@@ -249,7 +254,8 @@ export default function ResultsPage() {
     } finally {
       setDownloading(null);
     }
-  }
+
+  }, [errorToast]);
 
   const { rows, meta, loading, error, refusal, reload } = useCollection<ExamResult>(
     '/exams/results',
@@ -419,7 +425,7 @@ export default function ResultsPage() {
         ),
       },
     ];
-  }, [downloading]);
+  }, [downloading, downloadCard]);
 
   return (
     <div>

@@ -547,6 +547,42 @@ function verifyLint() {
   check('  and `npm run lint` passes over it',
     run.status === 0 ? 'clean' : `exit ${run.status}: ${output.split('\n').slice(-3).join(' | ').slice(0, 300)}`,
     'clean');
+
+  /*
+   * ## The frontend half, which had the same defect for longer and worse
+   *
+   * The backend's version of this was a script wired to a command with no config. The frontend's was
+   * a script wired to a command that **no longer exists**: Next 16 removed `next lint` and stopped
+   * `next build` linting, so `npm run lint` failed outright and there was no eslint configuration of
+   * any kind. `docs/VERIFICATION.md` recorded it, and the consequence is larger than the backend's
+   * ever was — **every screen in the product was written after that upgrade**, so none had ever been
+   * linted. The first run reported 83 problems and seventeen of them were real, including eight
+   * `<a href>` internal links doing a full page reload where `<Link>` belongs.
+   *
+   * Asserted the same way and for the same reason: a config nobody runs is how those come back.
+   */
+  const frontendConfig = path.join(ROOT, 'frontend', 'eslint.config.mjs');
+  check('the frontend has an ESLint config too — flat, which is the only shape Next 16 reads',
+    fs.existsSync(frontendConfig), true);
+
+  const frontendPkg = JSON.parse(
+    fs.readFileSync(path.join(ROOT, 'frontend', 'package.json'), 'utf8')
+  );
+  /* `next lint` was removed in Next 16; a script still pointing at it is the defect, not the fix. */
+  check('  and its lint script calls ESLint directly rather than the removed `next lint`',
+    frontendPkg.scripts.lint, 'eslint .');
+
+  const frontendRun = spawnSync(
+    process.platform === 'win32' ? 'npx.cmd' : 'npx',
+    ['eslint', '.', '--max-warnings', '0'],
+    { cwd: path.join(ROOT, 'frontend'), encoding: 'utf8', shell: process.platform === 'win32' }
+  );
+  const frontendOutput = `${frontendRun.stdout || ''}${frontendRun.stderr || ''}`.trim();
+  check('  and it passes over the whole frontend',
+    frontendRun.status === 0
+      ? 'clean'
+      : `exit ${frontendRun.status}: ${frontendOutput.split('\n').slice(-3).join(' | ').slice(0, 300)}`,
+    'clean');
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════ */

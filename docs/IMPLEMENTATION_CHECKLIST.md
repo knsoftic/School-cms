@@ -48,7 +48,7 @@ every script exit 0, measured as one loop against live MariaDB:
 | `verify-auth-chain.js` | 84 |
 | `verify-auth-module.js` | 237 |
 | `verify-billing.js` | 239 |
-| `verify-deploy.js` | 58 |
+| `verify-deploy.js` | 61 |
 | `verify-documents.js` | 133 |
 | `verify-entitlement.js` | 272 |
 | `verify-error-handler.js` | 54 |
@@ -78,7 +78,7 @@ every script exit 0, measured as one loop against live MariaDB:
 | `verify-timetable.js` | 115 |
 | `verify-users-roles.js` | 236 |
 | `verify-validate.js` | 35 |
-| **Total** | **5,426** |
+| **Total** | **5,429** |
 
 Regenerated from `backend/tests/baseline.json`, the manifest `npm test` checks each run
 against. The previous table listed **30** suites totalling **4,613** — stale by 8 suites and
@@ -915,13 +915,13 @@ were covered only implicitly, by numbered Phase 5/6/7 rows that never cite them.
 | FR-PERF-001 | Performance Optimization Implementation | §25 | Completed | Indexes declared on every model; `utils/pagination.js` on every list endpoint; entitlement caching with a TTL; background jobs and the queue system — four of the eight `JOB_NAMES` registered by `registerAll()`, called from `createApp()`, with the unregistered four each carrying its reason in `handlers/index.js` — (§2ab, §2ad). §25 states no numeric targets and none is invented |
 | FR-BKP-001 | Database Backup & Retention | §26 | Completed | `src/jobs/tasks/databaseBackup.js` — real `mysqldump`, `BACKUP_RETENTION_DAYS` pruning by mtime, a part-written dump deleted rather than kept. `verify-jobs.js` asserts the dump contains all 64 model tables plus `sequelize_meta` |
 | FR-LOG-001 | Error & Activity Logging | §26 | Completed | `config/logger.js` (winston, daily rotation, separate error log) and `middlewares/activityLog.js` (`activity_logs` + `audit_logs`, written on `res.on('finish')` so a logging failure cannot turn a save into a 500) |
-| FR-DEPLOY-001 | Production Environment Setup | §27 | Completed | `deploy/` — six artifacts, 5,332 lines, verified by `scripts/verify-deploy.js` (58 assertions, 21 deliberate regressions all caught). Nginx reverse proxy + TLS + ACME renewal, the PM2 ecosystem (two apps: API and cron; the worker is deliberately unmanaged because it runs one job and exits), MySQL production config, the production env template covering every key `env.js` reads, logrotate for the PM2 logs only, and a monitoring runbook built from the health endpoints, PM2 and the log files — nothing off §27's list. **Complete as configuration, never executed:** nginx, pm2, mysql and logrotate are all absent from this machine, so no file was validated by its own tool. The suite checks agreement with the application instead. |
+| FR-DEPLOY-001 | Production Environment Setup | §27 | Completed | `deploy/` — six artifacts, 5,332 lines, verified by `scripts/verify-deploy.js` (61 assertions, 21 deliberate regressions all caught). Nginx reverse proxy + TLS + ACME renewal, the PM2 ecosystem (two apps: API and cron; the worker is deliberately unmanaged because it runs one job and exits), MySQL production config, the production env template covering every key `env.js` reads, logrotate for the PM2 logs only, and a monitoring runbook built from the health endpoints, PM2 and the log files — nothing off §27's list. **Complete as configuration, never executed:** nginx, pm2, mysql and logrotate are all absent from this machine, so no file was validated by its own tool. The suite checks agreement with the application instead. |
 | FR-APIDOC-001 | Swagger / OpenAPI Documentation | §28 | Completed | `src/docs/` — `GET /docs` (Swagger UI) and `GET /docs/openapi.json`, both above the authentication boundary. The document is **generated from the mounted Express stack**: six of §28's seven fields are read from the routes, the guards and the Joi schemas that enforce them, so it cannot drift. The seventh — the shape of a success payload — has no machine-readable source, and the document says so rather than guessing. 195 paths, 266 operations. `verify-openapi.js` → 101 checks, 17 deliberate regressions all caught **Corrected in the §36 final pass:** the generated document described the success envelope’s `meta` as a **flat** object of four keys; `ApiResponse.paginated()` has always nested under `meta.pagination` and emitted **six**, adding `hasNextPage`/`hasPreviousPage`. A client trusting it would have read `meta.totalPages` as `undefined` and built a broken pager — the exact bug this project’s own frontend had. 101 of the suite’s assertions checked the document is well-formed and that its guards match the routers; **none checked that a shape it describes is one the application emits**. `verify-openapi.js` now captures a real `paginated()` envelope and compares its keys to the document’s, neither side a literal (101 -> 104). |
 
 ## Phase 7 — Deployment, Docs & Final Review
 
 **`deploy/` exists** — six artifacts, 5,312 lines, written in session 26 and verified by
-`scripts/verify-deploy.js` (58 assertions). **Nothing in it has been executed**: nginx, pm2,
+`scripts/verify-deploy.js` (61 assertions). **Nothing in it has been executed**: nginx, pm2,
 mysql and logrotate are all absent from this machine, so no file was validated by the tool that
 will consume it. What the suite checks instead is that each config **agrees with the application**
 — the proxy port against `config.app.port`, the body caps against `MAX_UPLOAD_MB`, PM2's
