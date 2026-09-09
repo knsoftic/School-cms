@@ -11623,9 +11623,9 @@ half has no code path) — and gave 3.S.1 the terminal `Will not be built` statu
   methods and says nothing else, so how it is credited, what happens when it is short, and whose it is
   are all unanswered; implementing the debit alone would make every wallet payment fail, which is worse
   than a method that is visibly unimplemented), **#25** (run the loop serially — the remedy is the
-  practice, and §6's harness enforces it) and **#33**, whose remaining half is a history rewrite that
-  changes every commit hash — the repository owner's call, not a thing to do unasked. Each names what
-  it is waiting on.
+  practice, and §6's harness enforces it). **Six rows, and not one of them is waiting on code being
+  written here** — they wait on the environment, a deployment, a version bump, or a decision the SRS
+  declines to make. Each row names which.
 
 **And one qualification carried forward, unchanged.** FR-DEPLOY-001 is complete *as configuration* and
 has never been **run**. nginx, pm2, mysql and logrotate are absent from this machine, so no file was

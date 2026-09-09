@@ -242,7 +242,7 @@ part 43 alongside the measurement above.
 
 `IMPLEMENTATION_PROGRESS.md` §5 is the register. **Session 28 closed the last three rows a patch could
 close** — 17, 21, 31, 32 and 33 — the last of them found while re-measuring, and closed the same day.
-What is open is seven rows, none of them waiting on engineering:
+What is open is six rows — 2, 11, 15, 18, 19 and 25 — none of them waiting on engineering:
 
 | # | Issue | Note |
 |---|---|---|
