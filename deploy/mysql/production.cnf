@@ -1,0 +1,1049 @@
+# =============================================================================
+#  deploy/mysql/production.cnf
+#
+#  Database server configuration for the Multi-School Management System
+#  (SRS §27 — "MySQL Production").
+#
+#  Every value below is derived from something in backend/src or from the
+#  sibling deploy artifacts. Where a number could not be derived, the comment
+#  says so rather than dressing a guess up as a requirement. The ones that
+#  remain judgement calls are: innodb_buffer_pool_size, long_query_time,
+#  net_read_timeout, the max_connections headroom above the derived budget, and
+#  the log paths.
+#
+#  ---------------------------------------------------------------------------
+#  WHAT WAS AND WAS NOT VERIFIED
+#  ---------------------------------------------------------------------------
+#  Stated first, because a config file that claims to have been tested and was
+#  not is worse than one that admits the gap.
+#
+#  NOT VERIFIED: no MySQL 8 or MariaDB *server* was available where this file
+#  was written, so it has never been loaded. `mysqld --validate-config`,
+#  `mysqld --verbose --help` and a restart were not run. Every variable name,
+#  every engine default quoted below, and every privilege requirement in the
+#  operator notes is reasoned from the engines' documented behaviour — not
+#  observed. Load it on a host you can restart twice before you load it on one
+#  you cannot, and finish with operator note 5.
+#
+#  VERIFIED: the mysqldump header quoted in sections 3, 4 and 9 was produced by
+#  running the exact argv from backend/src/jobs/tasks/databaseBackup.js:53-62
+#  through this project's own dumper (MYSQLDUMP_PATH, backend/.env:97 ->
+#  mysqldump 10.19 / MariaDB 10.4.32) against the development database. It
+#  exited 0 and the header lines quoted are verbatim from that file. Every
+#  file:line citation below was opened and read.
+#
+#  ---------------------------------------------------------------------------
+#  WHERE THIS FILE GOES
+#  ---------------------------------------------------------------------------
+#    Debian / Ubuntu, MySQL 8:   /etc/mysql/mysql.conf.d/production.cnf
+#    RHEL-family / MariaDB:      /etc/my.cnf.d/production.cnf
+#
+#  Both directories are already !includedir'd by the packaged my.cnf, so this
+#  file loads last and overrides the distribution defaults. It does not replace
+#  the packaged my.cnf — datadir, socket, pid-file and user stay where the
+#  package put them, because moving them buys nothing and breaks the package's
+#  own AppArmor/SELinux profile.
+#
+#  PATHS DIFFER BETWEEN THOSE TWO TARGETS AND MYSQLD DOES NOT SURVIVE GETTING
+#  IT WRONG. /var/log/mysql is the Debian/Ubuntu convention; RHEL-family
+#  MariaDB packages log to /var/log/mariadb and have no /var/log/mysql at all.
+#  A log_error pointing at a directory that does not exist is not a warning —
+#  mysqld cannot open the file and aborts at startup. That is why the two log
+#  paths live in the engine-specific blocks at the END of this file and not in
+#  the common section, and why the MariaDB block spells them differently.
+#
+#  ---------------------------------------------------------------------------
+#  LINUX ONLY — DO NOT LOAD THIS ON THE WINDOWS DEV BOX
+#  ---------------------------------------------------------------------------
+#  innodb_flush_method = O_DIRECT is not a valid value on Windows and the
+#  server refuses to start with it. Development stays on XAMPP's own my.ini.
+#  Everything the *application* needs is set per-connection anyway
+#  (backend/src/config/database.js:68-73 pins sql_mode on every connection, and
+#  Sequelize issues SET time_zone on every connection), which is precisely why
+#  the dev box has never needed this file.
+#
+#  ---------------------------------------------------------------------------
+#  MySQL OR MariaDB
+#  ---------------------------------------------------------------------------
+#  SRS §27 names MySQL and this file is written for MySQL 8.0. The application
+#  runs on either: backend/src/config/database.js:42 pins Sequelize's `mysql`
+#  dialect, and backend/src/models/columns.js:96-100 documents the one place
+#  the engines diverge for this schema — JSON is a native type on MySQL and an
+#  alias for LONGTEXT + json_valid() on MariaDB.
+#
+#  Options that exist on only one of the two are isolated in the two marked
+#  blocks at the END of this file. That separation is not tidiness: feeding a
+#  MySQL-only variable to MariaDB makes the server refuse to start with
+#  "unknown variable", which on a restart you did not schedule is an outage.
+#
+#  ---------------------------------------------------------------------------
+#  SRS §27 SCOPE
+#  ---------------------------------------------------------------------------
+#  §27's technology list is closed. Everything here is a setting of MySQL
+#  itself or of mysqldump — "MySQL Production" and "Database Backup", both
+#  named by §27. No agent, exporter, sidecar or supervisor is introduced.
+#  performance_schema and the slow query log are MySQL's own facilities and are
+#  the only in-database answer to §27's "Monitoring" that does not add a tool.
+# =============================================================================
+
+[mysqld]
+
+# -----------------------------------------------------------------------------
+# 1. Network
+# -----------------------------------------------------------------------------
+
+# backend/src/config/env.js:124 defaults DB_PORT to 3306 and .env.example:20
+# ships that value. Stated rather than inherited so the two files can be diffed.
+port                            = 3306
+
+# The API connects to 127.0.0.1 (backend/src/config/env.js:123,
+# .env.example:19) and backend/src/config/database.js:57-61 configures NO TLS —
+# dialectOptions carries only decimalNumbers and connectTimeout. So the
+# credentials and every row of every school's data cross the wire in clear.
+# That is acceptable exactly as long as the wire is the loopback interface and
+# never leaves the host. Binding to 127.0.0.1 is what makes that true; a
+# default 0.0.0.0 bind would put an unencrypted, password-authenticated MySQL
+# on the public interface of a box that already has nginx and SSL on it.
+#
+# If the database is ever moved to its own host, this line is not the change
+# that is needed — dialectOptions.ssl in backend/src/config/database.js is.
+bind_address                    = 127.0.0.1
+
+# Every connection arrives from 127.0.0.1 over TCP, so there is nothing to
+# resolve and a reverse-DNS lookup on each connect is pure latency — and a
+# stalled resolver turns into connection timeouts that look like database
+# failures. Consequence the operator must act on: with name resolution off,
+# host matching is literal, so the account MUST be granted as
+# 'msms'@'127.0.0.1'. A grant to 'msms'@'localhost' matches only the unix
+# socket and the API will fail at boot with ER_ACCESS_DENIED_ERROR, which
+# backend/src/config/database.js surfaces through Sequelize's AccessDeniedError.
+skip_name_resolve               = ON
+
+# Nothing in backend/src issues LOAD DATA or SELECT ... INTO OUTFILE (grepped:
+# no occurrences). Both capabilities therefore only ever serve an attacker who
+# has reached SQL execution — LOCAL INFILE lets a hostile or compromised server
+# ask a client to hand over a file it can read, and OUTFILE writes files as the
+# mysqld user. Removing capability the application does not use costs nothing.
+local_infile                    = OFF
+secure_file_priv                = NULL
+
+# -----------------------------------------------------------------------------
+# 2. Character set and collation — a mismatch here corrupts quietly
+# -----------------------------------------------------------------------------
+#
+# The schema is created as utf8mb4 / utf8mb4_unicode_ci in three independent
+# places and they agree:
+#   backend/src/database/schema.js:59-61   every one of the 64 tables
+#   backend/src/config/database.js:54-55   Sequelize's `define` defaults
+#   backend/src/database/cli.js:51-52      CREATE DATABASE ... COLLATE
+#
+# The server default is a different value on both engines — utf8mb4_0900_ai_ci
+# on MySQL 8, utf8mb4_general_ci on MariaDB — and that difference is invisible
+# until it is not. The 64 baseline tables carry an explicit COLLATE clause and
+# are safe. Anything created WITHOUT one is not: a hand-made table during a
+# recovery, or a future migration that writes `queryInterface.createTable`
+# without the options block schema.js:58-61 supplies. Join a varchar in such a
+# table against a varchar in an existing one and MySQL raises
+# ER_CANT_AGGREGATE_2COLLATIONS — "Illegal mix of collations" — at runtime, on
+# a query that was never tested against a table that did not yet exist.
+#
+# Setting the server default to the value the schema already uses removes the
+# whole class.
+character_set_server            = utf8mb4
+collation_server                = utf8mb4_unicode_ci
+
+# schema.js:61 creates all 64 tables ENGINE=InnoDB, and it is not a preference:
+# the 254 foreign keys and every SELECT ... FOR UPDATE in the money paths
+# (backend/src/modules/fees/fees.service.js:516,
+# backend/src/utils/documentNumber.js:178) are InnoDB features. Pinning the
+# default means a table created without an ENGINE clause cannot silently land
+# on something that accepts the DDL and drops the guarantees.
+default_storage_engine          = InnoDB
+
+# NOT SET, deliberately: skip_character_set_client_handshake.
+# It is the usual reflex here and it is not needed. mysql2 already negotiates
+# utf8mb4_unicode_ci as the connection collation
+# (node_modules/mysql2/lib/connection_config.js:176 defaults charsetNumber to
+# Charsets.UTF8MB4_UNICODE_CI), which is byte-for-byte the collation the columns
+# carry. Forcing the handshake would change nothing for this client and would
+# silently override any future client that legitimately asked for something
+# else.
+
+# -----------------------------------------------------------------------------
+# 3. sql_mode — the same five modes the application pins per connection
+# -----------------------------------------------------------------------------
+#
+# This list is copied verbatim from SESSION_SQL_MODE in
+# backend/src/config/database.js:31-37, whose header explains what it is for:
+# without STRICT_TRANS_TABLES the server COERCES bad values instead of refusing
+# them, and an out-of-range ENUM is stored as ''. The schema uses ENUMs for the
+# columns that must not be wrong — subscriptions.state decides whether a school
+# has access at all — so a silent '' locks a paying school out with nothing
+# anywhere to explain it.
+#
+# The application sets this on EVERY connection (database.js:68-73, an
+# afterConnect hook rather than a one-shot, because the pool opens connections
+# on demand). So why set it globally too? Because two kinds of connection never
+# run that hook and write to the same tables:
+#
+#   * the operator's own mysql CLI, fixing a row at 2am
+#   * the CREATE DATABASE connection in backend/src/database/cli.js:27-34,
+#     which builds its own Sequelize instance with no hooks
+#
+# A permissive global default means those two can write data the application
+# would have refused, into a schema whose invariants the application assumes.
+#
+# THE RESTORE PATH IS NOT ONE OF THEM, and it looks like it should be. A
+# `mysql < msms-....sql` restore does NOT inherit this global. mysqldump pins
+# the restoring session's mode in the dump file itself; the header of a real
+# dump taken with the argv at databaseBackup.js:53-62 contains, verbatim:
+#
+#   /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+#
+# and restores @OLD_SQL_MODE at the end. So for the whole length of the restore
+# the session has NO STRICT_TRANS_TABLES, NO NO_ZERO_DATE and NO
+# ERROR_FOR_DIVISION_BY_ZERO, whatever this line says. (The same header also
+# sets FOREIGN_KEY_CHECKS=0 and UNIQUE_CHECKS=0 for the duration.) That is
+# normal and it is what makes a dump reloadable — but it means this file cannot
+# protect the restore path, and nothing in this file can. The only lever on it
+# is the argv in backend/src/jobs/tasks/databaseBackup.js.
+#
+# ONLY_FULL_GROUP_BY is absent for the reason database.js:27-29 gives — it
+# governs which QUERIES are legal, not which DATA is. Every grouped query in
+# the codebase is already fully grouped and would pass it
+# (reports.service.js:96,155,224,386; attendance.service.js:385;
+# finance.service.js:416; notifications.service.js:411), so adding it here
+# would probably be harmless — and "probably harmless" is not a reason to make
+# the global mode disagree with the session mode. They match on purpose.
+#
+# *****************************************************************************
+# DRIFT WARNING — applies to FIVE values in this file, not just this one
+# *****************************************************************************
+# This file is static and the server reads it at startup. The .env is what the
+# APPLICATION reads at runtime (backend/src/config/env.js). Nothing reconciles
+# the two, no test compares them, and where they disagree the .env wins for the
+# application and this file wins for everything else on the server. The five
+# places they are deliberately set to the same value:
+#
+#   this file                     .env variable            defined at
+#   ---------------------------------------------------------------------------
+#   sql_mode                      (none — mirrors code)    database.js:31-37
+#   port = 3306                   DB_PORT                  env.js:124
+#   bind_address = 127.0.0.1      DB_HOST                  env.js:123
+#   default_time_zone = '+00:00'  DB_TIMEZONE              env.js:131
+#   binlog_expire_logs_seconds    BACKUP_RETENTION_DAYS    env.js:252
+#     (in the MySQL 8 block)
+#
+# All four env vars are `num()`/`str()` defaults, i.e. settable per environment,
+# so any of them can move without this file noticing. The one with a silent
+# failure mode is the last: setting BACKUP_RETENTION_DAYS=7 shortens the dump
+# window to a week and leaves 30 days of binary logs on disk — the exact
+# incoherence the binlog retention comment claims to be preventing. If you
+# change BACKUP_RETENTION_DAYS, change binlog_expire_logs_seconds with it.
+#
+# max_allowed_packet is derived from MAX_UPLOAD_MB (env.js:192) rather than
+# mirrored, and the derivation has ~3x of slack in it (section 7), so it is not
+# in this table — but raising MAX_UPLOAD_MB past ~30 does invalidate it.
+sql_mode                        = "STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
+
+# No column in backend/src/models is a TIMESTAMP — Sequelize's mysql dialect
+# emits DATETIME for DataTypes.DATE
+# (node_modules/sequelize/lib/dialects/mysql/data-types.js:43) — so this does
+# nothing today. It is set because MariaDB defaults it OFF, and OFF is what
+# gives a hand-added TIMESTAMP column implicit NOT NULL plus auto-update
+# behaviour that no Sequelize model would know about. The model and the column
+# would then disagree about what the row says.
+explicit_defaults_for_timestamp = ON
+
+# -----------------------------------------------------------------------------
+# 4. Time
+# -----------------------------------------------------------------------------
+#
+# DB_TIMEZONE is '+00:00' (backend/src/config/env.js:131, .env.example:27) and
+# Sequelize turns that into `SET time_zone = '+00:00'` on every connection
+# (node_modules/sequelize/lib/dialects/mysql/connection-manager.js:83-86). So
+# every DATETIME the application writes is UTC.
+#
+# The server default matters for the connections that do not do that, and there
+# are exactly two: the operator's own mysql CLI, and the hookless
+# serverConnection in backend/src/database/cli.js:27-34. If the server default
+# is SYSTEM and the host is not UTC, a row inserted by hand during a recovery
+# lands hours away from every row beside it, and nothing in the data says so.
+# Pinning the server to +00:00 makes those two agree with the application by
+# default instead of by luck.
+#
+# THE DUMP/RESTORE PAIR IS NOT ONE OF THEM. Like sql_mode (section 3),
+# mysqldump pins the time zone in the file. The header of a real dump taken
+# with the argv at databaseBackup.js:53-62 contains, verbatim:
+#
+#   /*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+#   /*!40103 SET TIME_ZONE='+00:00' */;
+#
+# so a dump and its restore are already UTC-consistent with each other whatever
+# this line says. This setting was never what protected that path.
+#
+# WHAT THIS SETTING DOES *NOT* BUY, stated because the obvious claim is false:
+# there are NO CURRENT_TIMESTAMP column defaults in this schema to pin. The
+# four columns that look like they would have one —
+# backend/src/models/attendance.js:61,105, billing.js:416, finance.js:194 — are
+# all `defaultValue: DataTypes.NOW`, which Sequelize resolves in the NODE
+# process and sends as a literal; the query generator emits no DEFAULT clause
+# at all for it. Confirmed in the dump above: those columns are
+# `marked_at datetime NOT NULL`, `redeemed_at datetime NOT NULL`,
+# `paid_at datetime NOT NULL`, and the whole 64-table dump contains zero
+# occurrences of CURRENT_TIMESTAMP.
+#
+# The operational consequence of that is the opposite one, and it belongs with
+# the STRICT_TRANS_TABLES in section 3: a hand-written INSERT from the mysql
+# CLI that omits marked_at / redeemed_at / paid_at is REJECTED with "Field
+# 'marked_at' doesn't have a default value", because the schema supplies no
+# server-side default and strict mode will not invent one. At 2am that reads
+# like a broken schema. It is not — supply the value.
+#
+# A numeric offset also means the server never needs the time-zone tables
+# loaded (mysql_tzinfo_to_sql), which is one fewer step that can be skipped.
+default_time_zone               = '+00:00'
+#
+# WHAT THIS CANNOT FIX — stated because it looks like it should.
+#
+#  (a) DATETIME here has NO fractional-seconds precision. Sequelize emits a
+#      bare `DATETIME` unless a length is given (mysql data-types.js:43) and no
+#      model gives one, so every timestamp in all 64 tables is truncated to the
+#      whole second on write. Consequences, all real:
+#        - created_at is not a tiebreaker. Two rows written in the same second
+#          have the same created_at, and `ORDER BY created_at` returns them in
+#          an order InnoDB is free to choose.
+#        - Asserting that something happened "after" something else within one
+#          second is undefined. IMPLEMENTATION_PROGRESS.md records this being
+#          hit for real on notifications.read_at, where the test had to backdate
+#          a row by six years because two calls milliseconds apart were
+#          indistinguishable in the column.
+#        - It is NOT a rounding: MySQL truncates, so 10:00:00.999 is 10:00:00.
+#      Nothing in this file changes it — the fix would be DATETIME(3) in the
+#      models and a migration, which is a schema decision, not a server one.
+#      The one thing this file guarantees is that a dump/restore round-trips
+#      these values exactly, because there is no precision left to lose.
+#
+#  (b) backend/src/utils/documentNumber.js:80-95 builds the YYYYMM segment of
+#      every invoice/receipt number from the NODE process's local clock
+#      (getFullYear/getMonth), deliberately and with a comment saying so. That
+#      is the host's TZ, not this setting. If the host is not UTC, an invoice
+#      created at 21:00 local on 31 January is numbered INV-202601-xxxxx while
+#      its own created_at (UTC) reads February. They agree only when the host
+#      TZ is UTC. Set the production host's clock to UTC and the two are
+#      consistent; leave it local and this is a known, deliberate skew.
+
+# -----------------------------------------------------------------------------
+# 5. Connections
+# -----------------------------------------------------------------------------
+#
+# The pool is 15 per Sequelize instance — DB_POOL_MAX defaults to 15
+# (backend/src/config/env.js:128, .env.example:24) and
+# backend/src/config/database.js:46 hands it straight to the pool. One
+# Sequelize instance exists per process that requires backend/src/models.
+#
+#   process                                       connections   source
+#   ------------------------------------------------------------------------
+#   API — ONE PM2 fork, not a cluster                  15        env.js:128
+#   cron.js — resident, exactly one allowed            15        jobs/cron.js
+#   worker.js — transient, runs one job and exits      15        jobs/worker.js
+#   db:migrate — the app connection, during deploys    15        database/cli.js:37-39
+#   db:create — the CREATE DATABASE connection          5        sequelize.js:121 default pool
+#   mysqldump                                           1        databaseBackup.js:69
+#   operator CLI / a second dump / headroom            10        judgement
+#   ------------------------------------------------------------------------
+#                                                      76
+#
+# THE db:create ROW IS NOT db:migrate. `migrate()` (cli.js:71-76) calls only
+# appConnection() (cli.js:37-39), which is the shared models pool already
+# counted on the row above it. The separate 5-connection serverConnection
+# (cli.js:27-34) is reached from createDatabase() (cli.js:47-48), dropDatabase()
+# (cli.js:60-62) and reset() (cli.js:138-141) — and the last two call
+# assertNotProduction (cli.js:41-45) and refuse outright under
+# NODE_ENV=production. So in production only `db:create` opens it, once, by
+# hand. It is counted because a first deploy runs it.
+#
+# THE INSTANCE COUNT IS 1, AND IT IS DERIVED, NOT ASSUMED.
+# deploy/pm2/ecosystem.config.js:219-220 sets the API to `instances: 1,
+# exec_mode: 'fork'`, and :326-327 does the same for the cron app. That is a
+# correctness constraint, not a capacity choice: the rate limiter uses
+# express-rate-limit's in-memory store, and
+# backend/src/middlewares/rateLimit.js:29-32 states that behind N workers the
+# effective ceiling becomes N x the configured limit, naming SRS §3's
+# single-process deployment as the case that is exactly counted. worker.js is
+# not a PM2 app at all — it runs one job and exits — so its 15 appear only
+# while an operator is running one.
+#
+# IF THAT EVER CHANGES, this number does. Every additional API instance is
+# another 15 (env.js:128). Raise max_connections by 15 per instance, or lower
+# DB_POOL_MAX so that instances x DB_POOL_MAX stays inside it — but read
+# rateLimit.js:29-32 first, because raising the instance count is the change
+# that needs justifying, not this line.
+#
+# 150 is deliberately NOT tightened down to 76. It is close to both engines'
+# own default (151), so this line is not buying much on a stock server — it is
+# here so the budget above is written down somewhere an operator can check it
+# against `SHOW GLOBAL STATUS LIKE 'Max_used_connections'`, which is the
+# high-water mark since the last restart. Unused headroom costs nothing
+# until it is used, and MySQL additionally reserves one connection beyond
+# max_connections for an account with SERVICE_CONNECTION_ADMIN/SUPER, which is
+# what lets an operator get in when the pool has eaten everything.
+#
+# What exhaustion looks like, so it is recognisable: Sequelize waits
+# `acquire: 30000` (database.js:48) for a connection and then throws
+# ConnectionAcquireTimeoutError. Note that this does NOT degrade gracefully at
+# the health endpoint — GET /api/v1/health/ready calls assertConnection()
+# through the same pool (backend/src/modules/system/system.controller.js:24,56),
+# so a saturated pool makes readiness hang for 30s before reporting 503 rather
+# than failing fast.
+max_connections                 = 150
+
+# DB_POOL_MIN is 0 (env.js:129) and the pool closes a connection after 10s idle
+# (database.js:49). So this application does not hold a warm pool: after ten
+# quiet seconds every connection is gone, and the next request re-opens up to
+# 15 of them at once. Without a thread cache each of those is a fresh thread
+# creation, on every quiet-then-busy transition — which for a school system is
+# every morning.
+#
+# 30 = the resident maximum, and only that: the one API fork's 15 plus cron's
+# 15 (the two `instances: 1` apps in deploy/pm2/ecosystem.config.js:219,326).
+# Cached threads are not free — each holds its stack — so this deliberately
+# does NOT cover the transient migrate/worker/dump connections, which appear
+# once a day and can afford to pay for their own thread. Raise it by 15 for
+# each API instance added, alongside max_connections.
+#
+# The engine default is small — MySQL 8 computes 8 + (max_connections / 100),
+# so 9 here — which is why this line is worth setting at all.
+thread_cache_size               = 30
+
+# NOT SET, deliberately: table_open_cache / table_definition_cache.
+# SRS §29 fixes the schema at 64 tables (backend/src/models/index.js:6,529) and
+# the widest read joins three of them
+# (backend/src/modules/reports/reports.service.js:155). MySQL 8's default of
+# 4000 and MariaDB's 2000 both cover 64 tables across every connection this
+# server will hold. Setting a number here would be decoration.
+
+# -----------------------------------------------------------------------------
+# 6. Timeouts
+# -----------------------------------------------------------------------------
+
+# The pool closes an idle connection after 10s (database.js:49), so a live
+# pooled connection is never idle for 600. This cannot kill a connection the
+# pool still believes in — the failure that produces "Connection lost: The
+# server closed the connection" on the next query — while still reclaiming
+# connections orphaned by a PM2 process that was killed rather than shut down
+# (backend/src/server.js:116-118 handles SIGTERM and SIGINT and closes the pool
+# at server.js:66; a SIGKILL runs neither). 60x the pool's own idle window is
+# the margin.
+wait_timeout                    = 600
+
+# interactive_timeout is left at the 28800 default ON PURPOSE. It governs the
+# operator's own mysql CLI, and expiring that session mid-recovery — halfway
+# through a manual restore — costs far more than the connection saves.
+
+# backend/src/config/database.js:60 gives mysql2 connectTimeout: 20000. The
+# server's own connect_timeout is the other half of the same handshake, and at
+# its 10s default the server gives up while the client is still waiting the
+# other 10. Under load that produces a client-side timeout with no server-side
+# explanation. Matching them means one clock decides.
+connect_timeout                 = 20
+
+# backend/src/jobs/tasks/databaseBackup.js:116 pipes mysqldump's stdout
+# straight into a file on this host. If that write stalls — a full disk, a
+# quota, a slow volume — the server's 60s default write timeout aborts the dump
+# mid-stream; databaseBackup.js:153-159 then deletes the part-written file,
+# correctly, because a truncated dump is worse than none. The result is a night
+# with no backup. 300 gives the filesystem five minutes to unstick itself
+# before the night is lost.
+net_write_timeout               = 300
+
+# The mirror case: restoring a dump with `mysql < msms-....sql`, where the
+# server waits on the client to feed it one very large statement (see
+# max_allowed_packet below). 120 is a judgement, not a derived figure.
+net_read_timeout                = 120
+
+# -----------------------------------------------------------------------------
+# 7. Packet size
+# -----------------------------------------------------------------------------
+#
+# The largest statement this application can produce is bounded, and the bound
+# is findable:
+#
+#   backend/src/models/exams.js:368  question_banks.extracted_text is
+#                                    TEXT('long') — LONGTEXT
+#   backend/src/middlewares/upload.js:229  maxMb = planMb === null ? hardMb :
+#                                    Math.min(planMb, hardMb) — a plan's
+#                                    file_upload_limit can only LOWER the
+#                                    ceiling, never raise it, however generous
+#                                    the plan is
+#   backend/src/config/env.js:192    that backstop, MAX_UPLOAD_MB, is 10
+#                                    (.env.example:70), and it is absolute
+#
+# So a teacher's §21 source PDF is at most 10 MB, the text pdf-parse extracts
+# from it is bounded above by that, and it is written to extracted_text as an
+# escaped literal inside one statement — worst case roughly double, ~20 MB.
+#
+# 64M clears that with room and matches MySQL 8's own default. MariaDB's
+# default is 16M, which the worst case does NOT clear — on MariaDB this line is
+# doing real work, and without it a large upload fails at the write with
+# ER_NET_PACKET_TOO_LARGE after the file has already been accepted and stored.
+max_allowed_packet              = 64M
+
+# -----------------------------------------------------------------------------
+# 8. InnoDB — durability first, because this database holds money
+# -----------------------------------------------------------------------------
+#
+# backend/src/models/columns.js:60-64 gives every amount DECIMAL(14,2), and
+# backend/src/modules/fees/fees.service.js:1-19 is explicit that a fee payment
+# is cash a receptionist has already taken from a parent. A committed payment
+# that does not survive a power cut is money the school has and no record of.
+# Both of the settings below are commonly relaxed for throughput; here they are
+# not, and the reason is that sentence.
+innodb_flush_log_at_trx_commit  = 1
+sync_binlog                     = 1
+
+# One .ibd per table. With 64 tables that means dropping or truncating one
+# returns its space to the filesystem instead of stranding it inside a shared
+# tablespace that only a full dump-and-reload reclaims — which matters most
+# during exactly the restore where disk is tight.
+innodb_file_per_table           = ON
+
+# backend/src/database/schema.js:58-61 sets charset, collate and engine on
+# every table but NOT row_format, so tables inherit the server default. DYNAMIC
+# is what makes the 35 JSON columns (columns.js:100) and the LONGTEXT
+# extracted_text store their overflow off-page instead of counting against the
+# ~8KB in-row limit. On the old COMPACT format a wide table — and these are
+# wide, every school-scoped table carries school_id, organization_id, both
+# actor columns and three timestamps on top of its own — can be created
+# successfully and then fail at INSERT with "Row size too large".
+innodb_default_row_format       = DYNAMIC
+
+# Makes that failure happen at CREATE TABLE, during a migration an operator is
+# watching, instead of at INSERT months later. Default ON on both engines;
+# stated so nobody turns it off to make a migration "work".
+innodb_strict_mode              = ON
+
+# Bypasses the OS page cache so a row is not held twice — once in the buffer
+# pool, once by the kernel. That double-buffering is worth avoiding anywhere,
+# and more here than usual, because §27 describes a single server: PM2's Node
+# processes and nginx are competing for the same RAM.
+# LINUX ONLY — see the file header.
+innodb_flush_method             = O_DIRECT
+
+# ***** NOT DERIVED FROM ANYTHING IN THIS REPOSITORY *****
+# The only measured size anywhere in the codebase is the "complete 222 KB dump"
+# recorded in backend/src/jobs/tasks/databaseBackup.js:80 — a development
+# database with seed data, not a production one. There is no honest way to turn
+# that into a buffer pool size.
+#
+# 512M is a starting point chosen to leave room on a small single-server §27
+# host that is also running PM2, cron and nginx. It is not a recommendation and
+# it is not tuned.
+#
+# What settles it, after the system has real data:
+#   SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024) AS mb
+#     FROM information_schema.tables WHERE table_schema = 'msms';
+# Size the pool to hold that plus growth, capped by what the host can spare
+# with the API on it.
+#
+# NOT USED, deliberately: innodb_dedicated_server. It sizes the buffer pool,
+# redo log and flush method from total system RAM on the assumption that MySQL
+# owns the machine. Under §27 it does not — the API, the cron process and nginx
+# are on the same box — so it would over-allocate and start the OOM killer
+# hunting for a Node process.
+innodb_buffer_pool_size         = 512M
+
+# Left at the default: innodb_redo_log_capacity (MySQL 8.0.30+) /
+# innodb_log_file_size. Sizing it needs a measured write rate, and there is
+# none. Symptom to watch for if writes stall in bursts: "Redo log ... waiting
+# for checkpoint" in the error log.
+
+# The default is 50 seconds. backend/src/server.js:33 sets SHUTDOWN_TIMEOUT_MS
+# = 15000, so a request blocked on a row lock for 50 is still blocked when the
+# graceful shutdown gives up and hard-exits the process — the caller waits, the
+# work is lost anyway, and nothing is logged that says "lock". At 10 the wait
+# always resolves, one way or the other, inside the shutdown window and the
+# error reaches the error handler as a real error.
+#
+# This is not hypothetical for this application: the money paths take
+# SELECT ... FOR UPDATE and expect to queue behind each other —
+# fees.service.js:516 (two receptionists at one counter), coupons.service.js:487,
+# exams.service.js:849,856, invoices.service.js:279, library.service.js:266.
+# 10s is far beyond any of those in the normal case.
+#
+# THE TRADE THIS MAKES, stated because the retry wrapper does NOT cover it.
+# Cutting 50 to 10 converts some contention that would have cleared into an
+# ER_LOCK_WAIT_TIMEOUT (1205), and 1205 is not retried anywhere:
+# backend/src/utils/documentNumber.js:240 rethrows immediately unless
+# isDuplicateNumber() matches, and isDuplicateNumber() (documentNumber.js:208-217)
+# returns false for anything that is not a SequelizeUniqueConstraintError. So a
+# document-number issuance that loses a 10s wait on the
+# `... ORDER BY col DESC LIMIT 1 FOR UPDATE` at documentNumber.js:173-178 fails
+# on attempt 1 of 4 and surfaces as a 500, where at 50s it would probably have
+# been served.
+#
+# That trade is accepted here: a caller waiting 50s behind a lock on a request
+# that the shutdown window will kill anyway is not a served request either, and
+# a fast explicit failure is diagnosable where a hard-exit is not. If lock
+# contention ever shows up in production as 500s rather than latency, the fix
+# is in the code, not this line — widen isDuplicateNumber() to treat 1205 as
+# retryable — and only then is a longer wait here safe again.
+innodb_lock_wait_timeout        = 10
+
+# With the default OFF, a lock-wait timeout rolls back only the STATEMENT and
+# leaves the transaction open, still holding every lock it already took, until
+# the client gets round to rolling it back. Sequelize's managed transactions do
+# roll back on a thrown error — but the window between the server giving up and
+# the client acting is a window in which a stuck transaction blocks everything
+# behind it. ON closes it at the server, and matches what the application was
+# going to do anyway.
+innodb_rollback_on_timeout      = ON
+
+# Interleaved auto-increment: faster under concurrent inserts, at the cost of
+# gaps in the id sequence. Nothing depends on those ids being contiguous —
+# backend/src/models/columns.js:14-18 makes every primary key an opaque BIGINT
+# UNSIGNED, and the one place in this system where a gap carries meaning is the
+# document-number series, which is a separate string column allocated by
+# backend/src/utils/documentNumber.js and not an auto-increment at all (its
+# header at :55-59 explains that a gap there means a row was deleted).
+#
+# Mode 2 is only safe with row-based binary logging, which section 9 sets.
+innodb_autoinc_lock_mode        = 2
+
+# -----------------------------------------------------------------------------
+# 9. Binary log, and how it interacts with the nightly mysqldump
+# -----------------------------------------------------------------------------
+#
+# Why this is in scope at all: §27 names "Database Backup", and the binary log
+# is a feature of MySQL, not a new tool.
+#
+# The backup is backend/src/jobs/tasks/databaseBackup.js, scheduled at 03:00
+# daily (databaseBackup.js:193, schedule '0 3 * * *') and dumping with:
+#     --single-transaction --routines --triggers
+#     --default-character-set=utf8mb4          (databaseBackup.js:53-62)
+#
+# --single-transaction takes a consistent snapshot WITHOUT locking tables,
+# which works because schema.js:61 makes all 64 tables InnoDB. Nothing in this
+# file contradicts it: mysqldump sets REPEATABLE READ on its own session
+# regardless, and the MySQL-8-only block at the end of this file sets the
+# server default to REPEATABLE-READ too, so there is no isolation-level
+# surprise between them. (On MariaDB that block is deleted and this file sets
+# no isolation level at all; the engine default is also REPEATABLE-READ, and
+# the MariaDB block's commented tx_isolation line is how you pin it — see the
+# documentNumber.js:39-53 argument there for why you should.) No table locking
+# is configured or wanted here.
+#
+# *****************************************************************************
+# WHAT POINT-IN-TIME RECOVERY YOU ACTUALLY HAVE — READ BEFORE RELYING ON IT
+# *****************************************************************************
+# The tempting claim is that the binary log turns "lose up to 24 hours" into
+# "lose minutes". TODAY IT DOES NOT, and the reason is in the dump, not in this
+# file.
+#
+# A roll-forward has to start replaying at the exact binlog coordinate the dump
+# was taken at. Nothing records that coordinate: databaseBackup.js:53-62 is the
+# complete argv and it contains no --source-data (MySQL 8.0.26+; --master-data
+# before that, and on MariaDB). Verified, not assumed — a dump produced with
+# that exact argv contains no CHANGE MASTER TO / MASTER_LOG_FILE line anywhere.
+#
+# So with the file as it stands, a recovery can only guess the start point from
+# wall-clock time, and both directions of that guess are silent corruption:
+# start too early and you replay INSERTs the dump already contains; start too
+# late and you drop committed work. It is not "minutes" — it is a manual,
+# error-prone reconstruction that has to be reasoned about row by row.
+#
+# WHAT THE BINARY LOG IS STILL WORTH TODAY:
+#   * a forensic record of what changed and when, which is the only way to
+#     answer "what did that migration actually do at 03:14" after the fact
+#   * the substrate a proper PITR needs, already turned on and already durable,
+#     so the fix is one flag rather than a config change plus a wait
+#
+# HOW TO MAKE THE "MINUTES" CLAIM TRUE — it is a CODE change, not a server one:
+# add `--source-data=2` to the argv at databaseBackup.js:53-62 (it writes the
+# coordinate into the dump as a comment). It needs the RELOAD privilege, which
+# is global-only, like the two in operator note 1. Until that lands, treat the
+# recovery objective as "the last 03:00 dump" and size the incident plan on
+# that. Reasoned from the documented flag behaviour; NOT tested here.
+
+log_bin                         = mysql-bin
+server_id                       = 1
+
+# ROW, not STATEMENT or MIXED. The application performs server-side derived
+# writes on money-adjacent columns — `used_count = used_count + 1`
+# (backend/src/modules/coupons/coupons.service.js:466,515) and
+# `credit_balance = credit_balance +/- n`
+# (backend/src/modules/invoices/invoices.service.js:651,924,1074), plus
+# backend/src/services/usageService.js:505. Under STATEMENT logging those
+# expressions are RE-EVALUATED at replay time against whatever state the replay
+# has reached; ROW logs the resulting values. Replaying a subscription credit
+# adjustment against a slightly different balance produces a wrong number
+# silently, which is the worst way for money to be wrong.
+binlog_format                   = ROW
+
+# BINLOG RETENTION IS NOT SET HERE — IT IS ENGINE-SPECIFIC AND IT IS SET BELOW.
+# `binlog_expire_logs_seconds` does not exist before MariaDB 10.6, and this
+# file's own header says what an unknown variable does to a MariaDB start: it
+# refuses, on a restart you did not schedule. So the setting lives in the
+# MySQL-8-only block at the end of this file, with the MariaDB spelling
+# alongside it in the MariaDB block.
+#
+# DO NOT LEAVE IT UNSET ON EITHER ENGINE. With no expiry, binary logs are never
+# purged and /var fills — and MySQL stops accepting writes when it cannot write
+# the binary log. Confirm after loading, with operator note 5's query extended:
+#   SELECT @@global.binlog_expire_logs_seconds;   -- MySQL 8
+#   SELECT @@global.expire_logs_days;             -- MariaDB before 10.6
+
+# NOT ENABLED, deliberately: gtid_mode / enforce_gtid_consistency.
+# They exist for replication, which §27 does not list. Without a replica they
+# add operational surface and no recovery capability.
+
+# -----------------------------------------------------------------------------
+# 10. Logging (SRS §27 "Logging", "Monitoring")
+# -----------------------------------------------------------------------------
+#
+# THE TWO LOG PATHS ARE NOT IN THIS SECTION. log_error and slow_query_log_file
+# are set in the engine-specific blocks at the end of this file, for the reason
+# the header gives: the directory differs between the two install targets this
+# file offers (/var/log/mysql on Debian/Ubuntu, /var/log/mariadb on RHEL-family
+# MariaDB), and mysqld does not start if it cannot open its error log. A path
+# in this common section would be right on one target and an outage on the
+# other.
+#
+# Both blocks use the DISTRIBUTION'S OWN default filenames rather than an
+# msms- prefix. Nothing in this file needs the prefix, and the packaged
+# logrotate entry is what rotates these two files (operator note 4) — matching
+# the names the package expects is what makes that certain instead of hopeful.
+#
+# Neither path is the application's own log directory (backend/storage/logs,
+# LOG_DIR in env.js:242-244), deliberately: mysqld runs as a different user,
+# and dropping files into winston's rotation directory would leave winston's
+# LOG_RETENTION_DAYS sweep either unable to delete them or deleting them by
+# accident.
+
+# ON on both engines from here; only the file NAME is engine-specific, so this
+# switch stays in the common section.
+slow_query_log                  = ON
+
+# ***** NOT A DERIVED VALUE *****
+# SRS FR-PERF-001 explicitly declines to set one: docs/SRS-extracted.md:1320
+# says the system must handle heavy reports "without invented numeric targets".
+# So 1 second is an operational threshold for finding regressions, not a
+# requirement, and lowering or raising it changes nothing the SRS asks for.
+long_query_time                 = 1
+
+# OFF because it would drown the log in queries that are correct. The report
+# aggregations scan a tenant slice by design —
+# backend/src/modules/reports/reports.service.js:93-98 groups every student in
+# a school by status, :219-226 sums every fee in a window — and each is a
+# legitimate full read of the rows it was asked about.
+log_queries_not_using_indexes   = OFF
+
+# §27 names Monitoring and its list is closed, so there is no exporter and no
+# agent. performance_schema is MySQL's own instrumentation and is the only way
+# to answer "which query is slow" from inside the database. MySQL 8 defaults it
+# ON; MariaDB defaults it OFF, so this line is what makes the two behave alike.
+# It costs tens of MB of RAM, which on a shared §27 host is a real trade —
+# turning it off is defensible, going without any answer at all is not.
+performance_schema              = ON
+
+# =============================================================================
+#  MySQL 8 ONLY — DELETE THIS BLOCK BEFORE LOADING THIS FILE ON MariaDB.
+#  MariaDB refuses to start on an unknown variable.
+# =============================================================================
+
+# InnoDB's default, pinned rather than assumed, because
+# backend/src/utils/documentNumber.js:39-44 depends on it by name: the
+# `... WHERE col LIKE 'INV-202608-%' ORDER BY col DESC LIMIT 1 FOR UPDATE` at
+# documentNumber.js:173-178 that allocates an invoice number takes a next-key
+# lock over the scanned range ONLY under REPEATABLE READ. Switch this to
+# READ-COMMITTED — a standard "tuning" move — and that read stops serializing.
+# The numbers stay correct (the UNIQUE index and withRetry() are the
+# correctness guarantee, as documentNumber.js:45-53 says), but every concurrent
+# issuance now collides and retries, up to DEFAULT_ATTEMPTS = 4
+# (documentNumber.js:78), and can still fail after the fourth. The isolation
+# level is the performance guarantee, and this line is what keeps it.
+transaction_isolation           = REPEATABLE-READ
+
+# All 64 tables have a BIGINT UNSIGNED primary key
+# (backend/src/models/columns.js:14-18, applied by every model). Requiring one
+# stops a future migration from creating a table without one — which under the
+# row-based binary logging set above would make every UPDATE and DELETE on that
+# table a full scan per row at replay, turning a point-in-time recovery from
+# minutes into hours.
+sql_require_primary_key         = ON
+
+# The X Protocol listener on 33060. mysql2 speaks the classic protocol only
+# (backend/package.json depends on mysql2; backend/src/config/database.js:42
+# uses the `mysql` dialect), so this port is a listening service with no
+# consumer.
+mysqlx                          = OFF
+
+# winston writes the application's file logs with an ISO-8601 UTC timestamp
+# (backend/src/config/logger.js:55 uses the default timestamp(), which is
+# Date.toISOString()). MySQL 8 also defaults to UTC here; pinning it means an
+# operator correlating a slow query against combined.log is comparing two
+# clocks that agree, with no mental arithmetic in the middle of an incident.
+log_timestamps                  = UTC
+
+# 2 = errors and warnings, without the startup information noise of 3.
+log_error_verbosity             = 2
+
+# The two log paths, Debian/Ubuntu spelling. These are the packaged mysql-server
+# defaults on that platform, restated rather than changed — see section 10 for
+# why the names are not prefixed, and operator note 4 for the rotation check.
+#
+# THE DIRECTORY MUST EXIST AND BE OWNED BY THE mysql USER BEFORE THE RESTART.
+# On a packaged Debian/Ubuntu MySQL 8 it already does. If it does not, mysqld
+# cannot open the error log and aborts at startup — with the failure written
+# nowhere this file controls, so look in journalctl -u mysql, not in the log
+# you just configured.
+log_error                       = /var/log/mysql/error.log
+slow_query_log_file             = /var/log/mysql/mysql-slow.log
+
+# Binary log retention, matched to BACKUP_RETENTION_DAYS = 30
+# (backend/src/config/env.js:252, .env.example:112): 30 x 86400 = 2592000. A
+# binary log is only useful in combination with a dump to roll forward from, so
+# keeping binlogs exactly as long as the dumps they would be applied to means
+# any surviving dump has its logs and there is one retention number to change,
+# not two. Change it WITH BACKUP_RETENTION_DAYS — see the drift warning in
+# section 3, which is where the two silently come apart.
+#
+# Cost: this is 30 days of write volume on disk and NOTHING IN THIS REPOSITORY
+# MEASURES THAT. If /var fills, this is the knob.
+#
+# This variable is MySQL 8 only in practice — MariaDB gained it in 10.6, which
+# is why it is here and not in the common section. The MariaDB block below has
+# both spellings.
+binlog_expire_logs_seconds      = 2592000
+
+# =============================================================================
+#  MariaDB ONLY — uncomment these IF AND ONLY IF the MySQL block above was
+#  deleted. They are the equivalents of the MySQL-only options that have
+#  MariaDB spellings; sql_require_primary_key, mysqlx and log_timestamps have
+#  no MariaDB equivalent and simply do not apply.
+#
+#  THIS BLOCK IS NOT OPTIONAL POLISH. Two of the four lines below replace
+#  settings that are load-bearing on the MySQL side: without a retention line
+#  the binary logs are never purged, and without a log_error the paths differ
+#  by distribution. Deleting the MySQL block and uncommenting nothing here
+#  leaves both unset.
+# =============================================================================
+
+# MariaDB spells this tx_isolation before 11.1 (and accepts
+# transaction_isolation from 11.1 on). Same reasoning as above — it is what
+# documentNumber.js:39-44's locking read depends on. MariaDB's engine default
+# is REPEATABLE READ too, so leaving this commented is not immediately wrong;
+# uncommenting it is what stops a later "tuning" change to the packaged my.cnf
+# from silently removing the next-key lock.
+# tx_isolation                  = REPEATABLE-READ
+
+# Binary log retention. binlog_expire_logs_seconds exists from MariaDB 10.6;
+# on anything older it is an UNKNOWN VARIABLE and the server refuses to start,
+# so pick by version — same 30 days, same source (env.js:252, .env.example:112).
+# Uncomment exactly one:
+# expire_logs_days              = 30         # MariaDB before 10.6
+# binlog_expire_logs_seconds    = 2592000    # MariaDB 10.6+
+
+# The two log paths, RHEL-family MariaDB spelling. /var/log/mysql does not
+# exist on that target and mysqld aborts at startup if log_error names a
+# directory it cannot open. Check what the package already uses before
+# uncommenting — `grep -rn log.error /etc/my.cnf /etc/my.cnf.d/` — and prefer
+# the packaged value, so the packaged logrotate entry keeps matching.
+#
+# slow_query_log_file matters MORE here than log_error, not less: the common
+# section turns slow_query_log ON, and with no file named MariaDB writes it to
+# <datadir>/<hostname>-slow.log — inside the data directory, where a logrotate
+# entry written for /var/log will never find it and where it grows against the
+# same disk the database is on. Name it or turn the slow log off; do not leave
+# both.
+# log_error                     = /var/log/mariadb/mariadb.log
+# slow_query_log_file           = /var/log/mariadb/mariadb-slow.log
+
+# MariaDB's rough equivalent of log_error_verbosity.
+# log_warnings                  = 2
+
+# =============================================================================
+#  CLIENT GROUPS
+#
+#  These are read by mysqldump and mysql only if this file is installed
+#  somewhere the CLIENTS read — /etc/mysql/mysql.conf.d is read by clients on
+#  Debian/Ubuntu, but a server-only include directory is not. If in doubt,
+#  check with `mysqldump --print-defaults`; if these groups are not listed, the
+#  values below are inert and the flag has to be added to the argv in
+#  backend/src/jobs/tasks/databaseBackup.js:53-62 instead.
+# =============================================================================
+
+[mysqldump]
+# The dump has to be able to emit a whole extracted_text row (LONGTEXT,
+# exams.js:368) as one statement. Same 64M, same derivation as the server's.
+max_allowed_packet              = 64M
+
+# Drops the InnoDB tablespace metadata from the dump, which is what makes the
+# global PROCESS privilege (operator note 1) unnecessary on MySQL 8.0.21+.
+# The dump does not need that metadata: every table is InnoDB in the default
+# tablespace layout (schema.js:61, innodb_file_per_table above), and a restore
+# recreates it from the CREATE TABLE statements.
+#
+# THIS DOES NOT REPLACE THE GRANT IN NOTE 1. It only takes effect if the
+# clients read this file, which depends on where it was installed and is not
+# knowable from here — check with `mysqldump --print-defaults` and look for
+# --no-tablespaces in the printed argument list. If it is absent, this line is
+# inert and PROCESS is still required. Grant PROCESS anyway; revoke it only
+# after `npm run db:backup` has succeeded without it.
+#
+# Verified only that the flag is accepted and the dump still exits 0 with it:
+# the argv at databaseBackup.js:53-62 plus --no-tablespaces, run against the
+# development database on mysqldump 10.19 / MariaDB 10.4.32, exit 0. Whether
+# it satisfies MySQL 8's privilege check was NOT tested — no MySQL 8 server.
+no-tablespaces
+
+[mysql]
+# The restore side of the same problem: `mysql < msms-....sql` fails with
+# "MySQL server has gone away" on the first statement larger than the CLIENT's
+# own default (16M) — during a recovery, which is the worst possible moment to
+# discover it.
+max_allowed_packet              = 64M
+
+# =============================================================================
+#  OPERATOR NOTES — things this file cannot do for you
+# =============================================================================
+#
+#  1. GRANTS. With skip_name_resolve ON and DB_HOST=127.0.0.1 (env.js:123), the
+#     application account must be granted at '127.0.0.1', not 'localhost'.
+#
+#     THERE ARE TWO STATEMENTS AND YOU NEED BOTH. The first is the schema-
+#     scoped grant the application runs on. The second is global, and without
+#     it the nightly backup this same file configures does not run at all —
+#     see note 2, which is where the reasoning is.
+#
+#       CREATE USER 'msms'@'127.0.0.1' IDENTIFIED BY '<DB_PASSWORD>';
+#
+#       GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX,
+#             REFERENCES, CREATE VIEW, SHOW VIEW, TRIGGER, LOCK TABLES,
+#             EXECUTE ON `msms`.* TO 'msms'@'127.0.0.1';
+#
+#       -- MySQL 8 ONLY. Global because MySQL has no database-scoped form of
+#       -- either privilege; `... ON `msms`.*` is rejected for both.
+#       GRANT BACKUP_ADMIN, PROCESS ON *.* TO 'msms'@'127.0.0.1';
+#
+#     DDL privileges are needed because `npm run db:migrate` runs as this
+#     account (backend/src/database/cli.js) and the initial migration creates
+#     64 tables, their indexes and 254 foreign keys.
+#
+#     WHAT THE GLOBAL GRANT COSTS, so it is a decision and not a shrug: PROCESS
+#     lets this account see every other session's current statement in SHOW
+#     PROCESSLIST. On a §27 single-server deployment there are no other
+#     sessions worth hiding from it — the only other accounts are the
+#     operator's and the server's own. BACKUP_ADMIN grants the backup lock and
+#     nothing else. Neither adds any ability to read or write data outside
+#     `msms`. Note 2 says how to give PROCESS back.
+#
+#     Do NOT weaken the authentication plugin. mysql2 3.24.2 implements
+#     caching_sha2_password
+#     (backend/node_modules/mysql2/lib/auth_plugins/caching_sha2_password.js),
+#     so MySQL 8's default works and there is no reason to fall back to
+#     mysql_native_password.
+#
+#  2. WHY THE BACKUP NEEDS TWO GLOBAL PRIVILEGES ON MySQL 8.
+#     The dump runs as the account above — databaseBackup.js:56 passes
+#     `--user=${config.db.user}` and :69 spawns mysqldump — with the argv at
+#     databaseBackup.js:53-62. Two things in that argv need global privileges:
+#
+#       * --single-transaction (databaseBackup.js:57). From MySQL 8.0.21
+#         mysqldump issues LOCK INSTANCE FOR BACKUP, which requires
+#         BACKUP_ADMIN. There is no argv flag that removes this while the dump
+#         stays consistent, so BACKUP_ADMIN is required, full stop.
+#
+#       * the absence of --no-tablespaces (nothing in databaseBackup.js:53-62
+#         supplies it). Without it mysqldump dumps InnoDB tablespace metadata,
+#         which from MySQL 8.0.21 requires PROCESS.
+#
+#     If the account lacks either, mysqldump exits non-zero, databaseBackup.js
+#     :153-159 deletes the part-written file — correctly, a truncated dump is
+#     worse than none — and logs the failure. To anyone not reading the log
+#     that is a silent nightly no-backup, which is the worst failure mode this
+#     file has.
+#
+#     THE CHOICE MADE HERE, and why: grant both, now, in note 1. This file
+#     ships alongside code it does not change, and a config artifact must work
+#     against the argv that exists rather than against one somebody might land
+#     later. Grant first, narrow afterwards — never the other way round, or the
+#     first thing you learn is at 03:00 from a log nobody reads.
+#
+#     HOW TO GIVE PROCESS BACK, in order of preference:
+#       (a) A one-line CODE change: add '--no-tablespaces' to the array at
+#           databaseBackup.js:53-62. Unconditional, version-controlled, and
+#           visible to anyone reading the task. This is the right end state.
+#       (b) The `no-tablespaces` line already in the [mysqldump] group above —
+#           costs nothing and needs no code change, but only applies if the
+#           clients read this file, which is not knowable from here. Check with
+#           `mysqldump --print-defaults`.
+#     Either way, prove it before you narrow: run `npm run db:backup` as the
+#     msms account, confirm it exits 0 and prints a byte count, THEN
+#       REVOKE PROCESS ON *.* FROM 'msms'@'127.0.0.1';
+#     and run it once more. BACKUP_ADMIN stays in both cases — nothing removes
+#     that requirement while --single-transaction is in the argv.
+#
+#     BOTH PRIVILEGE REQUIREMENTS ARE REASONED FROM MySQL'S DOCUMENTED MODEL
+#     AND WERE NOT TESTED — no MySQL 8 server was available. MariaDB has no
+#     LOCK INSTANCE FOR BACKUP and so no BACKUP_ADMIN requirement. SETTLE IT ON
+#     THE HOST, ONCE, BEFORE TRUSTING THE 03:00 SCHEDULE:
+#       npm run db:backup   (it prints the file and byte count on success)
+#     Run it as the msms account, not as root, or it proves nothing.
+#
+#  3. DDL DURING THE 03:00 DUMP. --single-transaction gives a consistent
+#     snapshot of DATA, not of SCHEMA. Running `npm run db:migrate` while the
+#     dump is in flight can produce a file that restores into something
+#     self-inconsistent. Deploy migrations at a time that is not 03:00; nothing
+#     in the code or in this file enforces that.
+#
+#  4. LOG GROWTH — AND THE ONE THING IN THIS FILE THAT DEPENDS ON A TOOL
+#     OUTSIDE IT. The error log, the slow log and 30 days of binary logs all
+#     grow, and none of them is swept by the application's own
+#     LOG_RETENTION_DAYS (which only covers winston's files in
+#     backend/storage/logs, and deploy/logrotate/msms deliberately covers only
+#     the PM2 stdout/stderr files in /var/log/msms).
+#
+#     The binary logs are expired by the server itself — binlog_expire_logs_
+#     seconds in the MySQL 8 block, expire_logs_days on older MariaDB. That
+#     part is self-contained.
+#
+#     THE ERROR AND SLOW LOGS ARE NOT. Nothing in this repository rotates them.
+#     The assumption is that the distribution's packaged mysql-server logrotate
+#     entry does, which is why section 10 uses the packaged default filenames
+#     instead of an msms- prefix. THAT ASSUMPTION IS UNVERIFIED — no such host
+#     was available — and it is one line to check:
+#
+#       grep -l /var/log/mysql /etc/logrotate.d/*
+#
+#     A path printed means an entry claims that directory; NO OUTPUT AT ALL
+#     means nothing rotates these two files and they grow without bound on a
+#     host this file elsewhere treats as RAM- and disk-constrained. (grep exits
+#     1 when it matches nothing, so read the output, do not test the exit code
+#     in a shell conditional that treats 1 as an error.) Then confirm the entry
+#     actually names the files you configured:
+#
+#       grep -A2 /var/log/mysql /etc/logrotate.d/*
+#       logrotate -d /etc/logrotate.d/<that file>    # -d = dry run, changes nothing
+#
+#     If nothing covers them, that is a stanza to add to the packaged entry —
+#     NOT to deploy/logrotate/msms, whose header explains that two stanzas
+#     naming the same path make logrotate abort the whole run.
+#
+#     All of it still needs a `df` that someone looks at.
+#
+#  5. AFTER LOADING THIS FILE, verify it took effect rather than assuming.
+#     Nothing in this file has ever been loaded by a server (see the header),
+#     so this step is not ceremony:
+#       SELECT @@global.sql_mode, @@global.collation_server,
+#              @@global.default_time_zone, @@global.max_connections,
+#              @@global.transaction_isolation, @@global.innodb_default_row_format,
+#              @@global.log_error, @@global.slow_query_log_file,
+#              @@global.binlog_expire_logs_seconds;
+#     (the last one is @@global.expire_logs_days on MariaDB before 10.6, and a
+#     NULL or 0 there means binary logs are never purged — go fix it now)
+#     and confirm the application still agrees, from a node process:
+#       SELECT @@session.sql_mode, @@session.time_zone;
+#     The session values come from backend/src/config/database.js and should
+#     match the globals above except that session sql_mode is set explicitly on
+#     every connection.

@@ -1,0 +1,344 @@
+/**
+ * The navigation, as data — SRS §33's screen list, §30 Rule 1, checklist rows 4.1 and 4.10.
+ *
+ * ## Why the nav is a table and not JSX
+ *
+ * Rule 1 requires gating to be database-driven. A sidebar written as markup would have to decide
+ * visibility inline, and the moment one item asks a question the others do not, the rule is being
+ * re-implemented per item. Here every item answers the same two questions — *which permission does
+ * this screen need, and which module does it belong to* — and one function filters the whole tree.
+ *
+ * ## Where each column comes from
+ *
+ * Neither column is invented. `permission` is a key from `backend/src/config/permissions.js`, whose
+ * catalogue §29/§35 fix at 109 entries. `module` is the key the corresponding router actually
+ * mounts — read out of the routers rather than guessed, because a nav gating on a module the API
+ * does not check would hide a working screen, and one gating on nothing would show a screen that
+ * 403s the moment it loads.
+ *
+ * `verify-frontend.js` asserts that every module key named here is one the backend defines.
+ *
+ * ## The two entries that are deliberately irregular
+ *
+ *   - **Documents** has no single module. §20.5's seven types span four of them
+ *     (`DOCUMENT_TYPE_MODULE`: `id_cards`, `certificates`, `fees`, `exams`), and its router mounts
+ *     `requireActiveSubscription()` rather than `requireModule()` for exactly that reason. It is
+ *     listed with `anyModule`, so it appears when any of the four is subscribed — and the screen
+ *     itself then offers only the types that are.
+ *   - **Classes, Sections and Subjects** have no module at all. They are core school setup, and the
+ *     routers mount no `requireModule()` on them; gating them behind one would invent a
+ *     subscription rule the SRS does not have.
+ */
+
+import type { IconName } from '@/components/icon';
+
+export interface NavItem {
+  label: string;
+  href: string;
+  /**
+   * The glyph the sidebar draws beside the label.
+   *
+   * Here rather than in the shell because the nav is the single source of truth for what a
+   * destination IS — `verify-frontend.js` asserts that, and an icon map kept alongside would be a
+   * second list to forget to update. Optional so a new entry renders correctly before one is chosen.
+   */
+  icon?: IconName;
+  /** A permission key from the fixed 109-entry catalogue. */
+  permission: string;
+  /** The module key the matching router gates on, when it gates on one. */
+  module?: string;
+  /** For the one screen that spans several modules; shown if any is subscribed. */
+  anyModule?: string[];
+}
+
+export interface NavSection {
+  heading: string;
+  items: NavItem[];
+}
+
+/**
+ * SRS §33 "Super Admin" — sixteen screens.
+ *
+ * Modules, Features and Limits are the three sub-screens of a plan rather than top-level
+ * destinations, so they sit under Plans; §33 lists them separately because it is enumerating
+ * screens, not navigation. Nothing here carries a module: the platform surface is gated by
+ * permission and never by subscription, which is also why `EntitlementProvider` answers `true` for
+ * every module when there is no snapshot.
+ */
+export const PLATFORM_NAV: NavSection[] = [
+  {
+    heading: 'Overview',
+    items: [
+      { label: 'Dashboard', href: '/super-admin', icon: 'grid', permission: 'platform.dashboard.view' },
+    ],
+  },
+  {
+    heading: 'Tenants',
+    items: [
+      { label: 'Organizations', href: '/super-admin/organizations', icon: 'building', permission: 'organizations.view' },
+      { label: 'Schools', href: '/super-admin/schools', icon: 'school', permission: 'schools.view' },
+      { label: 'Principals', href: '/super-admin/principals', icon: 'user', permission: 'users.view' },
+      { label: 'Users', href: '/super-admin/users', icon: 'users', permission: 'users.view' },
+    ],
+  },
+  {
+    heading: 'Catalogue',
+    items: [
+      { label: 'Plans', href: '/super-admin/plans', icon: 'layers', permission: 'plans.view' },
+      { label: 'Modules', href: '/super-admin/plans/modules', icon: 'grid', permission: 'plans.view' },
+      { label: 'Features', href: '/super-admin/plans/features', icon: 'check-circle', permission: 'plans.view' },
+      { label: 'Limits', href: '/super-admin/plans/limits', icon: 'filter', permission: 'plans.view' },
+      { label: 'Add-ons', href: '/super-admin/addons', icon: 'plus', permission: 'addons.view' },
+    ],
+  },
+  {
+    heading: 'Billing',
+    items: [
+      { label: 'Subscriptions', href: '/super-admin/subscriptions', icon: 'refresh', permission: 'subscriptions.view' },
+      { label: 'Invoices', href: '/super-admin/invoices', icon: 'receipt', permission: 'invoices.view' },
+      { label: 'Payments', href: '/super-admin/payments', icon: 'credit-card', permission: 'payments.view' },
+      { label: 'Coupons', href: '/super-admin/coupons', icon: 'ticket', permission: 'coupons.view' },
+    ],
+  },
+  {
+    heading: 'System',
+    items: [
+      { label: 'Reports', href: '/super-admin/reports', icon: 'bar-chart', permission: 'reports.view' },
+      /*
+       * §33 lists Settings as one of the sixteen Super Admin MVP screens, so this entry stays.
+       *
+       * What the screen may *contain* is not specified anywhere: the role table (SRS line 96) says
+       * Super Admin manages "global settings (see Section 9)", and Section 9 then defines only 9.1
+       * Dashboard, 9.2 School Management and 9.3 Principal Creation. No platform-scoped settings
+       * endpoint exists either — `/school-settings` is §14.1, school-scoped, Principal actor — and
+       * the screen it points at says exactly that.
+       *
+       * It is gated on **`settings.platform.manage`** — "Manage global settings", `permissions.js:39`,
+       * already one of the fixed 109 and already granted to `super_admin` through `ALL`. An earlier
+       * version of this comment claimed no settings permission existed and borrowed `schools.view`
+       * instead. That was simply false, and it had a consequence: `organization_admin` holds
+       * `schools.view`, so an org admin was shown a link into a **platform** screen. The correct key
+       * reaches `super_admin` alone.
+       *
+       * The page therefore says what it cannot do rather than inventing a form. Checklist row 4.3.
+       */
+      { label: 'Settings', href: '/super-admin/settings', icon: 'settings', permission: 'settings.platform.manage' },
+    ],
+  },
+];
+
+/**
+ * SRS §33 "School" — seventeen screens.
+ *
+ * Sections is a sub-screen of Classes in the API (a section belongs to a class and has no router of
+ * its own), so it is listed beneath it rather than given a top-level entry that would 404.
+ */
+export const SCHOOL_NAV: NavSection[] = [
+  {
+    heading: 'Overview',
+    items: [
+      { label: 'Dashboard', href: '/school', icon: 'grid', permission: 'school.dashboard.view' },
+    ],
+  },
+  {
+    heading: 'People',
+    items: [
+      { label: 'Students', href: '/school/students', icon: 'graduation', permission: 'students.view', module: 'students' },
+      { label: 'Teachers', href: '/school/teachers', icon: 'users', permission: 'teachers.view', module: 'teachers' },
+      { label: 'Staff', href: '/school/staff', icon: 'user', permission: 'staff.view', module: 'staff' },
+      { label: 'Parents', href: '/school/parents', icon: 'users', permission: 'parents.view', module: 'parent_portal' },
+    ],
+  },
+  {
+    heading: 'Academics',
+    items: [
+      { label: 'Classes', href: '/school/classes', icon: 'grid', permission: 'classes.view' },
+      { label: 'Sections', href: '/school/classes/sections', icon: 'layers', permission: 'classes.view' },
+      { label: 'Subjects', href: '/school/subjects', icon: 'book', permission: 'subjects.view' },
+      { label: 'Timetable', href: '/school/timetable', icon: 'calendar', permission: 'timetable.view', module: 'timetable' },
+      { label: 'Attendance', href: '/school/attendance', icon: 'clipboard', permission: 'attendance.view', module: 'attendance' },
+      { label: 'Homework', href: '/school/homework', icon: 'clipboard', permission: 'homework.view', module: 'homework' },
+    ],
+  },
+  {
+    heading: 'Assessment',
+    items: [
+      { label: 'Exams', href: '/school/exams', icon: 'file-text', permission: 'exams.view', module: 'exams' },
+      { label: 'Results', href: '/school/results', icon: 'bar-chart', permission: 'results.view', module: 'exams' },
+    ],
+  },
+  {
+    heading: 'Operations',
+    items: [
+      { label: 'Fees', href: '/school/fees', icon: 'wallet', permission: 'fees.view', module: 'fees' },
+      { label: 'Finance', href: '/school/finance', icon: 'credit-card', permission: 'finance.view', module: 'finance' },
+      { label: 'Library', href: '/school/library', icon: 'book', permission: 'library.view', module: 'library' },
+      {
+        label: 'Documents',
+        href: '/school/documents', icon: 'file-text',
+        permission: 'documents.view',
+        anyModule: ['id_cards', 'certificates', 'fees', 'exams'],
+      },
+    ],
+  },
+];
+
+
+/**
+ * SRS §15.3 — the teacher surface.
+ *
+ * §5 grants a teacher attendance, marks, homework and timetable, and every one of those is an
+ * existing School screen they already hold the permission for. So this nav **points into those
+ * screens** rather than duplicating them: a second attendance screen gated differently is how two
+ * versions of one workflow start.
+ *
+ * The module keys are the same ones the School nav uses, so a school whose plan omits Homework hides
+ * it from the teacher too, from one source of truth.
+ */
+export const TEACHER_NAV: NavSection[] = [
+  {
+    heading: 'Overview',
+    items: [{ label: 'Dashboard', href: '/teacher', permission: 'teachers.dashboard.view' }],
+  },
+  {
+    heading: 'My teaching',
+    items: [
+      { label: 'Attendance', href: '/school/attendance', icon: 'clipboard', permission: 'attendance.view', module: 'attendance' },
+      { label: 'Exams and marks', href: '/school/exams', icon: 'file-text', permission: 'exams.view', module: 'exams' },
+      { label: 'Homework', href: '/school/homework', icon: 'clipboard', permission: 'homework.view', module: 'homework' },
+      { label: 'Timetable', href: '/school/timetable', icon: 'calendar', permission: 'timetable.view', module: 'timetable' },
+    ],
+  },
+];
+
+/**
+ * SRS §15.2 — the parent surface.
+ *
+ * One entry, and that is the requirement rather than a shortfall: §5 grants a parent an account, a
+ * link to children, and "access to a Parent Dashboard". No parent-facing list screen is named
+ * anywhere in the SRS, and the API exposes no endpoint for one.
+ */
+export const PARENT_NAV: NavSection[] = [
+  {
+    heading: 'Overview',
+    items: [{ label: 'My children', href: '/parent', permission: 'parents.dashboard.view' }],
+  },
+];
+
+/**
+ * SRS §5 — the student surface.
+ *
+ * Also one entry, for a reason recorded in three places rather than decided here: §33's MVP list
+ * names no student screen, and of the four self-service permissions in §29's fixed catalogue only
+ * `results.self.view` was ever mounted — `attendance.routes.js:27` and `fees.routes.js:28` record
+ * why the others were not.
+ *
+ * `module: 'exams'` because `GET /exams/my-results` sits behind the exams router's
+ * `requireModule(MODULES.EXAMS)`: a school without the Exams module has no results to publish, so
+ * the entry correctly disappears rather than leading to a refusal.
+ */
+export const STUDENT_NAV: NavSection[] = [
+  {
+    heading: 'Overview',
+    items: [{ label: 'My results', href: '/student', permission: 'results.self.view', module: 'exams' }],
+  },
+];
+
+/**
+ * Filter a nav tree to what this caller can both reach and use.
+ *
+ * Two gates, and the order does not matter because both must pass:
+ *
+ *   - **Permission** decides whether the screen exists for this role at all. Hiding it is a
+ *     courtesy — the API refuses the call regardless, and this is navigation, not authorization.
+ *   - **Module** decides whether the school's plan includes it. `hasModule` answers `true` when
+ *     there is no snapshot, so a platform caller is never hidden from their own surface.
+ *
+ * A section whose items all disappear is dropped with them; an empty heading is worse than no
+ * heading, because it reads as a section that failed to load.
+ */
+export function visibleNav(
+  sections: NavSection[],
+  can: (permission: string) => boolean,
+  hasModule: (moduleKey: string) => boolean
+): NavSection[] {
+  return sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => {
+        if (!can(item.permission)) return false;
+        if (item.module && !hasModule(item.module)) return false;
+        if (item.anyModule && !item.anyModule.some((key) => hasModule(key))) return false;
+        return true;
+      }),
+    }))
+    .filter((section) => section.items.length > 0);
+}
+
+/* ─────────────────────────── where a caller lands after signing in ─────────────────────────── */
+
+/**
+ * The surface to send a caller to once they have a session.
+ *
+ * ## What this replaces, and why it was wrong
+ *
+ * Three screens each carried the same line — `login/page.tsx`, `change-password/page.tsx` and the
+ * public landing page:
+ *
+ * ```ts
+ * router.replace(profile.tenant.isPlatform ? '/super-admin' : '/school');
+ * ```
+ *
+ * `isPlatform` is true for exactly one role: `PLATFORM_ROLES` in `config/constants.js` is
+ * `[ROLES.SUPER_ADMIN]`. So that expression routed **everybody else** to `/school`, including the two
+ * roles that hold no `school.dashboard.view` at all — measured against `config/permissions.js`, the
+ * `parent` block has ten keys and the `student` block thirteen, and neither contains it.
+ *
+ * A parent therefore signed in and landed on the school administration dashboard: a page titled for
+ * a school they do not administer, with every shortcut filtered away by `can()` and a sidebar
+ * filtered to nothing. `/parent` was **unreachable**, because the only link to it lives in
+ * `PARENT_NAV`, which only renders once you are already there. `change-password` matters just as
+ * much as `login`: `must_change_password: true` is written by exactly three places —
+ * `04-super-admin.js`, `principals.service.js` and `parents.service.js` — so every parent account a
+ * school creates is forced through that screen on its first sign-in.
+ *
+ * ## Why the order is what it is
+ *
+ * Each surface is claimed by the permission its own nav gate names, so this function and
+ * `visibleNav` cannot disagree about who a surface is for. The order is most-specific-first, because
+ * three roles hold more than one of these keys:
+ *
+ *   - `teacher` holds **both** `teachers.dashboard.view` and `school.dashboard.view`, so the teacher
+ *     surface has to be tested first or a teacher would never see their own dashboard.
+ *   - `parent` holds **both** `parents.dashboard.view` and `results.self.view`, so the parent surface
+ *     has to be tested before the student one.
+ *   - `organization_admin` holds `platform.dashboard.view` but is `level: 'organization'` with
+ *     `isPlatform: false`, and every `/super-admin` route is `platformOnly()`. Sending it there would
+ *     trade a bad landing for a refused one, so the platform test requires *both* the scope and the
+ *     permission and an organization admin keeps falling through to `/school` — exactly where it
+ *     lands today.
+ *
+ * The fallback stays `/school`, so no role's behaviour changes except the three that were broken.
+ */
+const LANDING_ROUTES: Array<{ permission: string; href: string; platformOnly?: boolean }> = [
+  { permission: 'platform.dashboard.view', href: '/super-admin', platformOnly: true },
+  { permission: 'parents.dashboard.view', href: '/parent' },
+  { permission: 'teachers.dashboard.view', href: '/teacher' },
+  { permission: 'school.dashboard.view', href: '/school' },
+  { permission: 'results.self.view', href: '/student' },
+];
+
+export function landingRouteFor(profile: {
+  tenant: { isPlatform: boolean };
+  permissions: string[];
+}): string {
+  const held = new Set(profile.permissions);
+
+  for (const route of LANDING_ROUTES) {
+    if (route.platformOnly && !profile.tenant.isPlatform) continue;
+    if (held.has(route.permission)) return route.href;
+  }
+
+  /* A role holding none of the five still needs somewhere to be; `/school` is where it went before. */
+  return '/school';
+}

@@ -1,0 +1,642 @@
+'use strict';
+
+/**
+ * Usage tracking and limit enforcement — SRS §11.2, FR-SUB-008, §21 (AI usage display),
+ * §33 SaaS Engine ("Usage Tracking", "Overage").
+ *
+ * FR-SUB-008, verbatim: "System tracks usage against each configured limit. System blocks or
+ * restricts actions that would exceed a Fixed limit."
+ *
+ * `entitlementService` answers what a school is *allowed*. This service answers what it has *used*,
+ * and puts the two together into a decision.
+ *
+ * ## Four kinds of limit, measured four ways
+ *
+ * SRS §11.2 lists eight limits as one flat list, but they are not one kind of thing, and treating
+ * them alike would produce wrong answers:
+ *
+ *   headcount    student_limit · teacher_limit · staff_limit · admin_limit
+ *                A live count of rows in the source table. The decision counts them for real rather
+ *                than trusting a stored counter, because a counter that has drifted either blocks a
+ *                legitimate admission or admits a student past a paid-for cap — and both are silent.
+ *                `usage_records` still carries a mirror row so the §9.1 and §21 dashboards can show
+ *                "used / allowed" without counting four tables per page load.
+ *
+ *   cumulative   storage_limit · sms_limit
+ *                A running total that does not reset. Deleting a file returns storage; a sent SMS is
+ *                spent for good. Tracked against the subscription's own start date so there is one
+ *                row per school per limit for the life of the subscription.
+ *
+ *   periodic     ai_limit · api_limit
+ *                Resets at the start of each billing period — SRS §21's "Plan: 1000 AI Requests /
+ *                Usage: 750" is a per-cycle allowance, not a lifetime one. Tracked against
+ *                `subscriptions.current_period_start`, so a renewal starts a fresh row by
+ *                construction rather than by a reset job that could fail to run.
+ *
+ *   per-request  file_upload_limit
+ *                A ceiling on one file, not a quota. Nothing accumulates, so nothing is stored: the
+ *                upload middleware asks `checkPerRequestLimit` and the answer depends only on the
+ *                size of the file in hand. Writing this to `usage_records` would produce a number
+ *                that means nothing — the sum of every file ever uploaded, compared against a
+ *                per-file cap.
+ *
+ * ## Overage
+ *
+ * SRS §33 lists "Overage" as part of the SaaS engine, and `plan_limits` carries `allow_overage` plus
+ * `overage_unit_amount` to configure it. A Fixed limit with overage allowed does not block: the
+ * excess is recorded on the usage row and priced, and billing turns it into a `subscription_items`
+ * line of type `overage`. A Fixed limit without overage blocks. Nothing here decides *policy* — it
+ * reads `allow_overage` off the resolved limit, which came from the database.
+ *
+ * ## What this service does not do
+ *
+ * It does not invalidate the entitlement snapshot. Usage changes constantly and entitlement does not,
+ * so they are cached separately: usage is read from the database on every check, entitlement from the
+ * snapshot. That is the right way round — an allowance is worth caching, a counter is not.
+ */
+
+const { Op } = require('sequelize');
+
+const db = require('../models');
+const ApiError = require('../utils/ApiError');
+const logger = require('../config/logger');
+const money = require('../utils/money');
+const entitlementService = require('./entitlementService');
+const {
+  LIMITS,
+  LIMIT_TYPES,
+  LIMIT_UNITS,
+  LIMIT_LABELS,
+  USAGE_LIMIT_KEYS,
+  HEADCOUNT_LIMITS,
+  PERIODIC_LIMITS,
+  STUDENT_STATUS,
+  USER_STATUS,
+  SCHOOL_ADMIN_ROLES,
+} = require('../config/constants');
+
+/** How a limit's usage is measured. See the header for why these differ. */
+const MEASUREMENT = Object.freeze({
+  HEADCOUNT: 'headcount',
+  CUMULATIVE: 'cumulative',
+  PERIODIC: 'periodic',
+  PER_REQUEST: 'per_request',
+});
+
+/**
+ * Limits that cap a single request rather than accumulating.
+ *
+ * Only `file_upload_limit` — SRS §11.2 names it "File Upload Limit", a per-file ceiling, and
+ * `storage_limit` is the cumulative counterpart that already exists for total consumption. This is
+ * kept here rather than in `constants.js` because it describes how this service measures a limit, not
+ * anything the SRS enumerates.
+ */
+const PER_REQUEST_LIMITS = Object.freeze([LIMITS.FILE_UPLOAD_LIMIT]);
+
+/**
+ * Which source table a headcount limit counts, and the condition that makes a row count.
+ *
+ * The conditions are the ones the SRS implies by what each limit is for: a limit on students is a
+ * limit on students currently enrolled (SRS §15.1 makes Promoted/Transferred/Left/Graduated separate
+ * statuses), and a limit on staff is a limit on staff still employed (`is_active`, with `left_at` set
+ * when they go).
+ */
+const HEADCOUNT_SOURCES = Object.freeze({
+  [LIMITS.STUDENT_LIMIT]: {
+    model: 'Student',
+    where: { status: STUDENT_STATUS.ACTIVE },
+    label: 'active students',
+  },
+  [LIMITS.TEACHER_LIMIT]: {
+    model: 'Teacher',
+    where: { is_active: true },
+    label: 'active teachers',
+  },
+  [LIMITS.STAFF_LIMIT]: {
+    model: 'Staff',
+    where: { is_active: true },
+    label: 'active staff',
+  },
+  /*
+   * "Admin" is the SRS hierarchy's "Principals/Admins" tier, which `SCHOOL_ADMIN_ROLES` already
+   * names. Counted from `users` by role rather than from a table of its own, because there is no
+   * admins table — the role is what makes a user an admin.
+   */
+  [LIMITS.ADMIN_LIMIT]: {
+    model: 'User',
+    where: { status: USER_STATUS.ACTIVE },
+    roleSlugs: SCHOOL_ADMIN_ROLES,
+    label: 'active school administrators',
+  },
+});
+
+/**
+ * How a limit is measured.
+ *
+ * @param {string} limitKey
+ * @returns {'headcount'|'cumulative'|'periodic'|'per_request'}
+ */
+function measurementFor(limitKey) {
+  if (HEADCOUNT_LIMITS.includes(limitKey)) return MEASUREMENT.HEADCOUNT;
+  if (PERIODIC_LIMITS.includes(limitKey)) return MEASUREMENT.PERIODIC;
+  if (PER_REQUEST_LIMITS.includes(limitKey)) return MEASUREMENT.PER_REQUEST;
+  return MEASUREMENT.CUMULATIVE;
+}
+
+/** BIGINT arrives from mysql2 as a string; nothing reaches arithmetic without passing through here. */
+function toCount(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+/**
+ * The `usage_records` period a limit is tracked against.
+ *
+ * The unique index is `(school_id, limit_key, period_start)`, so `period_start` is what decides
+ * whether a write lands on the existing row or starts a new one. Periodic limits therefore use the
+ * billing period's start — a renewal moves it, which is exactly the reset SRS §21 implies — and
+ * everything else uses the subscription's own start, which never moves.
+ *
+ * @param {import('./entitlementService').EntitlementSnapshot} snapshot
+ * @param {string} limitKey
+ * @returns {{start: Date, end: Date|null}|null} null when the school has no subscription to track against
+ */
+function periodFor(snapshot, limitKey) {
+  const { subscription } = snapshot;
+  if (!subscription) return null;
+
+  if (measurementFor(limitKey) === MEASUREMENT.PERIODIC) {
+    const start = subscription.currentPeriodStart || subscription.startsAt;
+    if (!start) return null;
+    return {
+      start: new Date(start),
+      end: subscription.currentPeriodEnd ? new Date(subscription.currentPeriodEnd) : null,
+    };
+  }
+
+  const start = subscription.startsAt || subscription.currentPeriodStart;
+  if (!start) return null;
+  return { start: new Date(start), end: null };
+}
+
+/**
+ * Count a headcount limit's usage from its source table.
+ *
+ * @param {number} schoolId
+ * @param {string} limitKey
+ * @returns {Promise<number>}
+ */
+async function countHeadcount(schoolId, limitKey) {
+  const source = HEADCOUNT_SOURCES[limitKey];
+  if (!source) {
+    throw new Error(`usageService.countHeadcount(): ${limitKey} is not a headcount limit`);
+  }
+
+  const model = db[source.model];
+  if (!model) {
+    throw new Error(`usageService.countHeadcount(): model ${source.model} is not registered`);
+  }
+
+  const query = { where: { school_id: schoolId, ...source.where } };
+
+  if (source.roleSlugs) {
+    query.include = [
+      {
+        model: db.Role,
+        as: 'role',
+        attributes: [],
+        required: true,
+        where: { slug: { [Op.in]: source.roleSlugs } },
+      },
+    ];
+  }
+
+  return model.count(query);
+}
+
+/**
+ * Read the stored usage row for a limit, if one exists.
+ *
+ * @returns {Promise<object|null>}
+ */
+async function findUsageRow(schoolId, limitKey, periodStart) {
+  return db.UsageRecord.findOne({
+    where: { school_id: schoolId, limit_key: limitKey, period_start: periodStart },
+    raw: true,
+  });
+}
+
+/**
+ * Compute overage for a fixed limit.
+ *
+ * @returns {{value: number, amount: number}}
+ */
+function overageFor(limit, used) {
+  if (limit.type === LIMIT_TYPES.UNLIMITED) return { value: 0, amount: 0 };
+  const allowed = limit.value === null ? 0 : limit.value;
+  const excess = used - allowed;
+  if (excess <= 0) return { value: 0, amount: 0 };
+  if (!limit.allowOverage) {
+    /* Recorded so a report can show the shortfall, but not priced: it was never permitted. */
+    return { value: excess, amount: 0 };
+  }
+  const rate = limit.overageUnitAmount === null ? 0 : limit.overageUnitAmount;
+  return { value: excess, amount: money.round(excess * rate) };
+}
+
+/**
+ * A limit's current standing: allowance, usage, and what is left.
+ *
+ * @param {number} schoolId
+ * @param {string} limitKey
+ * @returns {Promise<{
+ *   limitKey: string, label: string, unit: string|null, measurement: string,
+ *   unlimited: boolean, allowed: number|null, used: number, remaining: number|null,
+ *   overage: number, overageAmount: number, allowOverage: boolean,
+ *   source: string, periodStart: string|null, periodEnd: string|null, tracked: boolean
+ * }>}
+ */
+async function getUsage(schoolId, limitKey) {
+  entitlementService.assertKnownLimitKeys([limitKey], 'usageService.getUsage');
+
+  const snapshot = await entitlementService.getSnapshot(schoolId);
+  const limit = snapshot.limits[limitKey];
+  const measurement = measurementFor(limitKey);
+  const unlimited = limit.type === LIMIT_TYPES.UNLIMITED;
+  const allowed = unlimited ? null : limit.value;
+  const period = periodFor(snapshot, limitKey);
+
+  let used = 0;
+  let tracked = true;
+
+  if (measurement === MEASUREMENT.PER_REQUEST) {
+    /* Nothing accumulates — see the header. `used` stays 0 and `remaining` is the whole allowance. */
+    tracked = false;
+  } else if (measurement === MEASUREMENT.HEADCOUNT) {
+    used = await countHeadcount(schoolId, limitKey);
+  } else if (period) {
+    const row = await findUsageRow(schoolId, limitKey, period.start);
+    used = row ? toCount(row.used_value) : 0;
+  } else {
+    /*
+     * No subscription, so no period to track against. Usage reads as zero — and every fixed limit
+     * resolves to zero too, so nothing is permitted anyway.
+     */
+    tracked = false;
+  }
+
+  const overage = overageFor(limit, used);
+
+  return {
+    limitKey,
+    label: LIMIT_LABELS[limitKey] || limitKey,
+    unit: limit.unit || LIMIT_UNITS[limitKey] || null,
+    measurement,
+    unlimited,
+    allowed,
+    used,
+    remaining: unlimited ? null : Math.max(0, (allowed || 0) - used),
+    overage: overage.value,
+    overageAmount: overage.amount,
+    allowOverage: limit.allowOverage,
+    source: limit.source,
+    periodStart: period ? period.start.toISOString() : null,
+    periodEnd: period && period.end ? period.end.toISOString() : null,
+    tracked,
+  };
+}
+
+/**
+ * Every limit's standing, for the SRS §9.1 Super Admin dashboard and the §21 AI usage display.
+ *
+ * @param {number} schoolId
+ * @returns {Promise<Array<object>>}
+ */
+async function getUsageSummary(schoolId) {
+  const results = [];
+  for (const limitKey of USAGE_LIMIT_KEYS) {
+    /* Sequential: headcount limits each hit a different table, and a school dashboard is not a hot
+     * path. Parallelising would open four connections per page view for no useful gain. */
+    // eslint-disable-next-line no-await-in-loop
+    results.push(await getUsage(schoolId, limitKey));
+  }
+  return results;
+}
+
+/**
+ * Would `increment` more of `limitKey` be permitted?
+ *
+ * @param {number} schoolId
+ * @param {string} limitKey
+ * @param {number} [increment]  units the caller is about to consume
+ * @returns {Promise<{
+ *   allowed: boolean, reason: string|null, limitKey: string, label: string,
+ *   unit: string|null, limit: number|null, used: number, requested: number,
+ *   remaining: number|null, unlimited: boolean, wouldOverage: number, overageAllowed: boolean
+ * }>}
+ */
+async function checkLimit(schoolId, limitKey, increment = 1) {
+  const requested = Number(increment);
+  if (!Number.isFinite(requested) || requested < 0) {
+    throw new Error(
+      `usageService.checkLimit(): increment must be a non-negative number; received ${increment}`
+    );
+  }
+
+  const usage = await getUsage(schoolId, limitKey);
+
+  const base = {
+    limitKey,
+    label: usage.label,
+    unit: usage.unit,
+    limit: usage.allowed,
+    used: usage.used,
+    requested,
+    remaining: usage.remaining,
+    unlimited: usage.unlimited,
+    wouldOverage: 0,
+    overageAllowed: usage.allowOverage,
+  };
+
+  if (usage.unlimited) return { ...base, allowed: true, reason: null };
+
+  const allowance = usage.allowed || 0;
+
+  /*
+   * A per-request limit compares the request against the allowance directly — a 12 MB file against a
+   * 10 MB cap — rather than adding it to a total. `used` is 0 for these by construction.
+   */
+  const projected = usage.used + requested;
+  if (projected <= allowance) return { ...base, allowed: true, reason: null };
+
+  const wouldOverage = projected - allowance;
+
+  if (usage.allowOverage && usage.measurement !== MEASUREMENT.PER_REQUEST) {
+    /*
+     * Overage is a billing arrangement, not a bigger cap, so it cannot apply to a per-request
+     * ceiling: there is no sensible way to bill for "this one file was too large".
+     */
+    return { ...base, allowed: true, reason: 'overage', wouldOverage };
+  }
+
+  return { ...base, allowed: false, reason: 'limit_exceeded', wouldOverage };
+}
+
+/**
+ * Refuse the action when it would exceed a Fixed limit — FR-SUB-008's "blocks or restricts".
+ *
+ * @param {number} schoolId
+ * @param {string} limitKey
+ * @param {number} [increment]
+ * @returns {Promise<object>} the same result `checkLimit` returns, when permitted
+ * @throws {ApiError} 403 PLAN_LIMIT_EXCEEDED
+ */
+async function assertWithinLimit(schoolId, limitKey, increment = 1) {
+  const result = await checkLimit(schoolId, limitKey, increment);
+  if (result.allowed) return result;
+
+  /*
+   * The numbers are returned deliberately. The school owns this data, and "Student Limit reached
+   * (500 of 500 used)" is the message that leads to an upgrade; a bare "Forbidden" leads to a
+   * support ticket. SRS §11.3 makes add-ons the intended remedy, which the school can only choose if
+   * it is told what ran out.
+   */
+  throw ApiError.limitExceeded(
+    `${result.label} reached. Your plan allows ${result.limit} ${result.unit || 'units'} and ` +
+      `${result.used} ${result.used === 1 ? 'is' : 'are'} in use.`,
+    {
+      limitKey,
+      limit: result.limit,
+      used: result.used,
+      requested: result.requested,
+      remaining: result.remaining,
+    }
+  );
+}
+
+/**
+ * Check a per-request ceiling — currently only `file_upload_limit`.
+ *
+ * Separate from `checkLimit` because the unit is the request itself: the caller passes the size of
+ * the thing in hand, and no state is read or written.
+ *
+ * @param {number} schoolId
+ * @param {string} limitKey
+ * @param {number} size  in the limit's unit (megabytes for file_upload_limit)
+ */
+async function checkPerRequestLimit(schoolId, limitKey, size) {
+  if (measurementFor(limitKey) !== MEASUREMENT.PER_REQUEST) {
+    throw new Error(`usageService.checkPerRequestLimit(): ${limitKey} is not a per-request limit`);
+  }
+  return checkLimit(schoolId, limitKey, size);
+}
+
+/**
+ * Record consumption of a cumulative or periodic limit.
+ *
+ * The increment is applied with SQL arithmetic (`used_value = used_value + n`) rather than a
+ * read-modify-write, so two concurrent AI requests cannot both read 749 and both write 750.
+ *
+ * Headcount limits are not incremented — they are counted from their source table, and
+ * `syncHeadcount` refreshes the reporting mirror after a create or delete.
+ *
+ * @param {number} schoolId
+ * @param {string} limitKey
+ * @param {number} [delta]  units consumed; may be negative for storage returned by a deletion
+ * @returns {Promise<{used: number, allowed: number|null, overage: number, overageAmount: number}|null>}
+ *          null when there is nothing to track against (no subscription)
+ */
+async function recordUsage(schoolId, limitKey, delta = 1) {
+  entitlementService.assertKnownLimitKeys([limitKey], 'usageService.recordUsage');
+
+  const amount = Number(delta);
+  if (!Number.isFinite(amount)) {
+    throw new Error(`usageService.recordUsage(): delta must be a number; received ${delta}`);
+  }
+
+  const measurement = measurementFor(limitKey);
+  if (measurement === MEASUREMENT.HEADCOUNT) {
+    throw new Error(
+      `usageService.recordUsage(): ${limitKey} is a headcount limit — use syncHeadcount() instead`
+    );
+  }
+  if (measurement === MEASUREMENT.PER_REQUEST) {
+    throw new Error(
+      `usageService.recordUsage(): ${limitKey} is a per-request limit and is not accumulated`
+    );
+  }
+
+  const snapshot = await entitlementService.getSnapshot(schoolId);
+  const period = periodFor(snapshot, limitKey);
+  if (!period) {
+    /*
+     * Consumption by a school with no subscription. Nothing gates it here — whatever produced the
+     * usage should have been refused earlier — but losing the record silently would hide that, so it
+     * is logged rather than dropped without trace.
+     */
+    logger.warn('Usage recorded for a school with no subscription; nothing to track against', {
+      schoolId,
+      limitKey,
+      delta: amount,
+    });
+    return null;
+  }
+
+  const limit = snapshot.limits[limitKey];
+  const allowed = limit.type === LIMIT_TYPES.UNLIMITED ? null : limit.value;
+
+  const [row] = await db.UsageRecord.findOrCreate({
+    where: { school_id: schoolId, limit_key: limitKey, period_start: period.start },
+    defaults: {
+      school_id: schoolId,
+      organization_id: snapshot.organizationId,
+      subscription_id: snapshot.subscription.id,
+      limit_key: limitKey,
+      unit: limit.unit || LIMIT_UNITS[limitKey] || null,
+      used_value: 0,
+      allowed_value: allowed,
+      period_start: period.start,
+      period_end: period.end,
+    },
+  });
+
+  if (amount !== 0) {
+    await row.increment('used_value', { by: amount });
+    await row.reload();
+  }
+
+  /*
+   * A negative delta (storage returned) must not drive the counter below zero — that would make a
+   * later overage calculation nonsense.
+   */
+  let used = toCount(row.get('used_value'));
+  if (used < 0) {
+    used = 0;
+    row.set('used_value', 0);
+  }
+
+  const overage = overageFor(limit, used);
+
+  row.set('allowed_value', allowed);
+  row.set('overage_value', overage.value);
+  row.set('overage_amount', overage.amount);
+  row.set('last_incremented_at', new Date());
+  /* Keep the period end current: a renewal extends it for periodic limits. */
+  row.set('period_end', period.end);
+  await row.save();
+
+  return { used, allowed, overage: overage.value, overageAmount: overage.amount };
+}
+
+/**
+ * Refresh the reporting mirror for a headcount limit.
+ *
+ * Called after a create, delete or status change on the source table. The decision path never reads
+ * this row — `checkLimit` counts live — so a missed call costs a stale dashboard number, not a wrong
+ * enforcement answer. That asymmetry is deliberate: the expensive guarantee is bought only where it
+ * matters.
+ *
+ * @param {number} schoolId
+ * @param {string} limitKey
+ * @returns {Promise<{used: number, allowed: number|null}|null>}
+ */
+async function syncHeadcount(schoolId, limitKey) {
+  entitlementService.assertKnownLimitKeys([limitKey], 'usageService.syncHeadcount');
+
+  if (measurementFor(limitKey) !== MEASUREMENT.HEADCOUNT) {
+    throw new Error(`usageService.syncHeadcount(): ${limitKey} is not a headcount limit`);
+  }
+
+  const snapshot = await entitlementService.getSnapshot(schoolId);
+  const period = periodFor(snapshot, limitKey);
+  if (!period) return null;
+
+  const limit = snapshot.limits[limitKey];
+  const allowed = limit.type === LIMIT_TYPES.UNLIMITED ? null : limit.value;
+  const used = await countHeadcount(schoolId, limitKey);
+  const overage = overageFor(limit, used);
+
+  const [row] = await db.UsageRecord.findOrCreate({
+    where: { school_id: schoolId, limit_key: limitKey, period_start: period.start },
+    defaults: {
+      school_id: schoolId,
+      organization_id: snapshot.organizationId,
+      subscription_id: snapshot.subscription.id,
+      limit_key: limitKey,
+      unit: limit.unit || LIMIT_UNITS[limitKey] || null,
+      used_value: used,
+      allowed_value: allowed,
+      period_start: period.start,
+      period_end: period.end,
+    },
+  });
+
+  row.set('used_value', used);
+  row.set('allowed_value', allowed);
+  row.set('overage_value', overage.value);
+  row.set('overage_amount', overage.amount);
+  row.set('period_end', period.end);
+  row.set('last_incremented_at', new Date());
+  await row.save();
+
+  return { used, allowed };
+}
+
+/** Refresh every headcount mirror for a school — after a bulk import or a restored backup. */
+async function syncAllHeadcounts(schoolId) {
+  const results = {};
+  for (const limitKey of HEADCOUNT_LIMITS) {
+    // eslint-disable-next-line no-await-in-loop
+    results[limitKey] = await syncHeadcount(schoolId, limitKey);
+  }
+  return results;
+}
+
+/**
+ * Every headcount mirror for **every school** — the shape the `sync_usage` job actually needs.
+ *
+ * `syncAllHeadcounts(schoolId)` reconciles all the limit *keys* for one school; "All" was never about
+ * schools. `handlers/index.js` registered the job as `() => syncAllHeadcounts()` with no argument, so
+ * `schoolId` arrived `undefined` and the first `syncHeadcount()` would have counted rows for no
+ * school. It never fired — nothing enqueues `sync_usage` — but the handler's own docblock says the job
+ * "touches every school", and that is what this does.
+ *
+ * A school whose sync throws does not stop the others: a reconciliation pass that abandons the
+ * remaining schools because one is broken is worse than one that reports which failed. The failures
+ * are returned rather than swallowed.
+ */
+async function syncAllSchoolHeadcounts() {
+  const schools = await db.School.findAll({ attributes: ['id'], order: [['id', 'ASC']], raw: true });
+  const synced = {};
+  const failed = {};
+
+  for (const school of schools) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      synced[school.id] = await syncAllHeadcounts(school.id);
+    } catch (err) {
+      failed[school.id] = err.message;
+    }
+  }
+
+  return { schools: schools.length, synced, failed };
+}
+
+module.exports = {
+  getUsage,
+  getUsageSummary,
+  checkLimit,
+  assertWithinLimit,
+  checkPerRequestLimit,
+  recordUsage,
+  syncHeadcount,
+  syncAllHeadcounts,
+  syncAllSchoolHeadcounts,
+  countHeadcount,
+  measurementFor,
+  periodFor,
+  MEASUREMENT,
+  PER_REQUEST_LIMITS,
+  HEADCOUNT_SOURCES,
+};

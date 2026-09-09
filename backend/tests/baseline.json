@@ -1,0 +1,165 @@
+{
+  "recordedUnder": {
+    "NODE_ENV": "development",
+    "DB_NAME": "msms_test",
+    "UPLOAD_DIR": "storage/uploads-test"
+  },
+  "database": "msms_test",
+  "suiteCount": 38,
+  "totalAssertions": 5312,
+  "totalPassLines": 5291,
+  "suites": {
+    "verify-addons.js": {
+      "assertions": 169,
+      "passLines": 169
+    },
+    "verify-ai.js": {
+      "assertions": 188,
+      "passLines": 188
+    },
+    "verify-app.js": {
+      "assertions": 205,
+      "passLines": 205
+    },
+    "verify-assignments.js": {
+      "assertions": 196,
+      "passLines": 196
+    },
+    "verify-attendance.js": {
+      "assertions": 82,
+      "passLines": 82
+    },
+    "verify-auth-chain.js": {
+      "assertions": 84,
+      "passLines": 84
+    },
+    "verify-auth-module.js": {
+      "assertions": 237,
+      "passLines": 237
+    },
+    "verify-billing.js": {
+      "assertions": 239,
+      "passLines": 239
+    },
+    "verify-deploy.js": {
+      "assertions": 58,
+      "passLines": 58
+    },
+    "verify-documents.js": {
+      "assertions": 133,
+      "passLines": 133
+    },
+    "verify-entitlement.js": {
+      "assertions": 272,
+      "passLines": 272
+    },
+    "verify-error-handler.js": {
+      "assertions": 54,
+      "passLines": 54
+    },
+    "verify-exams.js": {
+      "assertions": 219,
+      "passLines": 219
+    },
+    "verify-fees.js": {
+      "assertions": 174,
+      "passLines": 174
+    },
+    "verify-finance.js": {
+      "assertions": 163,
+      "passLines": 163
+    },
+    "verify-frontend.js": {
+      "assertions": 170,
+      "passLines": 170
+    },
+    "verify-homework.js": {
+      "assertions": 109,
+      "passLines": 109
+    },
+    "verify-jobs.js": {
+      "assertions": 57,
+      "passLines": 57
+    },
+    "verify-library.js": {
+      "assertions": 161,
+      "passLines": 161
+    },
+    "verify-middlewares.js": {
+      "assertions": 262,
+      "passLines": 262
+    },
+    "verify-notifications.js": {
+      "assertions": 100,
+      "passLines": 100
+    },
+    "verify-openapi.js": {
+      "assertions": 104,
+      "passLines": 104
+    },
+    "verify-parents.js": {
+      "assertions": 116,
+      "passLines": 116
+    },
+    "verify-pdf.js": {
+      "assertions": 20,
+      "passLines": 20
+    },
+    "verify-performance.js": {
+      "assertions": 16,
+      "passLines": 16
+    },
+    "verify-plans.js": {
+      "assertions": 175,
+      "passLines": 175
+    },
+    "verify-platform-modules.js": {
+      "assertions": 313,
+      "passLines": 313
+    },
+    "verify-reports.js": {
+      "assertions": 112,
+      "passLines": 112
+    },
+    "verify-school-setup.js": {
+      "assertions": 168,
+      "passLines": 168
+    },
+    "verify-security.js": {
+      "assertions": 28,
+      "passLines": 28
+    },
+    "verify-seed.js": {
+      "assertions": 22,
+      "passLines": 1
+    },
+    "verify-staff.js": {
+      "assertions": 89,
+      "passLines": 89
+    },
+    "verify-students.js": {
+      "assertions": 136,
+      "passLines": 136
+    },
+    "verify-subscriptions.js": {
+      "assertions": 208,
+      "passLines": 208
+    },
+    "verify-teachers.js": {
+      "assertions": 87,
+      "passLines": 87
+    },
+    "verify-timetable.js": {
+      "assertions": 115,
+      "passLines": 115
+    },
+    "verify-users-roles.js": {
+      "assertions": 236,
+      "passLines": 236
+    },
+    "verify-validate.js": {
+      "assertions": 35,
+      "passLines": 35
+    }
+  }
+}

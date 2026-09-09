@@ -1,0 +1,725 @@
+# ==================================================================================================
+# /etc/logrotate.d/msms — Multi-School Management System
+#
+# SRS §27 "Logging". Checklist row 7.10, the OPERATING-SYSTEM half.
+#
+# §27 lists twelve deployment technologies and states that no technology beyond that list is
+# introduced. "logrotate" is not one of them, so the sanction for this file is worth stating rather
+# than leaving to be reconstructed: docs/ARCHITECTURE.md:215-216 names "a logrotate config" as one
+# of the artifacts `deploy/` holds, and docs/IMPLEMENTATION_CHECKLIST.md:723 is the row this file
+# completes — that row still reads "Deployment-side logrotate does not exist", which is stale as of
+# this file landing on disk and is the line to update. logrotate is the operating system's
+# implementation of §27's "Logging", the way certbot is the conventional means of obtaining §27's
+# "SSL", not a thirteenth technology. Nothing here needs Docker, systemd units, or a metrics agent.
+#
+# --------------------------------------------------------------------------------------------
+# WHAT THIS FILE ROTATES — five files, and not one of them is winston's
+# --------------------------------------------------------------------------------------------
+# deploy/pm2/ecosystem.config.js:213 pins `const PM2_LOG_DIR = '/var/log/msms'` and joins four
+# filenames onto it — :420-421 for msms-api, :530-531 for msms-cron:
+#
+#     /var/log/msms/msms-api-out.log
+#     /var/log/msms/msms-api-error.log
+#     /var/log/msms/msms-cron-out.log
+#     /var/log/msms/msms-cron-error.log
+#
+# plus one more that belongs to no other mechanism on this box and is the easiest of the five to
+# forget: the PM2 daemon's own __PM2_HOME__/pm2.log, in stanza 3.
+#
+# The application half of §27's "Logging" already exists and this file must not interfere with it.
+# backend/src/config/logger.js configures winston-daily-rotate-file, which rotates by date AND
+# prunes by age on its own. Everything below is written around that fact, starting here.
+#
+# --------------------------------------------------------------------------------------------
+# WHY winston's FILES ARE NEVER NAMED, AND WHY NO STANZA USES A GLOB
+# --------------------------------------------------------------------------------------------
+# winston writes to LOG_DIR. By default that is backend/storage/logs (env.js:242-244,
+# .env.example:107, deploy/env/production.env.example:654) — a different directory from
+# /var/log/msms, which the ecosystem file chose for exactly this separation (its comment at
+# :190-201). The scheduler has a second directory, backend/storage/logs/cron, because
+# ecosystem.config.js:502 sets LOG_DIR for that app alone, so that two resident processes do not
+# fight over one combined-%DATE%.log and one shared audit ledger.
+#
+# A separate directory is the first line of defence and it is NOT sufficient on its own, because
+# LOG_DIR may be absolute: env.js:242-243 uses the value verbatim when path.isAbsolute() is true,
+# and deploy/monitoring/README.md:581-584 calls `LOG_DIR=/var/log/msms` "a perfectly normal
+# production choice". Set that way, error-<date>.log and combined-<date>.log land in this file's
+# directory, right beside PM2's four.
+#
+# That is why every stanza below names its files EXPLICITLY — not `*.log`, not `msms-*.log`, not a
+# glob of any kind. Adding an app to the ecosystem file means adding its two filenames here by
+# hand. That is deliberate friction, and it buys a second thing besides safety: `logrotate -d`
+# prints a line per NAMED file, including "does not exist -- skipping", so a wrong path is visible
+# in the dry run. A glob that matches nothing is silent and looks exactly like a healthy run.
+#
+# Widening any stanza to /var/log/msms/*.log on a host with LOG_DIR=/var/log/msms does all three of
+# the following. None of them reports an error. One of them is permanent.
+#
+#   (a) RENAME OUT FROM UNDER AN OPEN DESCRIPTOR — a day of lines lost, silently.
+#
+#       The transport holds combined-<today>.log open for the whole day. logrotate's `create` mode
+#       renames that file and puts a new empty one in its place, then expects the writer to be told
+#       to reopen. Here there is nothing to tell: winston has no `reloadLogs` equivalent and
+#       registers no SIGHUP handler — server.js:116-118 installs handlers for SIGTERM and SIGINT
+#       and for nothing else. PM2's four files survive this treatment only because `pm2 reloadLogs`
+#       exists, which is the whole reason stanza 1 has a postrotate at all.
+#
+#       The result is not an error message. It is a quiet split:
+#
+#       every line written for the rest of that day — including every morgan request line, which is
+#       piped through winston at logger.js:61-65 — lands in the renamed file, while the file the
+#       operator opens and greps stays empty. Both files exist, both look plausible, and the one
+#       holding the evidence has a name nobody thinks to look at.
+#
+#   (b) PERMANENT DESTRUCTION OF RETENTION — the worst of the three, and the only irreversible one.
+#
+#       The hidden `.<sha1>-audit.json` files in winston's directory are its own ledger. Each holds
+#       {"keep":{"days":true,"amount":30}} and then a list of every file the transport created, by
+#       ABSOLUTE PATH plus a hash — and that hash is of the path and the creation timestamp, NOT of
+#       the file's contents (node_modules/file-stream-rotator/FileStreamRotator.js:383 hashes
+#       `logfile + "LOG_FILE" + time`). Pruning walks the list: FileStreamRotator.js:386-397 drops
+#       every entry older than the window and calls removeFile(), which recomputes that hash at
+#       :283 and then unlinks only `if (fs.existsSync(file.name))` at :285.
+#
+#       A file logrotate has renamed no longer exists under its recorded path, so the unlink is
+#       skipped — and the entry is filtered out of the ledger in the same pass (:388-396), so it is
+#       never reconsidered. That file is now permanently unowned: it sits there for ever while
+#       LOG_RETENTION_DAYS still reads 30 and the mechanism still looks obeyed. Adding logrotate
+#       here would break the half of row 7.10 that already works.
+#
+#   (c) TWO COMPRESSORS ON ONE DIRECTORY. Do not read this as "the directory is already fully
+#       compressed" — it is not, and the live directory disproves it. `zippedArchive: true`
+#       (logger.js:33, :40) compresses a day's file from the transport's `rotate` event
+#       (node_modules/winston-daily-rotate-file/daily-rotate-file.js:128-175), which fires only
+#       while the process is alive, and :140-142 skips the work when a `.gz` of that name already
+#       exists. A process restarted across midnight therefore leaves that day uncompressed for
+#       good. Counted in backend/storage/logs on 2026-09-04: FOURTEEN plain files (combined- and
+#       error- for 2026-08-25..28 and 2026-09-02..04, the gaps being days the box was idle) against
+#       exactly TWO `.gz` — combined-2026-09-03.log.gz and combined-2026-09-04.log.gz, both of
+#       which also still have an uncompressed file of the same date. No error-*.log.gz exists at
+#       all. A stanza here would meet that mixture, compress the plain files into a second archive
+#       naming scheme, and leave two mechanisms fighting over one directory — on top of (a) and (b).
+#
+# If a size cap is ever wanted on the application logs, the fix belongs in
+# backend/src/config/logger.js (a `maxSize` option on the two transports at :27-41), NOT here.
+# deploy/monitoring/README.md:597-600 records that nothing bounds a single day's file today.
+#
+# --------------------------------------------------------------------------------------------
+# WHICH PROCESSES PRODUCE THE FOUR FILES
+# --------------------------------------------------------------------------------------------
+# Two apps, not three, despite "Queue Workers" appearing in §27's list of twelve. Both are declared
+# in deploy/pm2/ecosystem.config.js, and both run ONE instance in fork mode.
+#
+# The instance count is not a capacity dial, it is a correctness setting, and it is also what makes
+# the file count in INSTALL step 4 exactly four: in cluster mode PM2 suffixes each instance's log
+# path with its pm_id, so `instances: 2` would silently turn four filenames into eight and half the
+# stanzas below would stop matching anything.
+#
+# An earlier draft of this file described msms-api as "long-running, clustered", and
+# ecosystem.config.js:48-52 still carries a live note about that contradiction. This is the line it
+# points at: msms-api is NOT clustered, must not become so, and that note can now be retired.
+#
+#   msms-api    node src/server.js     `instances: 1, exec_mode: 'fork'` — ecosystem.config.js:317
+#               names the app, :329-330 pin the mode. rateLimit.js:27-32 records that
+#               express-rate-limit's store is the in-memory one — no `store:` is passed at
+#               rateLimit.js:193-202 — so "behind N workers the effective ceiling is N × the
+#               configured limit", and it names SRS §3 as describing a single-process deployment.
+#               Read as a contract, "clustered" would have multiplied a security limit by the
+#               instance count. The entitlement cache (a per-process Map, cache.js:32) and the
+#               queue (queue.js:107) are per-process too; docs/ARCHITECTURE.md:233-237 agrees.
+#
+#   msms-cron   node src/jobs/cron.js  `instances: 1, exec_mode: 'fork'` — ecosystem.config.js:426,
+#               :459-460. Two schedulers against one database double-notify and race renewals. It
+#               refuses to start unless ENABLE_CRON=true (cron.js:249-255); env.js:257 defaults it
+#               false and .env.example:116 ships it false, so ecosystem.config.js:501 sets it in
+#               that app's own `env` block. See `missingok` in stanza 1 if that block is removed.
+#
+# --------------------------------------------------------------------------------------------
+# THE PATH CONTRACT — what the ecosystem file must keep doing for this file to work
+# --------------------------------------------------------------------------------------------
+# This file and deploy/pm2/ecosystem.config.js are one mechanism split across two artifacts, and
+# the contract runs in both directions.
+#
+# The ecosystem file MUST pin `out_file` and `error_file` for BOTH apps to the four absolute paths
+# named at the top of this file (ecosystem.config.js:420-421, :530-531). If it stops doing so, PM2
+# falls back to $PM2_HOME/logs/<app>-out.log, the stanzas below name files that never appear, and
+# this file rotates nothing — quietly, because `missingok` makes an absent named file a non-event.
+# This file MUST name those same paths and nothing wider (see the glob argument above). Neither
+# half can detect the other drifting; INSTALL step 4 is the only thing that catches it, which is
+# why reading that output is not optional.
+#
+# /var/log/msms is outside backend/storage/ on purpose: it keeps PM2's files out of the tree that
+# holds uploads, backups and winston's own logs, so no glob written here can reach them. Create it:
+#     mkdir -p /var/log/msms && chown msms:msms /var/log/msms && chmod 0750 /var/log/msms
+#
+# You do not have to take the four paths on trust either. `node` is the one tool this contract can
+# be checked with, and the ecosystem file is a CommonJS module, so on the target host:
+#
+#   node -e "for (const a of require('/PATH/TO/deploy/pm2/ecosystem.config.js').apps) \
+#            console.log(a.name, a.out_file, a.error_file)"
+#
+# prints the four absolute paths PM2 will actually open. They must be the four in the stanzas
+# below. Run it AFTER the mkdir: ecosystem.config.js:227-235 deliberately THROWS when
+# /var/log/msms is missing, and its message names this file.
+#
+# If ecosystem.config.js:213 is ever changed, the paths here are wrong and nothing announces it.
+# Edit the two files in the same change.
+#
+# --------------------------------------------------------------------------------------------
+# CROSS-REFERENCES INTO THIS FILE — check them when you edit above this point
+# --------------------------------------------------------------------------------------------
+# Three other deploy artifacts point back here. Two do so by line number, and line numbers move:
+#
+#   deploy/pm2/ecosystem.config.js:48-52, :190-201, :224, :230, :487 — several of these cite line
+#     numbers in an EARLIER draft of this file (`:120`, `:137-149`, `:151-152`, `:153`, `:58-88`,
+#     `:69-72`). The sections they describe all still exist here, but the numbers were written
+#     against a draft that named different paths, so re-derive them before trusting one.
+#   deploy/nginx/msms.conf:322-330 — states that this file deliberately does not rotate nginx's
+#     logs. Still true; see the ownership block below.
+#   deploy/mysql/production.cnf:1000-1005, :1029-1031 — states that this file covers only the PM2
+#     stdout/stderr files in /var/log/msms. Stanza 3 also covers $PM2_HOME/pm2.log; nothing in that
+#     document depends on the difference, but it is a small drift worth knowing about.
+#
+# --------------------------------------------------------------------------------------------
+# INSTALL — in this order; steps 1 and 5 are the ones that get skipped and then missed
+# --------------------------------------------------------------------------------------------
+# This file ships with two placeholders. It is deliberately inert until both are substituted,
+# because there is no correct literal to ship for either:
+#
+#   __PM2_HOME__   the PM2 daemon's home. The default is <deploy user's home>/.pm2, and
+#                  `sudo -u msms pm2 report` prints the value actually in use.
+#   __PM2_BIN__    the absolute path to the pm2 launcher. This is the single most likely thing in
+#                  this file to be wrong on your host — see the postrotate comment in stanza 1.
+#
+# 1. Create the log directory and start PM2 FIRST, so the files exist before anything claims to
+#    rotate them. PM2 opens out_file/error_file in order to spawn each process; logger.js:17
+#    creates winston's directory only once Node is already running, which is too late to help here,
+#    and ecosystem.config.js:227-235 refuses to load at all until this directory exists.
+#
+#      mkdir -p /var/log/msms && chown msms:msms /var/log/msms && chmod 0750 /var/log/msms
+#      sudo -u msms pm2 start /PATH/TO/deploy/pm2/ecosystem.config.js
+#      sudo -u msms pm2 save
+#      ls -l /var/log/msms                            # expect the four files
+#
+#    On every host that is not the scheduler, start with `--only msms-api` instead
+#    (ecosystem.config.js:479, :547): this ecosystem file carries ENABLE_CRON=true with it, and two
+#    resident schedulers against one database double-notify and race renewals. Such a host then has
+#    no msms-cron files at all, which is the case `missingok` exists for.
+#
+# 2. Substitute and install.
+#
+#      PM2_HOME_DIR=/home/msms/.pm2                   # confirm with: sudo -u msms pm2 report
+#      PM2_BIN=$(sudo -u msms sh -lc 'command -v pm2')
+#
+#      install -o root -g root -m 0644 deploy/logrotate/msms /etc/logrotate.d/msms
+#      sed -i "s#__PM2_HOME__#${PM2_HOME_DIR}#g; s#__PM2_BIN__#${PM2_BIN}#g" /etc/logrotate.d/msms
+#
+# 3. Prove the substitution completed. If either placeholder survives, the postrotate cannot run
+#    and stanza 3 names a path that cannot exist — and both fail quietly.
+#
+#      if grep -q '__PM2_HOME__\|__PM2_BIN__' /etc/logrotate.d/msms; then \
+#          echo 'SUBSTITUTION INCOMPLETE — this file will not reopen PM2 log descriptors'; fi
+#
+#    (Written as `grep -q` inside `if`, not as `n=$(grep -c ... || echo 0)`. That second idiom is
+#    broken: `grep -c` prints 0 AND exits 1 when there are no matches, so the `||` fires and the
+#    variable becomes the two-line string "0\n0", which then fails any arithmetic done on it. The
+#    same warning is in deploy/mysql/production.cnf:1021-1023 for the same reason.)
+#
+# 4. Dry-run, and READ the output rather than checking the exit status. This changes nothing:
+#
+#      logrotate -d /etc/logrotate.d/msms
+#
+#    It must name all four PM2 app files plus __PM2_HOME__/pm2.log, and must NOT name any file
+#    called error-<date>.log or combined-<date>.log. A stanza whose files are all missing is not an
+#    error and does not change the exit status — reading the output IS the check.
+#
+#    On a host started with `--only msms-api` the expected count is two app files plus pm2.log, and
+#    two "does not exist -- skipping" lines for the cron pair. Count what you expect, not four.
+#
+#    If this file is being skipped entirely it will be absent from:
+#
+#      logrotate -d /etc/logrotate.conf 2>&1 | grep msms
+#
+# 5. Force one real rotation, once, so a failing postrotate is discovered now and not on day 31:
+#
+#      logrotate -f /etc/logrotate.d/msms
+#      ls -l /var/log/msms                                       # archives present
+#      sudo -u msms pm2 logs msms-api --lines 5                  # and PM2 still writing
+#
+#    `dateext` refuses a second rotation on the same day ("destination already exists, skipping"),
+#    so this is one shot per day. Do step 1 before step 5 or the forced run has nothing to rotate
+#    and proves nothing at all.
+#
+# The installed name deliberately has NO extension. logrotate skips any file in /etc/logrotate.d
+# whose suffix is in its taboo list — the default list includes `~`, `.rpmsave`, `.rpmorig`,
+# `.rpmnew`, `.dpkg-old`, `.dpkg-dist`, `.dpkg-new`, `.dpkg-bak`, `.swp` and `.disabled`. Leaving an
+# editor backup `msms~` beside this file is the classic way to end up with a rotation policy that is
+# present, readable and never runs. (Plain `.bak` and `.conf` are NOT on the stock list, and an
+# earlier draft of this comment claimed they were. Rather than trust either claim, the command in
+# step 4 above is what settles it on the host.)
+#
+# The root:root 0644 mode matters for the same class of reason: logrotate refuses to read a config
+# file that is writable by group or other, and reports that only in its own output — which on a
+# healthy server nobody looks at until the disk is full.
+#
+# --------------------------------------------------------------------------------------------
+# WHO OWNS WHICH FILE — read this before adding a stanza
+# --------------------------------------------------------------------------------------------
+# Six log-producing things on this box; logrotate is responsible for two of them. Getting the
+# boundary wrong does not merely duplicate work — in case 1 it actively breaks something that works,
+# and in case 4 it stops nginx's rotation dead for the whole run.
+#
+#   1. winston application logs      OWNED BY THE APP.        logrotate must not touch them.
+#      backend/storage/logs/error-YYYY-MM-DD.log         (logger.js:30-33)
+#      backend/storage/logs/combined-YYYY-MM-DD.log      (logger.js:37-40)
+#      backend/storage/logs/cron/…                       the scheduler's own pair; the separate
+#                                                        directory comes from ecosystem.config.js:502
+#      backend/storage/logs/*.log.gz  and  .<sha1>-audit.json
+#      Rotated by date and pruned by age by the transports themselves. See the three failures above.
+#
+#   2. PM2's per-app stdout/stderr   OWNED BY THIS FILE.      Stanzas 1 and 2.
+#      The four files in /var/log/msms. PM2 never rotates or bounds these itself.
+#
+#   3. PM2's own daemon log          OWNED BY THIS FILE.      Stanza 3.
+#      __PM2_HOME__/pm2.log — PM2's supervision record (app started, app exited with code N,
+#      restart counters). It is NOT one of the four files in item 2: those receive only what the
+#      supervised process itself writes to stdout/stderr. The daemon log sits directly in
+#      $PM2_HOME, not in $PM2_HOME/logs, so it is easy to leave out, and it is the one file in this
+#      deployment with no retention of any kind behind it.
+#
+#   4. nginx access/error logs       OWNED BY THE DISTRO.     /etc/logrotate.d/nginx ships with the
+#      nginx package and already performs the correct `kill -USR1` reopen. A second stanza naming
+#      the same paths makes logrotate abort that run with "duplicate log entry for
+#      /var/log/nginx/access.log" and skip rotation for everything after it. Do not add one here.
+#      deploy/nginx/msms.conf:322-330 states the same boundary from the other side.
+#
+#   5. MySQL error and slow logs     OWNED BY THE DISTRO — in theory.
+#      deploy/mysql/production.cnf:1011-1031 records that nothing in this repository rotates them,
+#      that the packaged mysql-server logrotate entry is assumed to, and that the assumption is
+#      unverified. If it turns out nothing covers them, the stanza belongs in that packaged entry,
+#      NOT here — for the duplicate-log-entry reason in item 4.
+#
+#   6. mysqldump backups             OWNED BY THE APP.        Not logs, and self-pruning — but not
+#      in the general way an earlier draft of this comment claimed.
+#      backend/src/jobs/tasks/databaseBackup.js:127-139 deletes ONLY files whose name matches its
+#      own output — the filter at :132 requires the `<db-name>-` prefix and the `.sql` suffix — and
+#      older than BACKUP_RETENTION_DAYS by mtime. prune() is called at :178, i.e. only AFTER a dump
+#      has succeeded and passed the non-empty guard at :173-176, so a failed or zero-byte dump
+#      prunes nothing that night. The directory does not self-clean in general; it self-cleans its
+#      own dumps on its own successful runs. No stanza here could reach them anyway, but the
+#      reasoning is recorded so nobody adds one "for tidiness".
+#
+#   `npm run worker` and `npm run db:backup` produce no file for anyone to rotate: worker.js runs
+#   one job in its own process and exits (worker.js:17-22), and both write to the operator's
+#   terminal rather than to a PM2 log. There is NO resident queue worker to supervise — a separate
+#   process cannot see the API's in-memory queue (queue.js:107 is one MemoryQueue per process), and
+#   §29's 64-table ceiling forbids the jobs table that would be needed;
+#   docs/ARCHITECTURE.md:239-242 says the same. The nightly backup is scheduled inside msms-cron
+#   (databaseBackup.js:193, `0 3 * * *`), so no system crontab entry is involved either.
+#
+# --------------------------------------------------------------------------------------------
+# WHAT IS THEN LEFT FOR LOGROTATE, AND WHY IT IS NOT NOTHING
+# --------------------------------------------------------------------------------------------
+# In production winston does not write to the console at all — the Console transport is added only
+# when the environment is neither production nor test (logger.js:44), and ecosystem.config.js:349
+# sets NODE_ENV=production for msms-api (:500 does the same for msms-cron). So neither app's own
+# log lines reach PM2's out/err files, and one could conclude those files are empty and
+# unimportant.
+#
+# They are not, and the reason is specific. What lands there is exactly what winston cannot capture,
+# which is to say what you need when the process will not run:
+#
+#   * A failure during module load, BEFORE any handler exists. server.js:27 requires
+#     ./config/logger at module scope, and logger.js:17 calls
+#     `fs.mkdirSync(config.logging.dir, { recursive: true })` with no try/catch. If the log
+#     directory cannot be created — wrong owner after a deploy, a full disk, a bad LOG_DIR — that
+#     throws out of `require`, and Node prints an uncaught EACCES/ENOSPC stack to stderr. The
+#     `Failed to start:` line does NOT appear in this case: `start().catch(...)` is not installed
+#     until server.js:141. An earlier draft of this comment credited that line with covering exactly
+#     the one failure it cannot cover.
+#   * Failures raised INSIDE start(), where the logger did load — assertRuntimeConfig()
+#     (env.js:265), assertConnection(), initCache(). Those reach server.js:141-148, which writes
+#     `Failed to start: <message>` to stderr at :147 as well as to the log, "because a configuration
+#     error can be thrown before the log directory is usable". That line is written once per
+#     crash-loop iteration, and it is the reason `copytruncate` is refused in stanzas 1 and 2.
+#   * EADDRINUSE and other listen errors (server.js:106-114), V8 and libuv fatal errors (heap OOM,
+#     native module load failure), Node deprecation and process warnings, and any stack trace
+#     printed after the runtime has given up. None of these goes through a logger.
+#   * The cron process's refusal to start, which is a bare `console.error` (cron.js:250-254).
+#
+# A crash-looping API therefore produces a growing PM2 error log and an application log that says
+# nothing at all. Rotating these files is the difference between having that evidence and having a
+# full /var — and deploy/monitoring/README.md:315-323 tells the operator to read `pm2 logs` for
+# exactly these cases, which only works while the files are still there.
+#
+# --------------------------------------------------------------------------------------------
+# WHAT COULD NOT BE VERIFIED WHEN THIS FILE WAS WRITTEN — read before trusting a claim below
+# --------------------------------------------------------------------------------------------
+# logrotate, pm2, nginx, mysql and mysqldump are ALL ABSENT from the machine this was authored on
+# (checked with `command -v`; only node and openssl are present). So:
+#
+#   * NOTHING here has been through `logrotate -d` or `logrotate -f`, and no stanza below has ever
+#     rotated a file. Every statement about logrotate's behaviour is from its documented behaviour,
+#     not from an observed run. INSTALL steps 4 and 5 are where that gets checked, and they are not
+#     optional.
+#   * `dateyesterday` requires logrotate 3.9.0 or newer. An older build rejects the whole config
+#     file rather than the one directive, which would disable every stanza here. Confirm with
+#     `logrotate --version` before installing; if it is older, delete the three `dateyesterday`
+#     lines and accept the off-by-one described in stanza 1.
+#   * That logrotate runs postrotate scripts after switching to the `su` user is documented
+#     behaviour, not something observed here.
+#   * That PM2 opens $PM2_HOME/pm2.log in append mode — which is what makes `copytruncate` safe in
+#     stanza 3 — could not be checked: pm2 is not installed and is not a dependency of this
+#     project, so there was no source to read. Stanza 3 says what to look for after the first
+#     rotation.
+#   * The account name `msms`, the value of __PM2_HOME__, the value of __PM2_BIN__ and the 0640
+#     mode are deployment choices, not facts read out of this repository.
+#
+# What WAS verified here, with node, the one tool available: the four PM2 log paths, by requiring
+# deploy/pm2/ecosystem.config.js and printing `apps[].out_file` / `apps[].error_file`. Stated
+# exactly: the authoring machine is Windows, so /var/log/msms cannot exist and the guard at
+# ecosystem.config.js:227-235 throws on a plain require. The module was loaded with that one
+# `fs.existsSync` check stubbed, which returned the four filenames joined onto the `/var/log/msms`
+# constant at :213 — printed with backslash separators there, because `path.join` follows the host
+# platform. The POSIX form is what the same code yields on the target host, and it is what is
+# written above. Every other file:line citation in this file was read from the source it names.
+# ==================================================================================================
+
+
+# ==================================================================================================
+# STANZA 1 — the two ERROR logs. Rotated unconditionally, on purpose.
+# ==================================================================================================
+/var/log/msms/msms-api-error.log
+/var/log/msms/msms-cron-error.log
+{
+
+    # ------------------------------------------------------------------------------------------
+    # NO notifempty HERE, and this is the difference between a policy that can fail once and a
+    # policy that can fail permanently.
+    #
+    # logrotate renames the file BEFORE running postrotate. If `pm2 reloadLogs` then fails, PM2
+    # keeps its descriptor on the renamed inode and the newly created msms-api-error.log stays 0
+    # bytes for ever. With `notifempty`, that empty file would then be skipped every subsequent
+    # night — and because `sharedscripts` runs postrotate only when at least one file in the set
+    # actually rotated, the reopen would never be retried. One transient failure becomes permanent,
+    # silent log loss, with `delaycompress` gzipping a file PM2 is still appending to and, after
+    # `rotate` archives, the still-open inode unlinked while the descriptor holds the disk space.
+    #
+    # Without notifempty the set rotates every night regardless, so postrotate is attempted every
+    # night and a failure keeps announcing itself instead of latching. The cost is up to `rotate`
+    # near-empty archives on a healthy, quiet server. That is a trivial price for keeping the retry
+    # alive, and it is the whole reason this stanza is split out from the -out.log files.
+    # ------------------------------------------------------------------------------------------
+
+    # ------------------------------------------------------------------------------------------
+    # su — what it actually buys, which is NOT what an earlier draft claimed.
+    #
+    # It is not the insecure-parent-directory check. logrotate refuses to rotate inside a directory
+    # that is group- or world-WRITABLE; INSTALL step 1 makes /var/log/msms mode 0750 owned
+    # msms:msms, which is neither, so that check never fires — and an operator who tests "is su
+    # needed?" will find rotation works without it and be tempted to delete the line.
+    #
+    # What `su` does is switch uid/gid before the rotation and before the postrotate script. Two
+    # things depend on that. The archives and the replacement files are created as `msms` rather
+    # than root, in a directory root cannot be assumed to keep writable for the app. And
+    # `pm2 reloadLogs` runs as the account that owns the daemon: run as root with PM2_HOME pointed
+    # at the msms daemon, pm2 may reach the socket, but if that daemon is not running it will spawn
+    # a NEW one and write root-owned files into __PM2_HOME__ — after which the real daemon cannot
+    # write its own directory and the situation needs a human.
+    #
+    # (It also covers the insecure-permissions refusal if a deploy ever leaves the directory
+    # group-writable. That is a second reason, not the reason.)
+    # ------------------------------------------------------------------------------------------
+    su msms msms
+
+    # ------------------------------------------------------------------------------------------
+    # daily + rotate 30 + maxage 30 — deliberately the same window as LOG_RETENTION_DAYS=30
+    # (.env.example:108, env.js:245, deploy/env/production.env.example:672).
+    #
+    # This number is a mirror of the application's retention, not a convention. An incident is
+    # investigated from both halves at once: the winston combined log says what the request did, the
+    # PM2 error log says whether the process survived it. If one window is shorter, an investigation
+    # that reaches back far enough finds half the story and no indication the other half was ever
+    # there.
+    #
+    # THEY MUST BE CHANGED TOGETHER. If LOG_RETENTION_DAYS is raised in .env, raise both numbers
+    # here in the same change.
+    #
+    # `maxage` is present because `rotate` alone is a COUNT, and a count only advances when a
+    # rotation happens, whereas winston prunes by AGE. Pairing the two makes the two halves age out
+    # together instead of drifting apart whenever rotations are skipped. Be honest about its limit:
+    # maxage is also applied only while logrotate is processing this log set, so it is a backstop
+    # for irregular rotation, not for a set that has stopped being processed entirely — which is the
+    # failure `notifempty` could cause, and which is why it is not used in this stanza.
+    # ------------------------------------------------------------------------------------------
+    daily
+    rotate 30
+    maxage 30
+
+    # ------------------------------------------------------------------------------------------
+    # dateext + dateyesterday — name archives by the date of their CONTENTS.
+    #
+    # dateext alone gets this wrong in a way that looks right. logrotate runs from cron.daily or
+    # logrotate.timer in the early morning, and with plain `dateext` the suffix is the date of the
+    # RUN — so Tuesday's PM2 lines land in msms-api-error.log-<Wednesday>, while Tuesday's
+    # application lines are in combined-<Tuesday>.log (logger.js:37-38). An operator correlating the
+    # two halves during an incident then opens the wrong archive by exactly one day, and the two
+    # naming schemes are similar enough that nothing signals the mistake.
+    #
+    # `dateyesterday` uses the previous day's date for the suffix, which is the date of the content
+    # being rotated, so both halves answer "which file holds Tuesday" the same way. It needs
+    # logrotate 3.9.0+ — see the verification block in the header before installing.
+    #
+    # The default numbered suffixes are rejected for a different reason: every rotation renames every
+    # archive, so a file's name depends on when you looked at it — bad when someone is copying
+    # filenames into an incident note.
+    #
+    # Caveat, since it is a real one: with dateext a second rotation on the same day cannot happen
+    # ("destination already exists, skipping rotation"). That is correct here because the only
+    # trigger is the distribution's once-a-day run, but it is why `maxsize` is not used, and it is
+    # why INSTALL step 5 is a one-shot.
+    # ------------------------------------------------------------------------------------------
+    dateext
+    dateformat -%Y-%m-%d
+    dateyesterday
+
+    # ------------------------------------------------------------------------------------------
+    # missingok — and a precise statement of what it does and does not cover.
+    #
+    # It covers a legitimately absent file. Every host except the scheduler is started with
+    # `pm2 start ... --only msms-api` (ecosystem.config.js:479, :547), so msms-cron-error.log does
+    # not exist there at all; erroring by mail every night about that teaches the operator to filter
+    # logrotate's mail, after which the next real error goes with it.
+    #
+    # It does NOT cover a wrong path, and that is the cost of the directive: a path that no longer
+    # matches ecosystem.config.js:213 is also "missing", so it too is silent. INSTALL step 3 (the
+    # placeholder check) and step 4 (reading the -d output) are what distinguish the two cases.
+    # Nothing else will.
+    #
+    # One case it is NOT protecting against, despite an earlier draft saying so: a deployment with
+    # ENABLE_CRON unset does not simply have no cron log. If msms-cron is started while ENABLE_CRON
+    # is not true, cron.js:249-255 prints its refusal and exits 1 on EVERY start, so this file is
+    # present and filling with restart banners rather than absent. The shipped ecosystem file sets
+    # ENABLE_CRON in that app's own env block (ecosystem.config.js:501) precisely so this does not
+    # happen; if someone removes it, that is what a non-empty, fast-growing msms-cron-error.log
+    # means. It is bounded, not infinite — ecosystem.config.js:277 backs off between restarts and
+    # :310 caps at `max_restarts: 20`, after which PM2 leaves the app `errored` — but 20 refusals
+    # with no sweeps running is still the loudest thing this log will ever say.
+    # ------------------------------------------------------------------------------------------
+    missingok
+
+    # ------------------------------------------------------------------------------------------
+    # compress + delaycompress.
+    #
+    # delaycompress is not cosmetic here. The reopen below happens in postrotate, i.e. after
+    # logrotate has already renamed the file; if compression ran in the same pass, gzip could be
+    # reading the rotated inode while PM2 is still appending to it, producing a truncated or garbled
+    # tail of exactly the crash trace that prompted the investigation. delaycompress defers
+    # compression to the next run, by which time the reopen is a day old.
+    #
+    # (These four files are never pre-compressed — PM2 writes them plain — so unlike winston's
+    # directory there is no second compressor here to collide with.)
+    # ------------------------------------------------------------------------------------------
+    compress
+    delaycompress
+
+    # ------------------------------------------------------------------------------------------
+    # create, NOT copytruncate — and this is the choice that loses log lines if made wrong.
+    #
+    # The rule is whether the writing process can be told to reopen its file. PM2 can:
+    # `pm2 reloadLogs` closes and reopens the descriptors it holds for its managed apps. So the
+    # correct pattern is rename-then-reopen, which is lossless — the daemon writes to the old inode
+    # until it is told, then switches cleanly to the new file.
+    #
+    # copytruncate would be wrong here in two distinct ways, both silent:
+    #   * Every line written between the copy and the truncate is destroyed. The line that matters
+    #     most in this file — server.js:147's "Failed to start: <message>" — is written exactly once
+    #     per boot attempt. Losing it means the operator sees an empty error log for an API that is
+    #     crash-looping, and concludes the process is fine.
+    #   * A descriptor opened without O_APPEND keeps its byte offset across the truncate. The next
+    #     write lands at the old offset and the kernel fills the gap with NUL bytes, giving a sparse
+    #     file that reports hundreds of megabytes, opens as binary in most tools, and cannot be read
+    #     from the top.
+    #
+    # The mode and ownership are load-bearing, not decoration: if root creates the replacement file,
+    # the PM2 process reopening it as `msms` gets EACCES, drops the stream, and logs nothing further
+    # until someone restarts it. 0640 keeps stack traces and configuration errors off a
+    # world-readable path, which matters more in /var/log than it would inside the app tree, because
+    # /var/log is where an operator's habits say everything is readable.
+    # ------------------------------------------------------------------------------------------
+    create 0640 msms msms
+
+    # ------------------------------------------------------------------------------------------
+    # sharedscripts — `pm2 reloadLogs` is global, so it runs once for this stanza's files rather
+    # than once per file. Without it the daemon is asked to reopen everything twice here, and each
+    # extra call is another window in which a write can land on a descriptor being swapped.
+    #
+    # Note that stanza 2 carries the same postrotate. Two reloads on a night when both stanzas
+    # rotate is harmless — each one reopens all four descriptors — and it is what makes stanza 2's
+    # `notifempty` safe: even if an out-log stanza latches empty, this stanza's nightly reload
+    # reopens its descriptors anyway. THE TWO POSTROTATE BLOCKS MUST BE KEPT IDENTICAL.
+    # ------------------------------------------------------------------------------------------
+    sharedscripts
+    postrotate
+        # PATH is set explicitly because logrotate's scripts run with a minimal environment, and
+        # pm2's launcher is a `#!/usr/bin/env node` script — so a PATH without node's directory
+        # fails with `env: node: No such file or directory` and exit 127, which looks like a pm2
+        # problem and is not.
+        #
+        # THIS IS THE LINE MOST LIKELY TO BE WRONG ON YOUR HOST, which is why the binary is a
+        # placeholder rather than a guessed literal such as /usr/bin/pm2. On the target machine run,
+        # as the deploy user:
+        #     command -v pm2 ; command -v node
+        # __PM2_BIN__ is the first of those. If node is NOT in the PATH below — under nvm both live
+        # in ~/.nvm/versions/node/<ver>/bin — prepend `dirname $(command -v node)` to the PATH line
+        # here, in this stanza and in stanza 2. A system PATH will not find an nvm node.
+        #
+        # PM2 is per-user: the daemon holding the descriptors belongs to `msms`, and a pm2 invoked
+        # with a different PM2_HOME talks to a different (or newly spawned) daemon and reopens
+        # nothing while exiting 0. Both the absolute binary path and PM2_HOME are required because
+        # these scripts run without a guaranteed HOME under `su`.
+        #
+        # stdout is discarded; stderr is deliberately NOT, and there is no `|| true`. If this fails,
+        # the descriptors were never reopened, and the operator must see it.
+        PATH=/usr/local/bin:/usr/bin:/bin
+        export PATH
+        PM2_HOME=__PM2_HOME__ __PM2_BIN__ reloadLogs >/dev/null
+    endscript
+}
+
+
+# ==================================================================================================
+# STANZA 2 — the two OUT logs. Identical to stanza 1 except for `notifempty`.
+# ==================================================================================================
+# That one word is the whole difference between the stanzas, and it is deliberate in both
+# directions. Added in session 26: the asymmetry was here before, correct, and unexplained.
+#
+# `notifempty` skips the rotation when the file is empty. Both kinds of file are empty most days in
+# production — `logger.js:44` drops the console transport under NODE_ENV=production, so nothing
+# routine is written to either — but an empty file means opposite things in the two cases:
+#
+#   - An empty OUT log is the normal, uninformative state. Rotating it produces a dated, compressed,
+#     empty file that records nothing anybody will ever read, thirty times a month. `notifempty` is
+#     right here.
+#
+#   - An empty ERROR log is a FINDING. These files hold exactly what winston cannot: a syntax error
+#     or missing module that kills the process before `require('./config/logger')` returns, an
+#     EADDRINUSE racing the logger, cron's refusal (`cron.js:250-254`), and the deliberate
+#     `process.stderr.write` on the boot-failure path (`server.js:147`). Rotating unconditionally
+#     means every day has a file: `msms-api-error.log-2026-09-04` existing and empty says "nothing
+#     failed that day", while its absence would be ambiguous between "nothing failed" and "logrotate
+#     never ran". For the one file that proves a process could not start, being able to tell those
+#     two apart is worth thirty empty files a month.
+# ==================================================================================================
+/var/log/msms/msms-api-out.log
+/var/log/msms/msms-cron-out.log
+{
+    su msms msms
+
+    daily
+    rotate 30
+    maxage 30
+
+    dateext
+    dateformat -%Y-%m-%d
+    dateyesterday
+
+    missingok
+
+    # ------------------------------------------------------------------------------------------
+    # notifempty — in production these two files are empty BY DESIGN.
+    #
+    # winston adds its Console transport only outside production (logger.js:44) and
+    # ecosystem.config.js:349 sets NODE_ENV=production for msms-api (:500 for msms-cron), so a
+    # healthy pair writes nothing at all to stdout. Without this, both files rotate every night and
+    # 30 zero-byte archives accumulate beside the error archives that actually matter, burying them.
+    #
+    # It is safe HERE and not in stanza 1 for one reason: if a postrotate failure ever left these
+    # files empty and latched, stanza 1 still rotates nightly and its postrotate reopens ALL of
+    # PM2's descriptors, including these two. The out logs recover on stanza 1's back. The error
+    # logs have nothing behind them, which is why they carry the cost of rotating empty instead.
+    #
+    # Consequence worth stating: because rotations here are skipped on quiet days, `rotate 30` for
+    # these two files can span considerably more than 30 days. `maxage 30` above is what bounds
+    # that, and it is the reason it appears in this stanza too.
+    # ------------------------------------------------------------------------------------------
+    notifempty
+
+    compress
+    delaycompress
+
+    create 0640 msms msms
+
+    sharedscripts
+    postrotate
+        # KEEP IDENTICAL TO STANZA 1. See the long comment there for why each part is present and
+        # for what to check on the target host (`command -v pm2`, `command -v node`, nvm paths).
+        PATH=/usr/local/bin:/usr/bin:/bin
+        export PATH
+        PM2_HOME=__PM2_HOME__ __PM2_BIN__ reloadLogs >/dev/null
+    endscript
+}
+
+
+# ==================================================================================================
+# STANZA 3 — PM2's own daemon log. Different file, different mechanism, deliberately separate.
+# ==================================================================================================
+# __PM2_HOME__/pm2.log is written by the PM2 daemon itself, not by a supervised app. It holds the
+# supervision record — app started, app exited with code N, restart counters climbing — which is
+# precisely the evidence for a crash loop, and it is the only file in this deployment with no
+# retention behind it at all: nothing in the application prunes it, and it is not in
+# $PM2_HOME/logs, so a glob written for the app logs cannot reach it. Left alone it grows until the
+# partition fills — and that partition is the deploy user's home, not /var.
+# ==================================================================================================
+__PM2_HOME__/pm2.log
+{
+    # Same reasoning as stanza 1: the archive and the truncation should happen as the account that
+    # owns $PM2_HOME, not as root.
+    su msms msms
+
+    daily
+    rotate 30
+    maxage 30
+
+    dateext
+    dateformat -%Y-%m-%d
+    dateyesterday
+
+    # A host where PM2 has never been started has no pm2.log. Same caveat as stanza 1: this makes a
+    # mis-substituted __PM2_HOME__ silent too, which is what INSTALL steps 3 and 4 are for.
+    missingok
+    notifempty
+
+    # ------------------------------------------------------------------------------------------
+    # copytruncate here, and `create` deliberately absent — the opposite choice from stanzas 1 and
+    # 2, for the reason stated there: it depends entirely on whether the writer can be told to
+    # reopen.
+    #
+    # `pm2 reloadLogs` reopens the descriptors PM2 holds for its managed APPS. There is no
+    # documented command that makes the daemon reopen its OWN log, so rename-then-reopen would
+    # leave the daemon writing to a renamed inode for ever — the exact failure stanza 1's postrotate
+    # exists to prevent, and the same failure as (a) in the header.
+    #
+    # The known cost is real and is accepted knowingly: any line written between the copy and the
+    # truncate is lost. For a supervision log that writes a handful of lines per restart, losing a
+    # line in that window is a far smaller loss than losing the whole file to a stale descriptor.
+    #
+    # THE ONE THING TO CHECK AFTER THE FIRST ROTATION. copytruncate is only safe if the writer holds
+    # the file with O_APPEND; without it the daemon keeps its old offset and the truncated file is
+    # refilled with NUL bytes up to that offset. pm2 is not installed on the machine this file was
+    # written on and is not a dependency of this project, so its open flags could NOT be read from
+    # source. Verify on the host after the first rotation:
+    #     head -c 64 __PM2_HOME__/pm2.log | od -c | head
+    # Leading \0 bytes mean copytruncate is wrong for this PM2 build. `rotate 0` plus `maxsize` is
+    # NOT the answer either — instead stop rotating this file here, and restart the daemon
+    # (`pm2 update`, which re-execs it and reopens pm2.log) on a schedule the operator chooses, and
+    # record why in this comment.
+    #
+    # No delaycompress: with copytruncate the archive is a completed copy, not the live inode, so
+    # nothing is still appending to it and there is no reason to wait a day to compress it.
+    # ------------------------------------------------------------------------------------------
+    copytruncate
+    compress
+
+    # No postrotate. Nothing needs to be told anything: the descriptor was never invalidated.
+}

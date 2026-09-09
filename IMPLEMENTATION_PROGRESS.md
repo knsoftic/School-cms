@@ -1,0 +1,10739 @@
+# Implementation Progress Log
+
+**Project:** Multi-School Management System (multi-tenant SaaS)
+**Source of truth:** `SRS_Multi-School-Management-System.docx` (36 sections)
+**Root:** `E:\School Managment System`
+**Last updated:** 2026-09-09 (session 26, part 43 — the unreachable endpoints)
+**Overall state:** **The Super Admin platform surface, accounts-and-access, the whole subscription
+*catalogue* — plans and add-ons — the subscription *lifecycle*, Phase 3.H billing, and Phase 3.I
+school setup are complete and verified.** SRS §9 works end to end; §10 / §11's Plan Builder can build a
+plan the entitlement engine resolves against; §11.3's seven add-ons can be configured and priced;
+§12 / §30 / §33 can put a school on a plan and move it through all ten states; SRS §13 can **issue the
+bill, apply a coupon, take a school payment, approve it and refund it** over HTTP; and SRS §14 can now
+**configure a school's own settings, run its academic session lifecycle, and build its classes,
+sections and subjects with class-teacher and subject-teacher assignment**.
+All fourteen middleware files plus the barrel are implemented; the authentication / tenant-isolation
+chain, the subscription entitlement engine, and the upload / rate-limit / CSRF / activity-log hardening
+layer each have their own verification suite; `src/app.js` / `src/server.js` wire them into a running
+process.
+**5,162 checks pass, 0 fail, 0 skip, across thirty-eight scripts**, every script exit 0, measured as one
+**serial** loop against a live MariaDB in **session 26**. **SRS §14 through §23 are closed in full**, and
+so is **Known Issues #26** — the six columns that accepted a caller-supplied filesystem path. **Every SRS
+section of the backend is now implemented**; what remains of the backend is Phase 5, and the entire
+frontend is still unstarted.
+Two Phase 5 items are what completed requirements now wait on: **5.4** PDF rendering, which FR-EXAM-005,
+FR-HW-001, FR-ASG-001, FR-DOC-001 and FR-REPORT-002's PDF half all need and which #26 had to be closed
+before, and **5.2** the
+Anthropic adapter, which is written against §21's driver contract and has never been executed.
+
+**Read this before trusting the §2j entry.** The four Phase 3.I modules and the first draft of
+`scripts/verify-school-setup.js` were already on disk, unrecorded, when session 16 opened — file mtimes
+put them at 16:21–16:27 on 2026-09-02, five minutes *after* the session-15 entry above was written at
+16:16. Whether that was session 15 continuing after it saved this file, or a separate unrecorded
+session, **is not knowable**: the project has no git history (Known Issues #12), and mtimes are the only
+evidence. What session 16 did do is recorded and verified: it re-ran the whole loop, audited those
+2,116 lines against SRS §14 and the per-module contract, **found and fixed five defects** (§5a session
+16), and took the suite from 111 assertions to **157**. This is exactly the failure mode §8 warns
+about — a session that ends without recording itself — and it is the second time it has happened.
+
+This file is the authoritative resume point. It records only what has actually been
+implemented and verified — not what is planned. `docs/IMPLEMENTATION_CHECKLIST.md` is kept truthful
+alongside it; where the two disagree, this file is corrected first.
+
+---
+
+## 1. Quick resume
+
+```bash
+cd "E:/School Managment System/backend" && npm test
+```
+
+That runs **all 38** suites against `msms_test`, refusing to start unless `SELECT DATABASE()`
+actually returns it, and checks each suite's assertion count against `tests/baseline.json`.
+A jest-free equivalent, if you want the raw output:
+
+```bash
+cd "E:/School Managment System/backend" && for f in scripts/verify-*.js; do NODE_ENV=development DB_NAME=msms_test UPLOAD_DIR=storage/uploads-test node "$f" || break; done
+```
+
+MySQL (XAMPP) must be running. The database is migrated **and seeded** — 11 roles, 109
+permissions, 353 grants, 1 Super Admin, 7 add-ons. Every script creates its own throwaway
+fixtures and removes them again, so they are safe to re-run and are the fastest confirmation that
+the backend still works. One caveat worth knowing before interrupting a run: four of them also **mutate
+seeded rows** — `verify-users-roles.js` changes the `principal` role's grants and the `librarian` role's
+labels, `verify-plans.js` grants `plans.view` to the `principal` role so it can prove the read
+confinement, `verify-addons.js` grants `addons.view` to the same role and edits the seeded add-on
+catalogue itself (`units_per_quantity`, `description`, `is_active`, and `addon_prices` rows), and
+`verify-subscriptions.js` raises `extra_students.units_per_quantity` from 1 to 50 and creates three
+`addon_prices` rows — and all four restore what they touched in their `finally`, asserting the restore.
+Killing any of them mid-run is
+still safe, but a crash severe enough to skip the `finally` would leave the `principal` role with a
+permission stripped or added, or an add-on off sale with a block size that is not 1; `npm run db:seed`
+repairs the role and the SRS-fixed add-on columns, and `verify-seed.js` is what proves the repair works.
+Note that the seeder deliberately does **not** repair `units_per_quantity`, `unit`, `is_active` or
+`display_order` — FR-SUB-009 makes those the operator's — so those four are the script's own `finally`
+to restore and nothing else will.
+
+`verify-school-setup.js` is **not** one of the four. It reads the seeded `super_admin`, `principal` and
+`teacher` roles (`db.Role.findOne` at `verify-school-setup.js:370`) to attach its fixture users and
+never writes to `roles` or `role_permissions`, so it needs no restore — it proves the teacher's
+`classes.view` / `subjects.view` confinement using the grants the seeder already ships. Confirmed after
+the session-16 loop: `roles` 11, `permissions` 109, `role_permissions` 353, `addons` 7, every fixture
+table back to 0, `users` 1, `activity_logs` 1.
+
+| Script | Checks | Covers |
+|---|---|---|
+| `verify-error-handler.js` | 52 | Error envelope, leak prevention |
+| `verify-validate.js` | 32 | Joi validation, mass-assignment stripping |
+| `verify-auth-chain.js` | 84 | Authentication, tenant isolation, authorization |
+| `verify-entitlement.js` | 272 | Subscription entitlement, limits, usage |
+| `verify-seed.js` | 22 | Seeder counts and transactional rollback |
+| `verify-middlewares.js` | 262 | Upload, rate limit, CSRF, activity/audit logging |
+| `verify-app.js` | 202 | App wiring, system routes, boot and shutdown (`/api/v1` is 41 layers) |
+| `verify-auth-module.js` | 237 | SRS §7 — the nine auth endpoints, end to end |
+| `verify-platform-modules.js` | 313 | SRS §9 — the eighteen platform endpoints, end to end |
+| `verify-users-roles.js` | 236 | SRS §33 "Users" / §29 roles — the nine endpoints, end to end |
+| `verify-plans.js` | 175 | SRS §10 / §11 — the thirteen plan endpoints, end to end |
+| `verify-addons.js` | 169 | SRS §11.3 — the six add-on endpoints, end to end |
+| `verify-subscriptions.js` | 208 | SRS §12 / §30 / §33 — the nineteen subscription endpoints plus the lifecycle sweep |
+| `verify-billing.js` | 220 | SRS §13 / §33 — billing math, route tables, schemas, scheduled sweeps, and the HTTP money path |
+| `verify-school-setup.js` | 168 | SRS §14 — the twenty-nine school-setup endpoints, the audit trail, and the organization-scope regression |
+| `verify-teachers.js` | 85 | SRS §15.3 — the six teacher endpoints, the first entitlement guard, and the teacher_limit ceiling |
+| `verify-students.js` | 136 | SRS §15.1 — the seven student endpoints, the admission ceiling, and the promotion / transfer / leaving machine |
+| `verify-parents.js` | 116 | SRS §15.2 — the eight parent endpoints, the account the module creates, and the children join |
+| `verify-staff.js` | 89 | SRS §15.4 — the four staff endpoints, the four categories, and the ceiling on both paths |
+| `verify-attendance.js` | 80 | SRS §16 — the five attendance endpoints, the bulk upsert, and the three report periods |
+| `verify-fees.js` | 163 | SRS §17 — the eight fee endpoints, the ledger arithmetic, and the per-school receipt series |
+| `verify-finance.js` | 163 | SRS §18 — the nine finance endpoints, the net balance, and the report window |
+| `verify-exams.js` | 206 | SRS §19 — the nineteen exam endpoints, the FR-EXAM-003 calculation, and the merit list |
+| `verify-timetable.js` | 115 | SRS §20.1 — the six timetable endpoints and all three FR-TT-002 conflicts |
+| `verify-homework.js` | 98 | SRS §20.2 — the four homework endpoints, a real file upload, and the self-scoped view |
+| `verify-assignments.js` | 196 | SRS §20.3 — the eight assignment endpoints and the whole FR-ASG-001 lifecycle. Asserts what each of the two `record_type` lists must **exclude**, not only what it contains; puts two students in the *same class and section* so a submission narrowing written by class instead of by student is visible; and proves both halves of `returned` — that it re-opens the submit route, and that `submitted`/`reviewed` do not. Sixteen fixes proved by deliberate regression |
+| `verify-library.js` | 161 | SRS §20.4 — the nine library endpoints, the shared counter and the calculated fine. Every issue/return assertion is written against the **invariant** `quantity - available_quantity === copies on loan`, re-read off the database rather than out of the response, because a response can be right while the row is wrong. The fine is checked as arithmetic, not as "some number was stored". Twenty-one fixes proved by deliberate regression |
+| `verify-documents.js` | 120 | SRS §20.5 — the three document endpoints, all seven generated documents, and the **per-type entitlement gate**. Its central fixture is a school subscribed to Certificates but *not* ID Cards, proving the same caller in the same school can issue a leaving certificate and is refused a student ID card. Each of the seven `generation_payload` builders is checked for the values it must carry, read against the fixture rows they were assembled from, not merely for being non-null. Nineteen fixes proved by deliberate regression, seven of which first exposed weaknesses in this suite's own assertions |
+| `verify-ai.js` | 169 | SRS §21 — the ten AI endpoints, the nine-step workflow as a stage machine, and FR-AI-002's meter. Pins `AI_DRIVER=mock` so the whole workflow runs offline and every generated string is predictable. Asserts the counter as a number that **moves** — and the two cases where it must not: a request the limit blocked, and a generation the provider failed. Every transition is tried out of order as well as in it. Sixteen fixes proved by deliberate regression |
+| `verify-reports.js` | 106 | SRS §22 — the seven reports and the Excel export. Its fixture is built so no number can be right by coincidence: five students across three unequal statuses, fees of 1000/2500/700 against payments of 400/2500/0, results at 91/64/38 giving a 66.67% pass rate. The two delegated reports are asserted **identical field-for-field** to `/attendance/students/report` and `/finance/report`, so §22 cannot start recomputing without breaking. The exported workbook is read back through exceljs and its numbers compared to the JSON. Twenty-three fixes proved by deliberate regression |
+| `verify-notifications.js` | 98 | SRS §23 — the engine, not the inbox. Part 3 drives `runNotificationSweep()` **directly**, as `verify-subscriptions.js` drives `runLifecycleSweep()`, because §23's actor is `System` and a suite that only called the five routes would leave eight sweeps and nine types unexercised. Every pass is given a **negative** beside its positive — an unpublished draft, a draft exam, a present student, a fee due in sixty days, a payment still pending — and idempotency is asserted by running the whole sweep **twice** and requiring zero new rows. The e-mail failure path is produced by the module's own code, `mailService.send` being replaced for exactly one call. Forty-three deliberate regressions |
+| `verify-jobs.js` | 42 | Phase 5 — the scheduler. Drives `runOrdered()` for real, including a real `mysqldump`. Its central assertion is **end to end rather than structural**: a subscription is planted as `active`, one ordered run is made, and a Subscription Expiry notification must exist afterwards — which is only possible if `subscription-lifecycle` ran before `notification-dispatch` in that same pass. Retention is proved by backdating mtimes, with the negative beside the positive: a file the task did not write is left alone however old. Fifteen deliberate regressions |
+| `verify-openapi.js` | 101 | SRS §28 / FR-APIDOC-001 — the generated OpenAPI document, checked against the application it describes rather than against a schema validator. Part 3 serves it over real HTTP and fetches every asset the Swagger UI needs under this app's CSP |
+| `verify-frontend.js` | 50 | Phase 4 — the frontend's contract with this API, checked against the **generated** OpenAPI document rather than a hand-written list: every path the client calls must exist with that method on the mounted app. Also asserts §30 Rule 1 directly (no plan code or name compared against a literal) and that the access token never reaches browser storage. Lives here, not in `frontend/`, because the claim it verifies is about the backend |
+| `verify-deploy.js` | 52 | SRS §27 / FR-DEPLOY-001 — the six `deploy/` artifacts, cross-checked against `backend/src/`. **Nothing here is validated by its own tool**: nginx, pm2, mysql and logrotate are all absent from this machine, so the suite checks agreement with the application instead of syntax. `ecosystem.config.js` is the exception — being JavaScript, it is `require()`d |
+| `verify-security.js` | 28 | SRS §24 — injection and cross-site protection over real HTTP (rows 6.3, 6.4, FR-SEC-003). Six SQL payloads at **value** parameters, where the defence is Sequelize’s binding rather than the `sortBy` allow-list already probed elsewhere; script payloads asserted in both directions — executable markup stripped, and `Smith & Sons 5 < 7 Ltd` left intact, because a sanitiser that strips too much is a data-corruption bug wearing a security badge. Its first assertion checks its own previous run left no residue |
+| `verify-pdf.js` | 20 | Phase 5.4's renderer, on its own terms. It exists separately because §22 **cannot exercise it**: the student report fits on one page, so four guards — the footer's pagination fix, the repeated header, the page break and the measured row height — were unprovable through the reports suite. All four are about the *second* page. Reads the PDF back by inflating its content streams, because `pdf-parse` cannot parse pdfkit output at all |
+| `verify-performance.js` | 14 | SRS §25 — indexes, pagination bounds and caching (row 6.15). **No timing assertion, deliberately**: §25 sets no numeric target, and "under 50 ms" would measure this machine on this afternoon. Structural instead — all **50** tables carrying `school_id` have a `school_id`-**leading** index (leading, because MySQL reads a composite left to right), no tenant list query is a full scan forced by a missing index, and the cache is measured by **counting queries** rather than by the clock: first read hits the database, second reads none of it, and `invalidateSchool` sends the next one back |
+| **Total** | **5,162** | Thirty-eight scripts, measured in one **serial** loop in session 26 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25 |
+
+Counts are assertions, not output lines. Thirty-seven of the thirty-eight scripts print one `PASS` line per
+assertion; `verify-seed.js` prints a single `PASS (22)` summary line followed by 22 sub-bullets, so
+counting output lines undercounts the loop by 21 — a serial run prints 5,141 `PASS` lines for **5,162**
+assertions.
+
+**The per-script list above was re-measured in session 26**, in the alphabetical order the loop
+runs. It had drifted by two: `verify-billing` read 216 against a real 220, and `verify-auth-module`
+235 against 237 — both stale before this session, found when the numbers stopped summing to the
+documented total. `verify-seed` is listed at its 22 assertions, not the single `PASS (22)` line it
+prints.
+
+**The table above was rebuilt in session 22 from measurement, not edited figure by figure.** Four rows
+had drifted from what the scripts actually print — `verify-entitlement.js` said 249 against 261,
+`verify-attendance.js` 79 against 80, `verify-parents.js` 112 against 113, `verify-app.js` 181 against
+185 — and `verify-homework.js` appeared **twice**, once correctly at 98 and once with the suite's *line
+count*, 697, in the checks column. There is no git history in this project, so which session introduced
+each of those is **unknown** and is not guessed here. What is recorded is that every figure in the table
+above comes from the one serial loop quoted in step 232.
+
+The `verify-app.js` figure has now moved seven times without that script being edited, and twice with —
+118 → 123 → 127 → 129 → 131 → 133 → 143 → 151 → 154 → 157 → 160 → 163 → 166 → 169 → 172 → 175 → 178 → 181 → 185 → 188 → 191 → 194 → 198 → **202**. It asserts the *number* of layers in `/api/v1` as well as their order, so
+mounting the four §9 routers in session 8 added five assertions and mounting the two users/roles routers
+in session 9 added four; session 10 mounted `/plans` and *did* edit the script, adding two assertions of
+its own on top of the layer-count change, session 11 did the same for `/addons`, session 13's
+`/subscriptions` mount took `/api/v1` from fifteen layers to sixteen (131 → 133), and session 14's five
+billing mounts took it to **twenty-one** (133 → 143), and the four Phase 3.I mounts took it to
+**twenty-five** (143 → 151, eight assertions for four mounts), Phase 3.J's four mounts — `/teachers`, `/students`, `/parents`, `/staff` — took it to twenty-nine (151 → 154 → 157 → 160 → 163), Phase 3.K's `/attendance` to thirty (163 → 166), and Phase 3.L's `/fees` to thirty-one (166 → 169), Phase 3.M's `/finance` to thirty-two (169 → 172), Phase 3.N's `/exams` to thirty-three (172 → 175) Phase 3.O's `/timetable` to thirty-four (175 → 178), Phase 3.P's `/homework` to thirty-five (178 → 181) Phase 3.Q's `/assignments` to thirty-six (181 → 185) Phase 3.R's `/library` to thirty-seven (185 → 188) Phase 3.S's `/documents` to thirty-eight (188 → 191) Phase 3.T's `/ai` to thirty-nine (191 → 194), Phase 3.U's `/reports` to forty (194 → 198) and Phase 3.V's `/notifications` to **forty-one** (198 → **202**), one mount plus three assertions apiece. Three took four: `/assignments`, whose extra one asserts the *declaration order* of its own routes, because `GET /:id` above `GET /submissions` would swallow the literal path; `/reports`, whose extra one measures that it is the only entitlement-aware router with no router-level guard; and `/notifications`, whose extra one asserts that its five routes contain no dispatch at all. A total in this table can therefore go
+stale because `src/app.js` changed.
+
+**Session 14 (2026-09-02) left billing pure-verified only** — MySQL was down, so Parts 4–5 and the
+boot/readiness tail of `verify-app.js` did not run. **Session 15 (same calendar day) started MariaDB,
+fixed two live-DB defects, ran Part 5 over HTTP, and re-measured the whole fourteen-script loop: 2,383 /
+0 FAIL / every script exit 0.** The session-14 † footnote is therefore historical.
+
+**Session 16 (same calendar day again) opened on unrecorded Phase 3.I work already on disk**, ran the
+fifteen-script loop as its first action — which is what surfaced it — then audited and repaired it. The
+table above is the session-26 figure: **5,162 / 0 FAIL / 0 SKIP / every script exit 0**, from a serial run.
+
+The server itself now runs:
+
+```bash
+cd "E:/School Managment System/backend" && npm start
+```
+
+`GET http://localhost:4000/api/v1/health` answers `{"success":true,"data":{"status":"ok",...}}`.
+
+And a client can now sign in, which it could not before session 7:
+
+```bash
+curl -s -X POST http://localhost:4000/api/v1/auth/login -H "Content-Type: application/json" -d "{\"identifier\":\"superadmin@msms.local\",\"password\":\"SuperAdmin@123\"}"
+```
+
+The response carries the access token and a `user` object whose `must_change_password` is `true`, so
+that token reaches `/auth/change-password` and `/auth/logout` and nothing else until the password is
+changed. That is by design (§9.3) — see §2d. The password above is the `.env` value; Known Issues #11.
+
+*Confirmed against a live app when this example was written (session 7), not assumed:* 200, `success: true`, `data` keys
+`user, permissions, accessToken, tokenType, accessTokenExpiresIn, refreshTokenExpiresAt, csrfToken`,
+`must_change_password: true`, message *"You must change your password before continuing."*
+
+Once the password is changed, that token reaches all eighteen §9 endpoints, plus the nine users/roles
+endpoints, the thirteen plan endpoints, the six add-on endpoints and the nineteen subscription
+endpoints. The database ships with **0
+organizations, 0 schools, 0 plans and 0 subscriptions** — SRS §35 forbids inventing seed data — so the
+first useful call is `POST /api/v1/organizations`, then `POST /api/v1/schools`, then
+`POST /api/v1/principals`. That sequence is exactly what `scripts/verify-platform-modules.js` performs and
+then reverses. `POST /api/v1/plans` is independent of it, and `scripts/verify-plans.js` performs and
+reverses that one. The seven add-ons, unlike plans, **are** seeded (§11.3 fixes them), so `GET
+/api/v1/addons` returns seven rows on a fresh database — but every one of them is unpurchasable until
+`PUT /api/v1/addons/:id/prices` gives it a price, which `scripts/verify-addons.js` does and undoes.
+
+**The end-to-end path now closes**: with an organization, a school and an activated plan in place,
+`POST /api/v1/subscriptions { school_id, plan_id }` creates the subscription in `pending`,
+`POST /api/v1/subscriptions/:id/activate` starts the billing period, and from that moment
+`GET /api/v1/schools/:id/usage` reports real ceilings instead of `allowed: 0` for every limit.
+`scripts/verify-subscriptions.js` performs that whole sequence — through upgrade, downgrade, renewal,
+add-on purchase, §33 overrides and cancellation — and reverses it.
+
+The five **Phase 3.H billing modules** — taxes, coupons, invoices, payments and quotations (SRS §13) — are
+mounted below this boundary and **verified end to end** by `verify-billing.js` (**216** checks: the money
+arithmetic, the five route tables, the request schemas, the three scheduled sweeps, and Part 5's HTTP
+path issue → coupon → tax → pay → approve → refund). Continue with school setup (§14 / Phase 3.I).
+
+---
+
+## 2. What has been completed
+
+### Phase 1 — Requirement analysis ✅ Verified
+
+| Item | Detail |
+|---|---|
+| Document located and read | `SRS_Multi-School-Management-System.docx`, read end to end |
+| Extraction | `C:/Users/Z/AppData/Local/Temp/extract.py` → `C:/Users/Z/AppData/Local/Temp/srs.md` — 72,799 chars, 1,698 lines, completeness confirmed |
+| Existing project analysed | Folder originally contained only the SRS → greenfield build, nothing to preserve |
+| Environment verified | Node 24.19.0, npm 11.17.0, MySQL running as MariaDB 10.4.32 (XAMPP) |
+| Fixed vocabularies extracted | 11 roles, 20 modules, 8 plan limits, 7 add-ons, 10 subscription states, 64 tables |
+
+**Ambiguities in the source, and the resolution applied** (recorded so they are not re-litigated):
+
+| SRS text | Choice made | Reason |
+|---|---|---|
+| "Sequelize ORM or Prisma ORM" (§3) | Sequelize | Listed first; migration tooling satisfies §28 |
+| "React.js / Next.js" (§3) | Next.js (App Router) | A React framework, so satisfies both names |
+| "Bootstrap/Tailwind CSS" (§3) | Tailwind CSS | Utility-first; avoids conflicts in a large custom dashboard |
+| §11.2 lists 8 plan limits, §11.3 lists "SMS Credits" as an add-on | `sms_limit` exists as an **add-on-only** allowance, never a 9th plan limit | Avoids inventing a limit the source does not define. Implemented as `ADDON_ONLY_LIMITS` / `USAGE_LIMIT_KEYS` in `backend/src/config/constants.js`, with the reasoning in the code comment |
+| §29 fixes the schema at 64 tables, but §3/§28 mandate migrations | `sequelize_meta` is treated as tooling infrastructure, not application data, and is excluded from the 64-table guard by name | Documented in the header of `backend/src/database/migrator.js` |
+
+### Phase 2 — Architecture ✅ Verified
+
+Recorded in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): repository layout, request-flow
+chain, the 4-layer tenancy model, entitlement snapshot shape, payment plugin layout, security
+table, frontend route groups.
+
+Key decisions in force:
+- 4-layer tenant defence in depth: schema columns → `resolveTenant` → `enforceTenant` → `tenantWhere()`
+- REST under `/api/v1`; backend and frontend separated
+- RBAC + PBAC, both read from the database at request time — never from the config map
+- DB-driven subscription engine (§30 Rule 1); no `if plan == 'premium'` anywhere
+
+### Phase 3.A — Database schema, models, migration ✅ Verified
+
+**64/64 SRS §29 tables. No extras, no duplicates.**
+
+| Group | Count | Tables |
+|---|---|---|
+| core | 8 | users, roles, permissions, role_permissions, organizations, schools, school_settings, academic_sessions |
+| subscription | 13 | subscription_plans, plan_prices, plan_modules, plan_features, plan_limits, subscriptions, subscription_items, subscription_history, subscription_overrides, addons, addon_prices, subscription_addons, usage_records |
+| billing | 9 | invoices, invoice_items, payments, payment_transactions, refunds, coupons, coupon_usages, taxes, quotations |
+| academic | 5 | classes, sections, subjects, class_subjects, teacher_subjects |
+| people | 5 | students, parents, parent_students, teachers, staff |
+| attendance | 2 | student_attendance, teacher_attendance |
+| finance | 5 | fee_structures, student_fees, fee_payments, expenses, incomes |
+| exams | 8 | exams, exam_subjects, marks, grades, results, question_banks, questions, online_exams |
+| other | 9 | timetables, homework, assignments, books, library_transactions, documents, notifications, activity_logs, audit_logs |
+
+Model-derived schema totals (`npm run db:schema`): **64 tables, 1,154 columns, 354 indexes,
+254 foreign keys, 8 soft-delete tables**, 323 associations.
+
+**Verification performed:**
+- `npm run check:models` → *"Schema check passed · SRS §29 table list: 64/64 tables match, no extras, no duplicates. · Associations: 323 across 64 models, none introduced a column."* Runs without a database connection.
+- Live database independently inspected via `information_schema` (not by trusting migration logs): 65 tables (64 app + `sequelize_meta`), 254 FKs, 40 UNIQUE constraints, 1,156 columns, 362 distinct indexes, 0 non-InnoDB tables, 0 wrong-collation tables, 0 unresolved references. Delete rules: 145 CASCADE / 106 SET NULL / 3 RESTRICT.
+- The 3 RESTRICT rules (`subscriptions.plan_id`, `subscription_addons.addon_id`, `users.role_id`) are deliberate and implement §10.2 FR-SUB-004 "Delete Plan (with safety checks)".
+- All four ordering-hostile foreign keys confirmed present: the `schools.principal_id ↔ users.school_id` cycle, the `fee_payments.income_id → incomes` forward reference, and the `assignments.parent_assignment_id` self-reference.
+- **15-point behavioural check, all 15 passed:** FK cycle insert, JSON round-trip, `defaultScope` hides secret columns, `withSecrets` scope exposes them, `toJSON()` strips them, ENUM rejection, `DECIMAL(14,2)` money round-trip (1234567.89), Coupon 150%-discount validator rejection, Assignment shape validator, `tenantWhere()` fail-closed on no tenant, `tenantWhere({schoolId:7},{status:'active'})` → `{"status":"active","school_id":7}`, `belongsToTenant` cross-school rejection, soft delete hides-but-keeps, organization hard-delete cascades to schools + users, role cleanup.
+
+### Phase 3.B — Core seeders ✅ Verified
+
+Five idempotent seeders, run inside a single transaction (seeding is pure DML, so a failure
+rolls back cleanly — unlike the migration path, where MySQL's non-transactional DDL forces a
+best-effort cleanup).
+
+| Seeder | Seeds | Verified result |
+|---|---|---|
+| `01-roles.js` | The 11 SRS §5 roles, descriptions condensed from the §5 responsibilities table, all `is_system` | 11 rows |
+| `02-permissions.js` | The permission catalogue projected from `src/config/permissions.js` | 109 rows across 22 groups |
+| `03-role-permissions.js` | Default grants from `DEFAULT_ROLE_PERMISSIONS` | 353 grants |
+| `04-super-admin.js` | Bootstrap Super Admin from `SUPER_ADMIN_*` env vars, bcrypt cost 12, `must_change_password = true` | 1 user |
+| `05-addons.js` | The 7 SRS §11.3 add-ons with `effect_type` / `effect_target` from `ADDON_EFFECTS` | 7 rows |
+
+Grants per role (verified in the database): super_admin 109, principal 63, school_admin 63,
+teacher 29, organization_admin 25, accountant 14, receptionist 13, student 13, librarian 10,
+parent 10, staff 4 — total 353.
+
+**Deliberate design decisions in the seeders** (documented in each file's header):
+- **Only SRS-mandated fixed data is seeded.** The SRS names no concrete plans, prices, grade bands, taxes, classes or students, and §34 forbids inventing requirements. Sample data therefore goes in `src/database/seeders/demo/` behind `npm run db:seed:demo`, which is separate and optional. **That directory does not exist yet — see "What remains".**
+- **Role grants are data, not configuration.** §33 gives the Super Admin a permission matrix, so a role that already has grants is left untouched and drift is only logged. A role with *zero* grants is bootstrapped from the defaults. `super_admin` is the single exception and is hard-synced to the full catalogue in both directions, because it owns the matrix itself and a revoked `roles.manage` would lock the platform out of its own recovery path.
+- **The Super Admin account is created once and never rewritten** — a re-seed will not reset a changed password or re-enable a suspended account.
+- **Add-ons:** SRS-fixed fields (`name`, `effect_type`, `effect_target`) are repaired on re-seed; operator-configurable fields (`units_per_quantity`, `unit`, `is_active`, `display_order`) are left alone, because FR-SUB-009 makes those the Super Admin's to set. `units_per_quantity` is seeded at 1 because the source names no block sizes.
+
+**Verification performed** — `node scripts/verify-seed.js`, **22 / 22 passed**:
+
+```
++ role drift repaired — is_school_role=1
++ role id survives repair — 6 -> 6
++ revoked grant on teacher stays revoked — 28 grants, not re-granted
++ extra grant on teacher preserved
++ super_admin revoked grant restored — holds 109/109
++ emptied role re-bootstrapped — librarian back to 10
++ super admin password not reset
++ super admin suspension not undone — status=suspended mustChange=0
++ no duplicate super admin created
++ addon SRS name repaired — AI Credits
++ addon SRS effect_target repaired — ai_limit
++ addon operator config preserved — upq=100 active=0 order=99
++ stale permission removed
++ stale permission grants cascaded — 30 -> 29
++ failing seeder propagates the error
++ failed seed rolled back — deleted role not re-created — roles = 10, expected 10
++ clean re-run restores the deleted role
++ 11 roles / 109 permissions / 7 add-ons / 353 default grants / 1 user
+```
+
+Also verified: a second `db:seed` on an already-seeded database changes nothing
+(`created=0, updated=0` for every seeder), and the `seed` → `seed:undo` round trip is clean
+(`removed=7/1/353/109/11`, leaving all 59 other tables empty and all 65 tables intact).
+
+---
+
+## 2b. Phase 3.C — Middlewares ✅ Complete and verified
+
+**The whole request pipeline, from the first byte to the error envelope.**
+
+```
+requestContext → sanitizeRequest → apiLimiter → activityAudit
+               → authenticate → resolveTenant → enforceTenant
+               → requireModule → requireRole / requirePermission → enforceLimit
+               → uploadSingle/Array → validate → logActivity → route
+               → notFoundHandler → errorHandler
+```
+
+| File | Lines | State | Evidence |
+|---|---|---|---|
+| `src/middlewares/requestContext.js` | 37 | ✅ Verified | Covered by the auth-chain suite (request id echoed and validated) |
+| `src/middlewares/asyncHandler.js` | 35 | ✅ Verified | Covered by all six suites |
+| `src/middlewares/sanitize.js` | 219 | ✅ Verified | Behavioural checks: prototype-pollution keys dropped, control characters stripped, split-tag `<scr<script>ipt>` neutralised, depth cap enforced; multipart body pass covered by the middleware suite |
+| `src/middlewares/errorHandler.js` | 281 | ✅ Verified | `node scripts/verify-error-handler.js` → **52 / 52 passed** |
+| `src/middlewares/validate.js` | 175 | ✅ Verified | `node scripts/verify-validate.js` → **23 / 23 passed** |
+| `src/services/permissionService.js` | 204 | ✅ Verified | 26 ad-hoc checks against the live seeded database, plus 10 checks in the auth-chain suite |
+| `src/services/tenantService.js` | 117 | ✅ Verified | Exercised throughout the auth-chain suite |
+| `src/middlewares/authenticate.js` | 222 | ✅ Verified | 15 checks in the auth-chain suite |
+| `src/middlewares/resolveTenant.js` | 217 | ✅ Verified | 10 checks in the auth-chain suite |
+| `src/middlewares/enforceTenant.js` | 372 | ✅ Verified | 27 checks in the auth-chain suite, including the SRS's named critical scenario |
+| `src/middlewares/authorize.js` | 205 | ✅ Verified | 16 checks in the auth-chain suite |
+| `src/utils/createRouter.js` | 36 | ✅ Verified | Nested-router param guard proven in the auth-chain suite |
+| `src/services/entitlementService.js` | 727 | ✅ Verified | 76 checks in the entitlement suite (chain precedence, lifecycle, caching) |
+| `src/services/usageService.js` | 611 | ✅ Verified | 84 checks in the entitlement suite (all four measurement kinds, overage, misuse) |
+| `src/middlewares/entitlement.js` | 434 | ✅ Verified | 89 checks in the entitlement suite, 55 of them over real HTTP |
+| `src/middlewares/upload.js` | 500 | ✅ Verified | 109 checks in the middleware suite — three refusal shapes, per-surface allowlists, filesystem safety |
+| `src/middlewares/rateLimit.js` | 244 | ✅ Verified | 38 checks in the middleware suite — address canonicalisation, per-user keying, 429 envelope |
+| `src/middlewares/csrf.js` | 183 | ✅ Verified | 25 checks in the middleware suite — every failure shape plus both escape hatches |
+| `src/middlewares/activityLog.js` | 389 | ✅ Verified | 90 checks in the middleware suite — `activity_logs` and `audit_logs` rows read back from the database |
+| `src/middlewares/index.js` | 141 | ✅ Verified | Barrel; 44 exports plus the pipeline-order diagram above |
+
+### Verification — upload, rate limiting, CSRF, activity logging
+
+`node scripts/verify-middlewares.js`, **262 / 262 passed**, exit 0. Same construction as the two
+earlier HTTP suites: a real Express app on an ephemeral port, real signed JWTs, real multipart
+bodies via `FormData`, real database fixtures. Fixtures use a `VERIFY-MW` code prefix and a
+`@verify-mw.invalid` email domain; teardown was confirmed directly afterwards (0 rows in every
+fixture table, the 7 seeded add-ons untouched, and the temporary upload tree removed).
+
+The script pins three settings at the top of the file, before any `require` reads the
+configuration, which is what makes the boundaries testable: `MAX_UPLOAD_MB=2` (a small server
+backstop, so an oversize file can stay small), `UPLOAD_DIR=storage/uploads/verify-mw` (so nothing
+touches the real tree) and `CSRF_ENABLED=true` (so the guard runs whatever `NODE_ENV` is).
+
+**Upload — four plans differing only in one `plan_limits` row.** This is what makes SRS §30 Rule 1
+verifiable rather than asserted: identical code produces four different ceilings, and every
+expected number is derived from the row, not from a plan name.
+
+| Plan's `file_upload_limit` | Effective ceiling | Binding | A file over it gets |
+|---|---|---|---|
+| Fixed 1 MB | 1 MB | plan | 403 `PLAN_LIMIT_EXCEEDED`, *"Your plan allows 1 MB per file."* |
+| Fixed 5 MB | 2 MB | server | 413 `FILE_TOO_LARGE` — no upgrade would help |
+| Unlimited | 2 MB | server | 413 `FILE_TOO_LARGE` |
+| *no row at all* | 0 | plan | 403 before a byte is read, *"Your plan does not include file uploads."* |
+
+Also proven: `min(plan, server)` arithmetic and the full `req.upload` shape per school; a platform
+caller reads no plan and writes to `platform/<profile>` instead of `school-<id>/<profile>`; an
+organization-scoped caller naming no school gets 400 `SCHOOL_CONTEXT_REQUIRED`, and naming a school
+in its own organization resolves *that* school's plan; an expired subscription and a missing one
+both give 402 `SUBSCRIPTION_INACTIVE` rather than a size error; per-surface allowlists really are
+per surface (a PDF is accepted at `ai_source`, refused at `payment_proof` with the image list in
+`details.allowed`); a `.php` file declaring `image/png` is refused 415 `FILE_EXTENSION_MISMATCH`;
+`C:\Users\attacker\evil.png` and `../../../../etc/passwd.png` both reduce to a bare name, and the
+*stored* name is 32 random hex characters so two uploads of one filename cannot collide; multer
+count refusals land as 400 `UPLOAD_LIMIT_*` rather than 500; `cleanupUploads` is verified directly
+(file present → cleanup → gone → second call tolerated); and the three boot-time throws fire.
+
+One asymmetry is recorded rather than papered over: **`verifyUploadedSize()`'s refusal branch
+cannot be reached through multer's own ceiling**, because multer's `limits.fileSize` is derived from
+the same plan limit the service then re-checks, so anything that survives multer necessarily passes
+`checkPerRequestLimit`. It is a backstop for an entitlement that changes mid-request. The suite
+therefore asserts that the second check *confirms* — `req.limitChecks.file_upload_limit.allowed ===
+true`, `requested` measured in megabytes, `used: 0`, `overageAllowed: false` — and verifies
+`cleanupUploads` directly instead of trying to provoke a post-multer refusal.
+
+**Rate limiting.** `clientAddress` canonicalisation is unit-checked across eleven address shapes,
+because a per-IP limiter that keys `2001:db8:85a3::1` and `2001:db8:85a3:0000::1` differently can be
+evaded by respelling the same address: IPv4, IPv4-mapped-IPv6 (`::ffff:203.0.113.4`), a full IPv6
+address collapsed to its `/64`, the compressed spelling of that same prefix, leading zeros, a
+`%eth0` zone index, loopback, a genuinely different `/64`, the `req.socket` fallback, no address at
+all, and an unparseable one. `clientKey` is checked to count against the *user* when authenticated
+so two users behind one NAT do not share a quota. Over HTTP: a limiter at 2 passes two requests and
+refuses the third with 429 `RATE_LIMIT_EXCEEDED`, a `Retry-After` header matching
+`details.retryAfterSeconds`, `details.scope` naming the limiter, and the project's own envelope
+rather than the library's default; a second user is unaffected; `skipSuccessfulRequests` counts only
+failures; and with `config.rateLimit.enabled` false the factory returns `passthrough`, which passes
+every request.
+
+**CSRF.** The double-submit pair is checked in all five states — safe method (no token needed),
+cookie only, header only, mismatched, and matching — and the three failure shapes are confirmed to
+be *indistinguishable* to the caller. Also: the issued token is 64 hex characters; its cookie is
+deliberately **not** `HttpOnly` (the frontend has to read it), is `Path=/` and `SameSite=Lax`;
+`clearCsrfToken` expires it; `CSRF_ENABLED=false` bypasses the guard for suites that drive endpoints
+directly; and — mounted on a second app with no `cookie-parser` — the guard **fails closed** with a
+500 rather than open with a 200.
+
+**Activity and audit logging.** Rows are read back out of the database, not merely assumed. Because
+the insert deliberately is not awaited (it happens on `res.on('finish')`), a row is polled for, and
+an assertion that *no* row exists waits out a fixed grace period first. Proven: a declared route
+writes one row with all sixteen columns populated as expected; an undeclared action is inferred from
+the HTTP verb; a route that declared nothing writes **no** row (FR-LOG-001 asks for actions, not
+traffic); `onlyOnSuccess` skips a failure while the default records it with its 4xx status; a handler
+can add `entityId` and metadata after the fact via `describeActivity`; `entity_id` falls back to
+`req.params.id`; a sanitised request is folded into whatever row it wrote (`metadata.sanitized`
+naming the dropped `__proto__` key, with `Object.prototype` confirmed intact); and a cross-tenant
+attempt writes an `access_denied` row *even though the route asked for nothing*, describing what was
+reached for, attributing it to the caller's own school rather than the one they tried, and keeping
+the whole violation in metadata. `recordAudit` is checked for the no-op skip, create/delete
+null-siding, a request-less job, the missing-argument throw, and swallowing a bad insert;
+`diff` across eleven value shapes including Dates, string decimals and nested JSON; and `snapshot`
+reading through `getDataValue`.
+
+### Verification — authentication and tenancy
+
+`node scripts/verify-auth-chain.js`, **84 / 84 passed.** This is a
+real Express app on an ephemeral port, real signed JWTs, and real database fixtures (3
+organizations, 5 schools, 15 users across 8 roles), driven over HTTP with `fetch`. Fixtures use a
+`VERIFY-` code prefix and a `@verify.invalid` email domain and are removed in a `finally` block;
+confirmed afterwards that 0 rows remain and the table totals are back to 1 user / 0 organizations
+/ 0 schools.
+
+The SRS §8 FR-TENANT-003 critical scenario — *Principal at School A calling a School B endpoint
+must get 403 and no data* — is proven in **eight** independent shapes:
+
+| Shape | Result |
+|---|---|
+| `GET /api/v1/schools/<B>/students` (URL path) | 403 `CROSS_TENANT_ACCESS_DENIED` |
+| `/schools/000<B>/students` (zero-padded) | 403 |
+| `/scho%6Fls/<B>/students` (percent-encoded segment) | 403 |
+| `GET /api/v1/campus/<B>/report` (route param the path scan cannot place) | 403 |
+| `GET /api/v1/branch/<B>/timetable` (nested router) | 403 |
+| `?school_id=<B>`, `?schoolId=<B>`, `?School_ID=<B>` | 403 |
+| `?school_id[]=<A>&school_id[]=<B>` | 403 |
+| `{"students":[{...A},{...B}]}` (nested in a bulk body) | 403 |
+
+Also proven: the refusal body carries no `data` and does not echo the foreign id; a *nonexistent*
+school id returns the same 403 rather than a 404 (no enumeration oracle); `?school_id[gt]=1`
+returns 400 `INVALID_TENANT_REFERENCE`; the tenant check fires *before* `validate()` so
+`stripUnknown` cannot make a hostile `school_id` vanish silently; `/schools/export` — a legitimate
+non-numeric sub-route — stays reachable.
+
+**Two real defects were found by this suite and fixed** (see §5a).
+
+### Verification — subscription entitlement
+
+`node scripts/verify-entitlement.js`, **249 / 249 passed**, exit 0. Same construction: real
+Express app on an ephemeral port, real signed JWTs, real fixtures. 160 checks call
+`entitlementService` / `usageService` directly, 55 drive the guards over HTTP, 7 assert boot-time
+argument validation, and 27 cover cache invalidation and teardown.
+
+The fixture design is the substance of the verification, so it is recorded here. Nine schools, no
+two alike, each isolating one rule of the chain — a failure names the rule that broke rather than
+"entitlement is wrong":
+
+| School | Shape | What it proves |
+|---|---|---|
+| S1 | Basic plan only | The plan baseline. Also carries four rows that must be **ignored**: a `cancelled` add-on, an add-on whose window closed, an override whose `effective_until` has passed, and an override with `is_active = false`. Plus a `price` override, to prove it is not misread as a limit |
+| S2 | Basic + 4 add-ons | Two add-on rows against one limit **sum** (50 + 10 → base 3 becomes 63); `sms_limit` is granted by purchase alone; a feature the plan **disables** is unlocked by an add-on |
+| S3 | Basic + 4 overrides | A module the plan disables turned **on**; a module it enables turned **off**; a Fixed limit raised to **Unlimited**; a feature switched **off** |
+| S4 | Basic + add-on + limit override | The override replaces the **base** (3 → 500) and the purchased units **survive** it (→ 600) |
+| S5 | Basic, state `expired` | Entitlement still resolves — the *state* is what refuses, not the module map |
+| S6 | Basic, state `grace_period` | A non-`active` state that is nonetheless usable (SRS §12.2) |
+| S7 | **No subscription row at all** | Everything denied, nothing throws: `subscription: null`, all 20 modules false, all 9 limits 0/`default`, `features: {}` |
+| S8 | Premium plan | Unlimited straight from the plan; an AI limit with overage permitted at 0.50/unit |
+| S9 | Basic, in the **other** organization | The org-scoped caller is still bounded by `enforceTenant` (403 `CROSS_TENANT_ACCESS_DENIED`), not by entitlement |
+
+**SRS §30 Rule 1 is verified structurally, not by assertion.** The two plans differ only in their
+rows, and every expected value is derived from those rows. S3 and S4 are on the *same plan* as S1
+and answer differently; a plan-name comparison anywhere in the chain would make them impossible to
+pass.
+
+Specific behaviours pinned, each of which would be a plausible bug:
+
+| Check | Result |
+|---|---|
+| An **explicitly disabled** `plan_modules` row denies as firmly as an absent one | `library` false on Basic |
+| An **unconfigured** limit denies rather than defaulting to permissive | `api_limit` → 0, source `default` |
+| A `feature_unlock` add-on is **one-way** — it cannot turn a plan feature off | `basic_reports` stays true on S2 |
+| A `limit_increase` add-on promotes `source` only from `default`, never over `plan` | S2 `student_limit` source stays `plan` |
+| Overage **cannot rescue a per-request ceiling** | S8 permits overage on `file_upload_limit` yet a 25 MB file is still refused |
+| Per-request limits write **no** `usage_records` row | 0 rows for `file_upload_limit` |
+| Periodic and cumulative limits sit on **different** period boundaries | `ai_limit` → 2026-08-01, `storage_limit` → 2026-01-01 |
+| A negative delta is clamped at zero **in the database**, not just in the return value | `used_value` = 0 after −50 |
+| Overage is recorded and **priced** for billing | `overage_value` 1, `overage_amount` 0.50 |
+| A departed student does not count against a limit on enrolment | headcount 3, not 4 |
+| Misuse is refused, not guessed | `recordUsage` on a headcount or per-request key, `syncHeadcount` on a periodic key, and a mistyped limit key all throw |
+| A snapshot is **stale until invalidated**, then correct | edit `plan_limits` → still 3; `invalidatePlan` → 99 |
+| `invalidateSchool` is **narrow** | S1 changes, S2 does not |
+| A nonsense `increment` is a **500**, never a silent 1 | `INTERNAL_ERROR`, logged |
+
+And over HTTP: 402 `SUBSCRIPTION_INACTIVE` naming the state (`expired`, and `null` when there is
+no row) is returned **before** the module check, so a school with an unpaid invoice is not told to
+upgrade its plan; 403 `MODULE_NOT_SUBSCRIBED` names only the *missing* module out of several
+required; 403 `PLAN_LIMIT_EXCEEDED` refuses a 64-row bulk create **whole** rather than partially;
+platform scope bypasses all four gates; and the same organization admin, on the same route, gets
+200 for S3 and 403 for S1 — per-school resolution, not per-caller.
+
+Fixtures use a `VERIFY-` prefix and `@verify-ent.invalid`. Teardown confirmed directly afterwards:
+`subscription_plans`, `subscriptions`, `plan_modules`, `plan_features`, `plan_limits`,
+`subscription_addons`, `subscription_overrides`, `usage_records`, `organizations`, `schools`,
+`students` all back to **0**, and `addons` still **7** — the seeded add-ons are looked up by key
+and reused, never created or deleted, because `addons.key` is globally unique and SRS §11.3 fixes
+the set at seven.
+
+**No defects were found.** The suite passed on its first run, and re-running
+`verify-auth-chain.js` (84/84), `verify-error-handler.js` (52/52), `verify-validate.js` (23/23)
+and `verify-seed.js` (counts intact) afterwards confirmed no regression — **408 checks green in
+those four as of session 4**, before the middleware suite added its 262 and `verify-seed.js`'s 22
+were counted properly; the current total is 692.
+
+**Design decisions taken in this phase**, each recorded in the relevant file header:
+
+- **Permissions are read from the database on every request, never from the JWT `permissions`
+  claim.** An access token lives 15 minutes; a Principal revoking `exams.publish` on the §33
+  matrix screen must not watch a teacher keep publishing for a quarter of an hour. The claim is
+  kept for frontend navigation only.
+- **No `super_admin` branch in the permission resolver.** The seeder hard-syncs all 109 keys onto
+  that role, so reading the database gives the same answer without a special case that could
+  drift — the same reasoning as §30 Rule 1.
+- **`resolveTenant` derives scope from the user row and nothing else.** No header, param, query or
+  body field contributes. `enforceTenant` compares client-supplied ids *against* that answer, so
+  if the client could influence it the comparison would be worthless. This is why the
+  `X-School-Id` header considered earlier was **abandoned** — see §5a.
+- **`PLATFORM_ROLES` (`super_admin` only) is checked, not `roles.is_platform_role`.** The column
+  is also 1 for `organization_admin`; it means "above a single school", while the constant means
+  "above every organization". Only the latter may read across tenants.
+- **Super Admin is exempt from the suspended/archived tenant refusal.** FR-SADMIN-005 makes them
+  the actor who *reverses* a suspension, so locking them out would make the state unrecoverable.
+- **`organization_id` is taken from the school row, not the user row**, so a stale
+  `users.organization_id` cannot widen a session.
+- **`sanitize.js` does not HTML-escape all input.** That corrupts real data ("Smith & Sons") and
+  only looks safe; escaping belongs at render time, which React does. It applies four targeted
+  controls instead: drop prototype-pollution keys, strip control characters, remove actively
+  executable markup, cap payload depth.
+- **`validate.js` uses `stripUnknown` as the mass-assignment defence** — a client POSTing
+  `role_id` or `school_id` to an endpoint whose schema does not name them has them removed before
+  any `Model.create(req.body)`.
+- **Guards validate their own arguments at require-time.** `requirePermission('studnets.view')` or
+  `requireRole('principle')` throws when the route is defined, rather than denying every caller
+  forever and looking like a permissions-data problem. Both confirmed by the suite.
+- **Ownership is explicitly out of scope for these middlewares.** `students.self.view` and friends
+  are necessary but not sufficient; comparing a record to the caller's own profile depends on the
+  route's data model and belongs to each module's service layer.
+
+**Design decisions taken for the entitlement engine** (session 4), each recorded in the relevant
+file header:
+
+- **Four refusals, not one.** 402 `SUBSCRIPTION_INACTIVE` (§12 — pay/renew), 403
+  `MODULE_NOT_SUBSCRIBED` (§11.1 — upgrade), 403 `FEATURE_NOT_SUBSCRIBED`, 403
+  `PLAN_LIMIT_EXCEEDED` (§11.2, FR-SUB-008 — buy an add-on). Collapsing them would send a school
+  with an unpaid invoice to the plan-comparison page and a school that outgrew its plan to billing.
+- **State is checked before entitlement, but entitlement still resolves for an unusable
+  subscription.** `resolve()` reports the full module/feature/limit map for an `expired`
+  subscription; only the guards refuse. This keeps a renewal screen able to show what the school is
+  about to get back, and it is why the state assertion lives in the middleware, not the service.
+- **A plan's identity is not exposed to the guards.** `requireModule` receives a module key and
+  `entitlementService` returns booleans; there is no API by which a guard *could* write
+  `if plan == 'premium'`. §30 Rule 1 is enforced by the shape of the interface, not by discipline.
+- **`enforceLimit` does not record usage.** A limit check that incremented a counter would charge a
+  school for a request that failed validation two middlewares later. It leaves its verdict on
+  `req.limitChecks[limitKey]` and the handler records consumption after the write succeeds.
+- **A bad `increment` is a 500, never a silent 1.** Falling back to 1 would let a bulk create of
+  unknown size past a limit one unit at a time. It is a programming error in the route, so it is
+  reported as one.
+- **Two schools named in one request is a 400, not "resolve the first".** They can be on different
+  plans, so there is no single entitlement to check and refusing is the only answer that cannot be
+  wrong. Codes: `SCHOOL_CONTEXT_REQUIRED` (none named) and `MULTIPLE_SCHOOL_CONTEXT` (two).
+- **Add-on `limit_increase` is additive to the base; an override replaces the base.** So an
+  override and a purchase compose (S4: 500 + 100) rather than one silently discarding the other —
+  a school that paid for extra students keeps them when support raises their base.
+- **`feature_unlock` is one-way.** An add-on can enable a feature the plan omits but can never
+  disable one the plan grants, because a purchase should not be able to take something away.
+- **`limit_increase` promotes `source` from `default` → `addon` only.** A plan-configured limit
+  keeps `source: 'plan'` even when add-on units are stacked on it, so the reporting screen can
+  still say where the *allowance* came from.
+- **Overage cannot apply to a per-request limit.** `file_upload_limit` is a ceiling on one request,
+  not a monthly allowance; billing a school 0.50 for exceeding it would be meaningless. The
+  measurement kind is checked before the overage branch.
+- **`price` overrides are skipped by the entitlement resolver entirely.** They are billing, not
+  entitlement, and reading them as limits is exactly the kind of type confusion the
+  `override_type` column exists to prevent.
+- **Feature keys are validated for shape only, not against a list.** SRS §11 requires per-plan
+  features but never enumerates them, and `plan_features.feature_key` is a free string. Validating
+  against an invented list would reject legitimate configuration. Module and limit keys *are*
+  checked against the SRS vocabularies, at require-time.
+- **Cache invalidation is a contract for Phase 3.D, not an implementation detail.** Anything that
+  writes `subscriptions`, `subscription_addons` or `subscription_overrides` must call
+  `entitlementService.invalidateSchool`; anything that writes `plan_modules`, `plan_features`,
+  `plan_limits` or plan fields must call `invalidatePlan`. Verified in both directions.
+- **Headcount limits are counted from their source table, never incremented.** A students counter
+  and a students table can disagree; only one of them is the truth. `usage_records` keeps a mirror
+  for the §33 usage screen, refreshed by `syncHeadcount`, and the mirror is never the authority.
+
+---
+
+## 2c. Phase 3.E — App wiring ✅ Complete and verified
+
+The application now boots, binds a port and serves. Four files were added and two were extended;
+nothing that already worked was rewritten.
+
+| File | Lines | What it does |
+|---|---|---|
+| `src/app.js` | 232 | `createApp()` — the 11-step pipeline; `corsOptions()` |
+| `src/server.js` | 149 | Process entry: validate → connect → cache → listen → shut down |
+| `src/modules/system/system.controller.js` | 91 | `health`, `ready`, `meta` |
+| `src/modules/system/system.routes.js` | 38 | The four public routes |
+| `src/config/env.js` | 276 | Gained `app.jsonBodyLimit` (`JSON_BODY_LIMIT`, default `100kb`) |
+| `backend/.env.example` | 116 | Gained the matching `JSON_BODY_LIMIT` key |
+
+### The mount order, and why it is that order
+
+`app.js`'s header docblock carries the same list; `src/middlewares/index.js` documents the pipeline
+from the middleware side. All three are meant to agree, and `verify-app.js` asserts the order so a
+change in one that is not reflected in the others fails the suite rather than drifting silently.
+
+| # | Layer | Why here |
+|---|---|---|
+| 1 | `trust proxy`, `x-powered-by` off | Before anything reads `req.ip`; the limiter keys on it |
+| 2 | `requestContext`, morgan | So every log line and error envelope after this carries one id |
+| 3 | `helmet`, `cors`, `compression` | Transport-level, before any work is done on the body |
+| 4 | `express.json`, `express.urlencoded` | `req.body` must exist before anything can clean it |
+| 5 | `cookieParser` | `csrf.js` throws a deliberate 500 without it rather than failing open |
+| 6 | `hpp` | After the parsers, since it works on the parsed query and body |
+| 7 | `sanitizeRequest` | Before anything reads the payload |
+| 8 | `apiLimiter` | A cheap refusal before any database work, and before authentication |
+| 9 | `activityAudit()` | Installs the `res.on('finish')` writer before any route can describe a write |
+| 10 | `/api/v1` router | Public system routes, then the authentication chain |
+| 11 | `notFoundHandler`, `errorHandler` | Terminal; nothing may be mounted after them |
+
+### The public / authenticated boundary
+
+Drawn once, inside `buildApiRouter()`, rather than repeated per route. As of session 10 it reads:
+
+```js
+api.use('/', systemRoutes);                    // [0] public
+api.use('/auth', authRoutes.publicRoutes);     // [1] public — the five ways to get a token at all
+api.use(
+  authenticate,                                                                   // [2]
+  enforcePasswordChange({ allow: ['/auth/change-password', '/auth/logout'] }),    // [3]
+  resolveTenant,                                                                  // [4]
+  enforceTenant                                                                   // [5]
+);
+api.use('/auth', authRoutes.protectedRoutes);  // [6] first below the boundary, and it has to be
+api.use('/platform', platformRoutes);          // [7]  §9.1
+api.use('/organizations', organizationRoutes); // [8]  §5, §33
+api.use('/schools', schoolRoutes);             // [9]  §9.2
+api.use('/principals', principalRoutes);       // [10] §9.3
+api.use('/users', userRoutes);                 // [11] §33 "Users", FR-AUTH-006/007/009
+api.use('/roles', roleRoutes);                 // [12] §29 roles / permissions / role_permissions
+api.use('/plans', planRoutes);                 // [13] §10, §11, FR-SUB-001 … FR-SUB-007
+/* --- Phase 3.D mounts the remaining feature modules here, each router built with createRouter(). --- */
+```
+
+Everything mounted below that chain is authenticated, tenant-resolved and tenant-enforced **by
+construction** — a module cannot forget to be. Layers 2 and 3 of the four-layer tenant defence
+live here; the other two are the `school_id` columns and `tenantWhere()`.
+
+`enforcePasswordChange` receives its exception list here on purpose, so the whole set of routes
+reachable while a forced change is outstanding is visible in one place. It is two paths: the call that
+clears the flag and the one that walks away. Both live in `authRoutes.protectedRoutes`, which is why
+that router is mounted immediately below the chain rather than after the feature modules — an account
+carrying the flag can reach those two endpoints and nothing else in the system.
+
+`verify-app.js` asserts the layer **count** as well as the order, because a feature router accidentally
+mounted above index 2 is invisible: it works, it just is not authenticated.
+
+The forced change has **no FR number** — an earlier note in this log cited FR-AUTH-006, which is
+actually *Email Verification*. Corrected in `app.js`, `authenticate.js` and `docs/ARCHITECTURE.md`
+this session. `must_change_password` is a column this implementation added, justified by §9.3 (a Super
+Admin types a Principal's initial password, so somebody other than the account holder knows it) and
+FR-AUTH-004. It is an implementation decision, recorded as one, not a requirement.
+
+### The four public system routes
+
+| Route | Answers | Deliberately does not |
+|---|---|---|
+| `GET /api/v1/health` | `{status:'ok', uptime}` | Touch the database — a slow query must not get the process killed |
+| `GET /api/v1/health/ready` | `{status, uptime, checks:{database}}`, 503 when down | Throw; reporting a failure *is* this endpoint working |
+| `GET /api/v1/meta` | `{name, version, apiPrefix, environment}` | Reveal host, driver or pool — that would be reconnaissance |
+| `GET /api/v1/csrf-token` | `{token}` + the cookie | Require a session; a reloaded page has no token to send |
+
+`/csrf-token` is public because requiring authentication to obtain the token needed to refresh
+authentication would deadlock a page reload that holds only a refresh cookie.
+
+Five more public routes were added in session 7 — the `/auth` half that has to be reachable without a
+token. They are listed in §2d.
+
+### Verification — `scripts/verify-app.js`, 131 checks, 0 fail
+
+Real HTTP against the real database, plus three child processes running the real `src/server.js`.
+No fixtures are created and no rows are written — confirmed afterwards: `activity_logs` and
+`audit_logs` were both still 0.
+
+The figure was 123 when this section was written in session 8, 127 in session 9, and is 129 now.
+Sessions 8 and 9 moved it with no edit to the script — mounting a router changes the layer count and the
+per-layer assertions the suite derives from it. Session 10 moved it both ways: mounting `/plans` changed
+the count, and the script *was* edited, gaining two assertions that pin `/plans` to index 13 and confirm
+it sits past tenant resolution, which `plans.service.scopeFor()` requires.
+
+| Section | Checks |
+|---|---|
+| the mount order is the contract | 15 |
+| the public / authenticated boundary | 22 |
+| CORS is an allow-list, not a reflector | 8 |
+| the access log is at a level winston emits | 3 |
+| system: liveness | 8 |
+| system: readiness | 4 |
+| system: the API descriptor | 6 |
+| system: the CSRF bootstrap | 5 |
+| an unmatched path | 10 |
+| an error becomes the envelope | 8 |
+| transport headers | 8 |
+| CORS over the wire | 12 |
+| morgan reaches winston | 2 |
+| past the boundary | 7 |
+| server: it boots, binds and serves | 3 |
+| server: shutdown is graceful | 5 |
+| server: a bad configuration fails at boot | 3 |
+| **Total** | **129** |
+
+*Was 116 in session 6, 118 in session 7, 123 in session 8 and 127 in session 9. The boundary section is
+the only one that has ever moved, and until session 10 every time because a router was mounted rather
+than because this script was edited: session 7's auth module brought the `/api/v1` layer **count** under
+assertion and put the two auth routers on the correct side of it (11), session 8's four §9 routers added
+five more — the new count, and one per router asserting it sits below index 5 (16) — and session 9's two
+users/roles routers added four (20). Session 10's `/plans` mount added two written assertions (22),
+which is the same pattern applied by hand: the count moved, and the router's position relative to
+`resolveTenant` is now pinned. A script that asserts a count is a script whose total changes when
+`src/app.js` does; §8 records that as a maintenance rule. Re-run and re-counted while writing this
+revision — the per-section figures above are from that run, not carried forward.*
+
+### Behaviours asserted deliberately, because each could be mistaken for a defect
+
+- **An unknown path under `/api/v1` answers 401, not 404**, for an unauthenticated caller. The
+  chain is mounted on the router with no path, so it runs before Express can decide nothing matched.
+  That is the better answer — it declines to enumerate which routes exist. An *authenticated* caller
+  on an allow-listed path does fall through to the 404 envelope, which is verified in the same run.
+- **Morgan is piped into winston at `info`, not winston's own `http`.** npm's levels put `http` (3)
+  below `info` (2), so at the default `LOG_LEVEL=info` every access line would be discarded and the
+  middleware would look like it worked while recording nothing. Both halves are asserted —
+  `isLevelEnabled('info') === true`, `isLevelEnabled('http') === false` — so the trap cannot return.
+- **`Vary` carries two values, `Origin, Accept-Encoding`, and needs both.** `cors` adds `Origin`
+  because the allow-list makes the response origin-dependent; `compression` adds `Accept-Encoding`.
+  A cache that saw only one would serve one origin's body to another, or a gzipped body to a client
+  that cannot read it.
+- **On win32 the shutdown path is exercised by having the child emit `SIGTERM` on itself.**
+  `process.kill(pid, 'SIGTERM')` on Windows terminates abruptly instead of delivering a signal. The
+  handler is real and runs; the operating system's delivery of a real signal is not verified here.
+
+### What the suite proved about the process, not just the app
+
+- `npm start` works: the child bound the port and answered `/api/v1/health` with 200.
+- SIGTERM closes the HTTP server **then** the pool, in that order, and exits 0 — so an in-flight
+  request still has a connection while it finishes.
+- `DB_NAME=msms_definitely_not_a_database` exits 1 with `Failed to start` and **never binds the
+  port**. A process that binds with a bad database passes a port check, gets sent traffic, and fails
+  every request — and in a rolling deploy the healthy instance it replaced is already gone.
+
+---
+
+## 2d. Phase 3.D (first module) — Authentication, SRS §7 ✅ Complete and verified
+
+**A client can now obtain a token by signing in.** Until this session every suite had to sign its own
+JWTs, which meant nothing in the system had ever been exercised the way a real client uses it.
+
+| File | Lines | What it does |
+|---|---|---|
+| `src/modules/auth/auth.validation.js` | 165 | The Joi schemas, plus three rules the rest of the project reuses |
+| `src/modules/auth/auth.service.js` | 823 | All of §7's domain logic — no HTTP, no `req` except for audit context |
+| `src/modules/auth/auth.controller.js` | 350 | The refresh cookie, the CSRF rotation, the activity description |
+| `src/modules/auth/auth.routes.js` | 136 | Two routers: five public endpoints, four authenticated |
+| `src/services/mailService.js` | 163 | Outbound transport, `log` and `smtp` drivers — the transport, not the messages |
+| `scripts/verify-auth-module.js` | 1,399 | 231 checks |
+
+Extended, not rewritten: `src/app.js` (232 → 254, the two mounts), `src/middlewares/activityLog.js`
+(389 → 427, the `actor` mechanism — see §5a defect 8), `src/config/env.js` (276 → 297) and
+`backend/.env.example` (116 → 124, now 73 documented keys).
+
+Four new environment keys, all with working defaults: `PASSWORD_MIN_LENGTH` (8),
+`LOGIN_MAX_ATTEMPTS` (5), `LOGIN_LOCKOUT_MINUTES` (15), `REFRESH_COOKIE_NAME` (`msms_refresh`).
+
+### The nine endpoints
+
+| Method + path | Requirement | Public? | Guards |
+|---|---|---|---|
+| `POST /auth/login` | FR-AUTH-001 | yes | `authLimiter`, `validate` |
+| `POST /auth/refresh` | FR-AUTH-003 | yes | `authLimiter`, `requireCsrfToken()`, `validate` |
+| `POST /auth/forgot-password` | FR-AUTH-005 | yes | `authLimiter`, `validate` |
+| `POST /auth/reset-password` | FR-AUTH-005 | yes | `authLimiter`, `validate` |
+| `POST /auth/verify-email` | FR-AUTH-006 | yes | `authLimiter`, `validate` |
+| `POST /auth/logout` | FR-AUTH-002 | no | `requireCsrfToken()` |
+| `POST /auth/change-password` | — (see below) | no | `validate` |
+| `POST /auth/resend-verification` | FR-AUTH-006 | no | `authLimiter`, `validate` |
+| `GET /auth/me` | FR-AUTH-009, client half | no | — |
+
+`authLimiter` is now mounted for the first time — it existed and was configured since session 5 with
+nothing to attach it to. `aiLimiter` is still unmounted, because §21's routes do not exist.
+
+**The module exports two routers rather than one, and `app.js` mounts each on its own side of the
+boundary.** A public route cannot sit below `authenticate` — it would be rejected — and a protected
+route must not sit above it, or nothing populates `req.user`. The alternative, one router with
+`authenticate` sprinkled per route, is how a route ends up unauthenticated because somebody forgot a
+line. When the auth module was mounted `/api/v1` had exactly seven layers, and `verify-app.js` asserts
+that number — it is thirteen now that §2e's four routers and §2f's two sit below index 6:
+
+```
+[0] systemRoutes            public
+[1] authRoutes.publicRoutes public — the five ways to get a token at all
+[2] authenticate            ─┐
+[3] passwordChangeGate       │ the boundary
+[4] resolveTenant            │
+[5] enforceTenant           ─┘
+[6] authRoutes.protectedRoutes   first thing below it — and it has to be, see below
+```
+
+The authenticated half of §7 is deliberately first below the boundary: the two paths
+`enforcePasswordChange` allows through are in *this* router, so an account carrying the forced-change
+flag can reach those and nothing else in the system. **A Phase 3.D module mounts after index 5.**
+The layer count is asserted rather than left implicit because a feature router accidentally mounted
+above the chain is invisible — it works, it just is not authenticated.
+
+### Verification — `scripts/verify-auth-module.js`, 231 checks, 0 fail
+
+Four parts. The first three need no HTTP and no fixtures, so a schema or wiring mistake is reported
+before a server is started; the fourth is a real Express app on an ephemeral port driven with
+`fetch`, against the real database, with real bcrypt hashes and real signed tokens.
+
+| Part | Checks | Covers |
+|---|---|---|
+| 1 — validation | 32 | The five schemas; the password rule; single-use token shape |
+| 2 — routing | 22 | Which middleware is on which route, by identity; the cookie's attributes; what `publicUser` may publish |
+| 3 — mailService | 5 | Both drivers, the incomplete-message throw, the unknown-driver report |
+| 4 — over HTTP | 170 | The nine endpoints, plus the boundary in `app.js` |
+| **Total** | **231** | |
+
+Part 4's twenty-three sections, counted from the run:
+
+| Section | Checks |
+|---|---|
+| login: an unknown identifier and a wrong password are indistinguishable | 6 |
+| login: a validation failure is a 422, not a 401 | 3 |
+| login: what a successful sign-in returns | 14 |
+| login: nothing secret or internal reaches the client | 11 |
+| login: the access token carries only what the tenant chain reads | 4 |
+| login: the row records the sign-in | 4 |
+| login: a non-browser client can opt out of the cookie | 2 |
+| `/auth/me` | 7 |
+| refresh: rotation | 7 |
+| refresh: presenting a rotated token ends the whole session | 4 |
+| refresh: the other ways it can fail | 7 |
+| logout | 6 |
+| lockout: repeated failures lock the account, temporarily | 11 |
+| status: FR-AUTH-007, told to the holder and to nobody else | 5 |
+| forgot-password: the same answer every time | 9 |
+| reset-password | 15 |
+| reset-password: the failure paths are one refusal | 6 |
+| change-password | 11 |
+| change-password: the audit row carries no credential | 4 |
+| `must_change_password`: a seeded password cannot survive first login | 8 |
+| verify-email: FR-AUTH-006 | 17 |
+| the activity trail | 5 |
+| `app.js`: the two halves are mounted on the right side of the boundary | 4 |
+
+Five users are created as fixtures (`@verify-auth.invalid`), the two log tables are baselined before
+anything is written, and everything is removed in a `finally` block.
+
+### What the suite proves, section by section
+
+**No endpoint in this module can be used to find out whether an account exists.** Four could be, and
+each is closed:
+
+- **login** returns one code, `INVALID_CREDENTIALS`, for an unknown identifier and for a wrong
+  password — and compares against a real bcrypt hash of an unguessable value in the unknown case,
+  because at cost 12 the difference between returning in 2 ms and in 250 ms is a perfectly readable
+  oracle without it. The two response bodies are asserted **byte-identical with the request id
+  stripped**; the envelope carries `error.requestId`, so two refusals that must be indistinguishable
+  are never literally equal and the comparison has to remove it.
+- **forgot-password** answers 202 with the same message whether or not the address is on file, and
+  the suite confirms a message *was* generated for a real address and *was not* for an unknown one —
+  both as deltas against a captured count, because earlier cases in the same run had already sent mail.
+- **reset-password** and **verify-email** each return one refusal for an unknown token, a used token
+  and an expired one alike.
+
+**Account status is the deliberate exception, and only after the password has been proven.**
+FR-AUTH-007 wants a suspended or pending account told so; by that point the caller has demonstrated
+they hold the credential, so there is nothing left to conceal from them.
+
+**Lockout is checked before the password, which does confirm the account exists.** Recorded as a
+considered trade-off rather than an oversight: the alternative — comparing first, so a wrong guess and
+a locked account look the same — lets an attacker keep testing passwords and learn which one is right
+from the change in response. Stopping the guessing is worth more here, especially as
+`forgot-password`, the endpoint built for bulk enumeration, gives nothing.
+
+**A rotated refresh token ends the whole session, not just the request.** Presenting a token that has
+already been exchanged is either theft or a broken client; either way the stored hash is cleared, so
+the legitimate holder is signed out too and has to re-authenticate. Verified: rotation issues a new
+pair, the old one is refused, and the *new* one is refused afterwards as well.
+
+**Every password change ends every other session.** `password_changed_at` makes
+`authenticate.tokenPredatesPasswordChange()` refuse access tokens minted earlier, and clearing
+`refresh_token_hash` stops a refresh from minting a new one. Both are needed: the first covers the
+≤15 minutes an existing token has left, the second the seven days a refresh token has. The session
+doing the change keeps working, because the handler returns a fresh pair in the same response.
+
+**The `must_change_password` gate is tested against the real bootstrap account.** A seeded Super
+Admin signs in, is refused everywhere except `/auth/change-password` and `/auth/logout`, changes the
+password, and is then admitted — which is the only end-to-end proof that §5a defect 5 is really
+fixed rather than merely mounted correctly.
+
+**The audit row carries no credential.** `change-password` writes an `audit_logs` row through
+`recordAudit`, and the suite asserts the serialised row contains neither the old password, the new
+one, nor either bcrypt hash. `PASSWORD_AUDIT_FIELDS` is the allow-list that makes that true.
+
+**`publicUser()` is an allow-list, not a deny-list.** 11 checks confirm that no login response carries
+`password_hash`, `refresh_token_hash`, `password_reset_token`, `email_verification_token`,
+`failed_login_attempts`, `locked_until` or `password_changed_at` — and part 2 asserts the same against
+`PUBLIC_USER_FIELDS` directly, without a server, so a column added to `users` later cannot leak by
+being forgotten.
+
+**The access token carries only what the tenant chain reads.** 4 checks pin the payload's shape.
+Permissions are *not* in the token — the sign-in **response** carries a `permissions` array, once, as a
+navigation hint for the frontend, and the server re-reads the grants from the database on every request
+after that. Which is why a role edited two minutes ago takes effect immediately, and why defect 7
+mattered.
+
+### Design decisions taken in this module
+
+- **The refresh token lives in an `httpOnly` cookie, not in the response body.** It is a seven-day
+  credential, so anywhere JavaScript can read it means one XSS bug is a week of somebody's session.
+  `sameSite: 'lax'` rather than `'strict'`, because the frontend is a separate origin in development
+  and `strict` would withhold the cookie from an ordinary top-level navigation back into the app; the
+  gap `lax` leaves — a cross-site POST — is closed by `requireCsrfToken()` on the two routes that read
+  it. `path` is narrowed to `${apiPrefix}/auth`, so the credential is not attached to the other few
+  hundred endpoints that have no use for it. A non-browser client sends `returnRefreshToken: true` and
+  gets it in the body instead; it has no cookie jar, so the alternative would be no refresh at all.
+- **`refresh` reads the cookie first and the body second.** A browser cannot then be tricked into
+  refreshing someone else's session by a body a script planted, because the cookie it actually holds
+  wins.
+- **`refresh` is not behind `authenticate`.** It exists precisely for the case where the access token
+  has expired, so requiring a valid one would make it unreachable exactly when it is needed.
+- **`verify-email` is a POST, not a GET.** The link in the email points at the frontend, which reads
+  the token from its query string and POSTs it here — so the token never reaches this server in a URL,
+  where it would be written verbatim into the access log and into any proxy between the two. A GET
+  would also be prefetchable by a mail client, consuming the token before the user clicked it.
+- **`reset-password` issues no session.** The caller arrived from a mail client holding only a token;
+  signing them in would treat possession of a link as possession of the account. They sign in normally.
+- **A mail failure never fails the request that triggered it.** `mailService.send()` resolves with
+  `{sent: false, error}` rather than rejecting. A password reset has already written its token by the
+  time the mail goes out, so a 500 would tell the user the reset failed while leaving a live token
+  behind — and rolling the token back would hand an enumeration oracle to anyone who can make SMTP
+  fail.
+- **`MAIL_DRIVER=log` is the default.** A developer running `npm start` has no SMTP server, and a
+  reset that throws `ECONNREFUSED` makes a working endpoint look broken. The link appears in
+  `storage/logs`, which is what a developer actually needs. An unrecognised driver is reported as a
+  configuration error at first send, never silently treated as `log`.
+- **Password actions are recorded as `update`.** `activity_logs.action` is a database ENUM fixed by
+  the migration and `ACTIVITY_ACTIONS` has no password member, so inventing one would insert a value
+  the column cannot hold. The description carries what happened. (Under the strict `sql_mode` pinned
+  in session 5 that would now be a hard error rather than a silent `''` — see §5a defect 3.)
+- **`login_failed` rows carry the identifier and no `actor`.** The service throws without saying
+  whether the identifier matched anything, so the only honest attribution is the identifier itself in
+  the metadata; a `user_id` there would turn the trail into a record of which guessed addresses exist.
+  The password is never recorded — `activity_logs.metadata` is a readable column, and a mistyped
+  password is very often a real password.
+- **`authService.sendVerificationEmail` is exported on purpose.** Every module that creates a user —
+  FR-SADMIN-009, FR-STUDENT-001, FR-TEACHER-001, FR-STAFF-001 — must call it (§9.3, §15) rather than
+  reimplementing the token.
+- **`auth.validation.js` exports `email`, `newPassword` and `singleUseToken`** so the modules that
+  create users reuse the same rules instead of writing a second, subtly different password policy.
+
+---
+
+## 2e. Phase 3.D (second module group) — The Super Admin platform surface, SRS §9 ✅ Complete and verified
+
+Four modules, fifteen files, eighteen endpoints, all mounted below the authentication boundary at
+`src/app.js:268-271`. This is FR-SADMIN-001 … FR-SADMIN-009 in full.
+
+| Module | Mount | SRS | Files |
+|---|---|---|---|
+| `platform/` | `/api/v1/platform` | §9.1, FR-SADMIN-001 | `platform.routes.js`, `platform.controller.js`, `platform.service.js` |
+| `organizations/` | `/api/v1/organizations` | §5, §33 | `+ organizations.validation.js` (4 files) |
+| `schools/` | `/api/v1/schools` | §9.2, FR-SADMIN-002…008 | 4 files |
+| `principals/` | `/api/v1/principals` | §9.3, FR-SADMIN-009 | 4 files |
+
+### The eighteen endpoints
+
+| Method | Path | Permission | Platform-only | Logged | Requirement |
+|---|---|---|---|---|---|
+| GET | `/platform/dashboard` | `platform.dashboard.view` | no | no | FR-SADMIN-001 |
+| GET | `/organizations` | `organizations.view` | no | no | §33 |
+| POST | `/organizations` | `organizations.manage` | **yes** | create | FR-SADMIN-002 precondition |
+| GET | `/organizations/:id` | `organizations.view` | no | no | §33 |
+| PATCH | `/organizations/:id` | `organizations.manage` | **yes** | update | §33 |
+| GET | `/schools` | `schools.view` | no | no | FR-SADMIN-004 |
+| POST | `/schools` | `schools.manage` | **yes** | create | FR-SADMIN-002 |
+| GET | `/schools/:id` | `schools.view` | no | no | FR-SADMIN-004 |
+| PATCH | `/schools/:id` | `schools.manage` | **yes** | update | FR-SADMIN-003 |
+| POST | `/schools/:id/activate` | `schools.status` | **yes** | update | FR-SADMIN-005 |
+| POST | `/schools/:id/suspend` | `schools.status` | **yes** | update | FR-SADMIN-005 |
+| POST | `/schools/:id/archive` | `schools.archive` | **yes** | update | FR-SADMIN-006 |
+| DELETE | `/schools/:id` | `schools.archive` | **yes** | delete | FR-SADMIN-006 |
+| PUT | `/schools/:id/principal` | `schools.assign_principal` | **yes** | update | FR-SADMIN-007 |
+| GET | `/schools/:id/usage` | `schools.usage.view` | no | no | FR-SADMIN-008 |
+| GET | `/principals` | `users.view` | no | no | §9.3 |
+| POST | `/principals` | `users.manage` | **yes** | create | FR-SADMIN-009 |
+| GET | `/principals/:id` | `users.view` | no | no | §9.3 |
+
+Every permission key in that table is asserted from the route's own 403 body, not read off the
+source — see the verification note below. The **write / read split on `requirePlatformScope()`** is
+deliberate and matches the seeded catalogue: `DEFAULT_ROLE_PERMISSIONS` grants `organization_admin`
+the five read keys (`platform.dashboard.view`, `organizations.view`, `schools.view`,
+`schools.usage.view`, `users.view`) and none of the six write keys, so a scope guard on a read would
+contradict the seed data while a scope guard on a write reinforces it.
+
+### Verification — `scripts/verify-platform-modules.js`, 313 checks, 0 fail
+
+Three parts, in increasing cost:
+
+1. **The schemas, directly** (≈70 checks). Pins the decisions no HTTP response can show: `code` is
+   upper-cased before it meets a case-insensitive unique index; `website` must carry an `http`/`https`
+   scheme; `principal_id`, `suspended_at`, `suspension_reason`, `archived_at` and `subscription_state`
+   are all stripped from a create body; a Principal create ends up with exactly seven fields.
+2. **The route tables, by function identity** (≈60 checks). `validateRequest`, `activityDeclaration`
+   and `platformGuard` are plain named closures, so their presence on each route is checkable without
+   sending a request. Asserts all ten writes validate, all ten declare an activity row, all ten carry
+   the scope guard — and that none of the eight reads declares a row or carries the guard.
+3. **Over real HTTP against the real database** (≈180 checks). Two organizations, three schools and
+   three Principals are created through the endpoints themselves, exercised, and removed.
+
+**The two assertions worth knowing about:**
+
+- **FR-SADMIN-005 is proved with a live token, not by reading a column.** A Principal signs in while
+  their school is active and reaches `/auth/me`; a *different* caller suspends the school; the
+  Principal's existing token is then refused with `SCHOOL_SUSPENDED`, and a fresh sign-in is refused
+  too. That only passes if `schools.service.setStatus` awaited `tenantService.invalidateSchool` — a
+  cached tenant record would let a suspended school keep working until the entry expired, which is the
+  exact failure the requirement exists to prevent. Activating restores service in the same run.
+- **Every route's permission key is pinned by its own refusal.** A `super_admin` fixture with all
+  eleven §9 keys in `denied_permissions` receives `INSUFFICIENT_PERMISSION` from each of the eighteen
+  routes, and the 403 names `details.required`. The fixture is still platform-scoped, so `platformGuard`
+  passes and the permission guard is what answers. The `organization_admin` fixture then proves the
+  ordering: lacking both the scope and the key it gets `PLATFORM_SCOPE_REQUIRED`, so the scope guard
+  runs first.
+
+Also asserted end to end: both 409s (`ORGANIZATION_CODE_TAKEN`, `SCHOOL_CODE_TAKEN`) including that
+the same school code **is** allowed in a different organization, because the index is
+`(organization_id, code)`; a status-only `PATCH /schools/:id` is 422 and leaves the row untouched, so
+the generic edit cannot perform an FR-SADMIN-005 transition behind `schools.status`'s back; all three
+FR-SADMIN-007 refusals (unknown user, wrong role, wrong school) and that a reassignment returns the
+displaced holder as `previousPrincipal`; FR-SADMIN-006's archive reason lands in `audit_logs.reason`
+because §29 gives `schools` no column for it; the DELETE is a soft delete, findable only with
+`paranoid: false`, and deleting twice is a 404 rather than a second audit row; FR-SADMIN-008 returns
+one row per `USAGE_LIMIT_KEYS` entry; §9.1's eleven metrics are present in source order with three
+derived extras, the three school statuses sum to `totalSchools`, and the periods are the current
+calendar month and year; tenant isolation narrows an `organization_admin` to one organization and its
+own schools, with `CROSS_TENANT_ACCESS_DENIED` and an `access_denied` activity row for the rest.
+
+**And thirteen checks on §25 pagination and §24's ORDER BY claim, added after the first green run.**
+The §9 list endpoints are the first routes to use all three of `utils/pagination.js`'s functions, and
+nothing had asserted their behaviour past the shape of the `meta.pagination` envelope. Now asserted
+over `GET /organizations`: `total` counts every match rather than the page; `hasNextPage` /
+`hasPreviousPage` are correct on both sides of a two-page split; page 2 returns a *different* row, so
+the offset is applied rather than the page number echoed; `sortOrder` flips the first row; a page past
+the end is an empty array and a 200, not a 404; a limit above `MAX_LIMIT` is a 422 rather than a silent
+clamp. Two of the thirteen are the §24 pair: `sortBy=password_hash` — a column that does not exist on
+`organizations`, so it would raise a 500 if it ever reached ORDER BY — is dropped and answered 200,
+while a SQL-shaped `sortBy` is refused at 422 on shape before the allow-list is consulted. The sort is
+pinned to `code` rather than left on the default `created_at DESC`, because both organizations are
+created inside the same second and the column has no sub-second precision; a default-ordered assertion
+would have been a coin flip.
+
+### Design decisions taken in this module group
+
+- **`GET /schools/:id/usage` carries no platform guard and no `logActivity`.** `schools.usage.view` is
+  granted to `organization_admin`, and FR-SADMIN-008 is a read that a dashboard polls.
+- **`admin_limit` usage is live, not mirrored.** The verification asserts it reports 2 immediately
+  after two Principals are created, with no `usage_records` row written — `HEADCOUNT_SOURCES` counts
+  active users in `SCHOOL_ADMIN_ROLES` from `users` on every read. The other eight allowances stay at
+  0, and every one of the nine resolves to `allowed: 0, unlimited: false` for a school with no
+  subscription, so an unsubscribed school is permitted nothing rather than treated as unlimited.
+- **`POST /principals` deliberately does *not* mount `enforceLimit('admin_limit')`.** It would make
+  FR-SADMIN-009 unreachable. §9's own order is create organization → create school → create Principal,
+  and a school with no subscription resolves every limit to `allowed: 0`, so the guard would refuse the
+  first Principal of every new school. The figure is still *reported* — FR-SADMIN-008 returns
+  `admin_limit.used` live — so nothing is hidden; only the refusal is absent. Enforcement belongs with
+  the §33 Users module, by which point a school can hold a subscription. Recorded here rather than left
+  implicit, because "a limit exists and is measured but not enforced" is exactly the kind of gap that
+  reads as an oversight later. **Revisited in session 9 and still deferred**: `users/` exists now, but
+  it has no `POST` (§2f) — nothing in the source has it create a user — so the limit belongs to
+  whichever §15 module first creates a school administrator, and a school still cannot hold a
+  subscription.
+- **`organization_id` on a Principal is derived from the school, never accepted from the body.** The
+  schema strips it; the verification submits the *other* organization's id and asserts the derived one
+  wins.
+- **There is no organization DELETE and no `PATCH /principals/:id`.** The source describes neither.
+  `status: 'archived'` covers the first; user editing belongs to the §33 Users module, which owns
+  `users.manage` for every role rather than just Principals.
+- **The dashboard returns `archivedSchools`, `pendingPaymentsAmount` and `scope` beyond §9.1's
+  eleven.** The first because without it the three status counts do not visibly sum to the total; the
+  second because "Pending Payments" is ambiguous between a count and a sum, so both are returned; the
+  third because the same endpoint answers differently for a platform and an organization caller and
+  the response should say which it did.
+
+---
+
+## 2f. Phase 3.D (third module group) — Accounts and access, SRS §33 / §29 ✅ Complete and verified
+
+**A Principal can now be edited, suspended and given per-account permission exceptions, and a role's
+grant set can be changed at runtime.** Session 8 left §9.3 able to create and list a Principal but not
+edit one; that gap is closed.
+
+| Module | Mount | SRS | Files |
+|---|---|---|---|
+| `users/` | `/api/v1/users` | §33 "Users", FR-AUTH-006/007/009 | `users.routes.js`, `users.controller.js`, `users.service.js`, `users.validation.js` |
+| `roles/` | `/api/v1/roles` | §29 `roles`/`permissions`/`role_permissions`, FR-AUTH-008/009 | 4 files |
+
+### What the source actually says, and what it does not
+
+This is the thinnest requirement basis of any module group so far, and the code says so in its own
+docblocks rather than implying more:
+
+- **§33 lists "Users"** among the Super Admin MVP screens and says nothing further about it. There is
+  **no `FR-USER-nnn` anywhere in the document** and §9's functional requirements stop at FR-SADMIN-009.
+- The nearest requirement touching a user record is **FR-AUTH-007 "Account Status Management"**, actor
+  *"Super Admin / School Admin / System"*, behaviour *"System tracks and enforces account status"*.
+- **§33 does *not* list a "Roles & Permissions" screen.** Its Super Admin list is Dashboard,
+  Organizations, Schools, Principals, Users, Plans, Modules, Features, Limits, Add-ons, Subscriptions,
+  Invoices, Payments, Coupons, Reports, Settings — and nothing else. A grep of the source for
+  `roles &`, `role management`, `manage roles`, `role builder`, `assign role` and `custom role` returns
+  **zero matches**. The roles module therefore stands on §29 giving role grants their own table plus
+  FR-AUTH-009 requiring middleware that reads it — not on a screen the source never named. See §5a
+  defect 9 for the seven docblocks that had claimed otherwise.
+- So the editable surface is derived from the §29 `users` columns plus FR-AUTH-007, and **nothing
+  beyond that is invented.** §35 rules out additional workflows, and this is precisely the gap it names.
+
+### The nine endpoints
+
+| Method | Path | Permission | Platform-only | Logged | Requirement |
+|---|---|---|---|---|---|
+| GET | `/users` | `users.view` | no | no | §33 |
+| GET | `/users/permissions` | `users.manage` **or** `roles.view` | no | no | FR-AUTH-009 |
+| GET | `/users/:id` | `users.view` | no | no | §33 |
+| PATCH | `/users/:id` | `users.manage` | no | update | §33, FR-AUTH-006, FR-AUTH-007 |
+| PUT | `/users/:id/permissions` | `users.manage` | no | update | FR-AUTH-009 |
+| GET | `/roles` | `users.view` **or** `roles.view` | no | no | §29, FR-AUTH-008 |
+| GET | `/roles/:id` | `users.view` **or** `roles.view` | no | no | §29, FR-AUTH-008 |
+| PATCH | `/roles/:id` | `roles.manage` | **yes** | update | §29 |
+| PUT | `/roles/:id/permissions` | `roles.manage` | **yes** | update | FR-AUTH-009 |
+
+Every permission key above is asserted from the route's own 403 body, not read off the source.
+
+**The guard split is the whole point of two modules.** No route in `users/` carries
+`requirePlatformScope()`; both writes in `roles/` do. The reason is a schema fact: `role_permissions`
+has no `school_id`, so revoking `attendance.mark` from the `teacher` role revokes it from every teacher
+in every school on the platform — a cross-tenant write, which SRS §30 Rule 2 forbids anyone below the
+platform from making. The per-user override columns are on a `users` row and *are* tenant-scoped, which
+is why a Principal can set them for their own school's accounts. Role grants are platform policy;
+overrides are one account's exception. They are not two ways to do the same job.
+
+### No POST, no DELETE, on either module
+
+| Absent | Why |
+|---|---|
+| `POST /users` | §9.3 creates a Principal and §15 creates school people. A generic create would be a second implementation of each, with a different set of required fields. |
+| `DELETE /users/:id` | FR-SADMIN-006 archives a *school*. Nothing in the source deletes a person; `status` covers deactivation. |
+| `POST /roles`, `DELETE /roles/:id` | §5 line 92: *"The system defines **exactly** the following eleven roles."* `roles.slug` carries `validate: { isIn: [ROLE_LIST] }`, so the model would refuse a twelfth anyway. §35 names "Additional roles" first among the things not to invent. |
+
+`roles.slug`, `is_platform_role`, `is_school_role` and `is_system` are not editable either — the slug
+is what `ROLES` matches against and `principals.service` resolves by, and the two booleans are what
+`resolveTenant` reads to decide whether an account needs a `school_id`. All four are structural facts
+about §5's eleven, not settings. `name` and `description` are labels and are editable.
+
+`super_admin`'s grant set is read-only (`ROLE_NOT_EDITABLE`, 403). `03-role-permissions.js` hard-syncs
+that one role to the full catalogue on every seed run, so accepting the edit would report a change the
+next `db:seed` silently undoes — and it is the only role that can edit grants at all, so a revoked
+`roles.manage` would lock the platform out of its own recovery path.
+
+### Three safety properties, recorded as decisions rather than requirements
+
+The source describes none of them. They are in the code as decisions, the way `principals.service`
+records `must_change_password`, and are **not** presented as SRS requirements.
+
+1. **You may not change your own account status** — `SELF_MODIFICATION_DENIED`, `details.field:
+   'account status'`. The only Super Admin suspending themselves would leave the platform with no way
+   back in. Submitting the status the account *already has* is allowed, so a form that round-trips
+   every field still works; the rule is about changing it.
+2. **You may not edit your own permission overrides** — same code, `details.field: 'permissions'`. The
+   same lockout in the deny direction, and it removes the question of whether a caller can bootstrap
+   themselves upward.
+3. **You may only grant permissions you hold yourself** — `PERMISSION_GRANT_EXCEEDS_OWN`, 403, with
+   the out-of-reach keys named. Without it `users.manage` becomes the highest privilege in the system:
+   a Principal could write `subscriptions.manage` into a teacher's `extra_permissions` and operate the
+   platform through them. **Revocation is deliberately unrestricted** — a Principal *may* deny a key
+   they do not hold, because taking a permission away cannot escalate anything. The asymmetry is the
+   property, and it is asserted in both directions.
+
+### The two invalidation properties, and why they differ
+
+`getEffectivePermissions(user)` = role grants ∪ `extra_permissions` − `denied_permissions`, deny last
+and deny wins. The two halves reach the request by different routes, so they have different contracts:
+
+- **Role grants are cached** (`perm:role:<id>`), so `roles.service.setPermissions()` **must** call
+  `permissionService.invalidateRole` after the transaction commits. Verified end to end with
+  `CACHE_TTL=600`: a Principal reads `GET /users` on their token, a different caller strips
+  `users.view` from the `principal` role, and the Principal's *existing* token is refused on the next
+  request. A missed invalidation would have left the revoked permission working for ten minutes.
+- **The two override columns need no invalidation at all** — they are read off the `users` row that
+  `authenticate` has already loaded. Verified the same way, deliberately without a cache call in the
+  service: deny `users.view` on the Principal, and their existing token is refused immediately. If
+  caching is ever added there without an invalidation, that assertion fails.
+
+### Verification — `scripts/verify-users-roles.js`, 236 checks, 0 fail
+
+| Part | Checks | What it covers |
+|---|---|---|
+| 1 — the schemas, directly | 31 | `role_id`/`password`/`school_id`/`organization_id`/`avatar_path`/`must_change_password`/`email_verified_at`/`extra_permissions` all **stripped**, not refused; username lowercased; `permissions: []` legal; the closed `?role=` slug set; `limit` capped at 100 |
+| 2 — the route tables, by name | 29 | the five + four declared routes in order (`/permissions` before `/:id`); `validateRequest` and `activityDeclaration` on all four writes; **no** `platformGuard` anywhere in `users/`, on **both** writes in `roles/` and neither read; no POST or DELETE on either |
+| fixtures | 3 | baseline captured, five users / two orgs / two schools created, the two seeded rows captured for restoration |
+| 3 — over real HTTP | 162 | tenant isolation, the three safety refusals, both invalidation properties, the §26/§29 trail |
+| 4 — the service, directly | 9 | the one scope rule `enforceTenant` hides (below) |
+| teardown | 2 | the two mutated seeded rows are back, asserted rather than assumed |
+
+Fixtures: five users under `@verify-users.local` (a platform Super Admin, an Organization Admin, two
+Principals in different organizations, a Teacher), two organizations, two schools. All hard-deleted
+afterwards along with the `activity_logs` / `audit_logs` rows the run generated. Confirmed afterwards,
+not assumed: `organizations 0, schools 0, users 1, audit_logs 0, activity_logs 1, role_permissions 353,
+permissions 109, roles 11`, zero stray fixture users, `librarian` labels restored.
+
+The run **mutates two seeded rows** — the `principal` role's grant set and the `librarian` role's
+labels — and restores both in `removeFixtures()` unconditionally, so an abort mid-run cannot leave the
+dev database with a broken role. The restore is asserted, not assumed.
+
+### Why part 4 exists at all
+
+`GET /users?school_id=<another school>` never reaches the service. `enforceTenant` collects tenant
+references from the path, `req.params`, `req.query` **and** `req.body`, so layer 3 refuses it with 403
+`CROSS_TENANT_ACCESS_DENIED` (`details: {field: 'school_id', location: 'query'}`) before
+`users.service.list()` runs. The service's own refusal to let a filter widen an already-pinned scope is
+therefore only reachable by calling the service directly — and it has to exist, because the four
+tenant layers are independent by design and a test that only exercised layer 3 would not notice layer
+4 disappearing. This was found while planning the script, after an earlier draft assumed one HTTP
+assertion would cover both.
+
+### Behaviours asserted deliberately, because each could be mistaken for a defect
+
+- **A cross-tenant `GET /users/:id` answers 404, not 403.** The scope makes the row invisible rather
+  than forbidden, so the id is not an enumeration oracle. The `?school_id=` *query* case answers 403
+  because `enforceTenant` refuses the reference before any row is looked up — two different layers,
+  two different correct answers.
+- **`PATCH /users/:id` with `{phone: ''}` is a 422, not a clear.** `.empty('')` strips the key, and
+  `.min(1)` then refuses the now-empty body. Clearing a phone is `{phone: null}`. Consistent with
+  `principals.validation.js`; judged defensible and pinned as an assertion rather than changed.
+- **A body containing only `role_id` is a 422.** The field is stripped first, and `object.min` refuses
+  the remainder — so the response is "provide at least one field", not "role_id is not allowed". A
+  refusal naming the field would tell a caller which one to try next.
+- **A suspension needs no second write.** `refresh_token_hash` is deliberately *not* cleared;
+  `authenticate` checks `LOGIN_ALLOWED_STATUSES` on every request, so the existing token is refused
+  with `ACCOUNT_SUSPENDED` and works again on reactivation. Both halves are asserted.
+- **An override audit row carries two columns, not three.** `id` is in `PERMISSION_AUDIT_FIELDS` but
+  never changes, and `recordAudit`'s `diff()` records only what did.
+- **A refused read *does* write an activity row**, with action `access_denied`, even though no route in
+  either module declares one for a read. `activityLog.js` records a tenant violation unconditionally —
+  it is SRS §31's isolation test case, the single event this system most needs to have kept. Asserted
+  in both directions: no *successful* read writes a row, and the cross-tenant one does.
+- **`GET /users/permissions` is reachable by a Principal.** They hold `users.manage`, so requiring
+  `roles.view` alone would let them write an override while forbidding them the list of keys to choose
+  from. An Organization Admin — who holds `users.view` and neither of the other two — is refused with
+  `details.requiredAnyOf`.
+- **`userCount` on `GET /roles` is tenant-scoped; `permissionCount` is not.** A Principal sees
+  `super_admin.userCount: 0` while a platform caller sees ≥1. An unscoped `COUNT(*) GROUP BY role_id`
+  would tell a Principal how many accounts of each role exist platform-wide, and SRS §8 does not stop
+  applying because the number is an aggregate. `permissionCount` cannot be scoped — `role_permissions`
+  has no `school_id`, and that global-ness is exactly what makes the write platform-only.
+- **`sortBy=password_hash` is ignored, not injected.** `getSort` allow-lists per call site against
+  `SORTABLE`, and the request answers 200 with the fallback order (SRS §24).
+
+---
+
+## 2g. Phase 3.D (fourth module group) — The subscription plan catalogue, SRS §10 / §11 ✅ Complete and verified
+
+The Plan Builder. Everything a Super Admin configures before any school can be subscribed: the plan
+record, its billing cycles and prices, and the modules, features and limits that decide what a school on
+that plan may do. This is the module that turns the entitlement engine from tested code into enforced
+policy — it produces the rows `entitlementService.resolve()` reads.
+
+| File | Lines | What it does |
+|---|---|---|
+| `src/modules/plans/plans.validation.js` | 485 | Eleven schemas; the price-set and limit-set cross-field rules |
+| `src/modules/plans/plans.service.js` | 828 | The lifecycle, the four collection replacements, `readiness()`, `catalogue()` |
+| `src/modules/plans/plans.controller.js` | 231 | Thin handlers; `transitionTo()` curried over the three statuses |
+| `src/modules/plans/plans.routes.js` | 202 | Thirteen routes, five `plans.*` permissions, platform scope on every write |
+| `scripts/verify-plans.js` | 1,385 | 175 checks — schemas, routing, the service, then real HTTP |
+| `src/app.js` | 318 | +19: the `planRoutes` require (line 76) and an 18-line mount block ending in `api.use('/plans', planRoutes)` at index 13, with its reasoning |
+| `scripts/verify-app.js` | 762 | +2 assertions pinning `/plans` past `resolveTenant`; its total moved 127 → 129 |
+
+### What the source says, and what it does not
+
+SRS §10.2 lists the Plan Builder's operations — Create, Edit, Duplicate, Activate/Deactivate, Archive —
+and FR-SUB-001 … FR-SUB-007 restate them as requirements. §10.3 fixes the seven billing cycles, §10.4
+the four pricing models, §11.1 the twenty modules and their features, §11.2 the eight limits. All four
+vocabularies are in `config/constants.js` already, so nothing in this module invents a key.
+
+What the source does not say: nothing about deleting a plan (FR-SUB-005 Archive is explicit that an
+archived plan is *"retained for historical reference"*), nothing about whether a new plan starts active,
+and nothing about what happens to a price row a subscription already points at. Those three are recorded
+below as decisions, not as requirements.
+
+### The thirteen endpoints
+
+| Method | Path | SRS / FR | Permission |
+|---|---|---|---|
+| GET | `/plans/catalogue` | §10.3, §10.4, §11 | `plans.view` |
+| GET | `/plans` | §10.2, FR-SUB-002 | `plans.view` |
+| POST | `/plans` | FR-SUB-001 | `plans.manage` + platform |
+| GET | `/plans/:id` | FR-SUB-002 | `plans.view` |
+| PATCH | `/plans/:id` | FR-SUB-002 | `plans.manage` + platform |
+| POST | `/plans/:id/duplicate` | FR-SUB-003 | `plans.manage` + platform |
+| POST | `/plans/:id/activate` | FR-SUB-004 | `plans.manage` + platform |
+| POST | `/plans/:id/deactivate` | FR-SUB-004 | `plans.manage` + platform |
+| POST | `/plans/:id/archive` | FR-SUB-005 | `plans.manage` + platform |
+| PUT | `/plans/:id/prices` | FR-SUB-006, §10.3, §10.4 | `plans.pricing.manage` + platform |
+| PUT | `/plans/:id/modules` | FR-SUB-007, §11.1 | `plans.modules.manage` + platform |
+| PUT | `/plans/:id/features` | FR-SUB-007, §11.1 | `plans.modules.manage` + platform |
+| PUT | `/plans/:id/limits` | FR-SUB-007, §11.2 | `plans.limits.manage` + platform |
+
+`GET /catalogue` is declared **before** `GET /:id`. Both are one-segment GETs, so reversing them would
+have Express match `/catalogue` as an id and answer 422. That ordering is asserted.
+
+The four configuration routes are `PUT`, not `POST`: the body is the plan's *complete* set for that
+table, so sending it twice leaves the same state. `PUT /:id/limits` demands all eight §11.2 keys, because
+`entitlementService`'s `emptyLimits()` resolves an absent `plan_limits` row to **0** rather than to
+"unchanged" — a partial set would silently zero whatever it omitted. Modules and features are the
+opposite: an absent row means "not in this plan", so partial sets are accepted there.
+
+### Design decisions taken in this module
+
+- **A new plan is born `inactive`, whatever the request body says.** `subscription_plans.status` defaults
+  to `active` at the column, so `create()` overrides it and `status` is *stripped* from both the create
+  and the duplicate schema rather than refused — a client that sends it gets a usable plan, not a 422 it
+  cannot act on. The reason is the interaction with the paragraph above: a plan created active would
+  appear in the catalogue for new subscriptions while holding no price and no limits, and its schools
+  would be entitled to nothing.
+- **Activation requires an active price.** 409 `PLAN_NOT_PRICEABLE`. A subscription denormalises its
+  billing terms from a `plan_prices` row, so an active plan with nothing to sell is an offer the system
+  cannot fulfil. Deactivation and archiving carry no such condition — they only affect *new*
+  subscriptions, and a school already on the plan keeps its entitlement, which is asserted.
+- **A price row something points at is deactivated, not deleted.** `subscriptions.plan_price_id`,
+  `subscriptions.scheduled_plan_price_id` and `quotations.plan_price_id` are all `SET NULL`, so deleting a
+  referenced row would not fail — it would quietly blank a live subscription's pointer back to the price
+  it was quoted, and SRS §13 needs that trail. `setPrices()` retires such rows with
+  `is_active: false, is_default: false` and reports how many in both the body and the message.
+- **There is no `DELETE /plans/:id`.** FR-SUB-005 Archive is the source's removal operation, and
+  `subscriptions.plan_id` is `RESTRICT` besides.
+- **Every write is platform-scoped; no read is.** `subscription_plans` has no `school_id`, so one edit to
+  a plan's limits changes what every school on it may do — the same cross-tenant write `/roles` guards.
+  The reads are confined by `plans.service.scopeFor()` instead, which shows a non-platform caller only
+  the active public plans, so granting `plans.view` to a Principal for SRS §12.3 later is a seed change
+  rather than a routing change.
+- **A filter cannot widen a scope.** `?status=archived` from a school-scoped caller returns an empty page,
+  not the archived plans. Asserted over HTTP and directly against the service.
+- **`readiness` is derived, never stored.** Price counts, the default-price flag, the enabled-module
+  count and `unconfiguredLimits` are computed per response. A stored "is this plan ready" column would be
+  a second source of truth that could disagree with the rows.
+
+### Verification — `scripts/verify-plans.js`, 175 checks, 0 fail
+
+| Section | Checks |
+|---|---|
+| schemas: the plan record | 10 |
+| schemas: duplicate | 3 |
+| schemas: pricing (§10.3, §10.4) | 13 |
+| schemas: modules and features (§11.1) | 6 |
+| schemas: limits (§11.2) | 9 |
+| routing: the declared surface | 9 |
+| service: `scopeFor()` without a tenant | 7 |
+| fixtures | 3 |
+| the boundary: `/plans` sits below it | 4 |
+| permissions: no `plans.*` key reaches a school role | 4 |
+| FR-SUB-001 — a new plan is inactive | 13 |
+| FR-SUB-004 — activation requires something to sell | 3 |
+| FR-SUB-006 — pricing and billing cycles | 10 |
+| FR-SUB-007 — modules, features and limits | 10 |
+| FR-SUB-004 / FR-SUB-005 — the transitions | 3 |
+| reads: `scopeFor()` confines a non-platform caller | 12 |
+| §30 Rule 1 — a plan edit reaches the snapshot at once | 9 |
+| FR-SUB-006 — a price in use survives its removal | 9 |
+| FR-SUB-003 — a duplicate copies the configuration | 16 |
+| FR-SUB-005 — archiving is retention | 10 |
+| permissions: the five `plans.*` keys are separate | 3 |
+| §29 — the audit and activity rows | 7 |
+| teardown: the restore is asserted, not assumed | 2 |
+| **Total** | **175** |
+
+Fixtures: two users under `@verify-plans.local`, one organization, one school, and every plan the run
+creates — hard-deleted afterwards with `force: true`, because `subscription_plans` is paranoid and a soft
+delete would leave the rows for the next run to trip over. Generated `activity_logs` and `audit_logs`
+rows are removed above a captured baseline. One seeded row is mutated: the `principal` role gains
+`plans.view` so the read confinement can be tested against a real school-scoped caller, and it is
+restored in the `finally` with the restore asserted.
+
+`CACHE_TTL=600` is set at the top of the script deliberately. The invalidation assertions read a school's
+entitlement snapshot, change the plan, and read it again — with a short TTL they would pass whether or
+not `entitlementService.invalidatePlan()` was ever called.
+
+### Behaviours asserted deliberately, because each could be mistaken for a defect
+
+- **A private plan answers 404 to a school-scoped caller, not 403.** `findById()` folds the scope into
+  the `where`, so the row is invisible rather than forbidden and the id is not an enumeration oracle.
+- **`status` in a create or edit body is silently dropped, not refused.** See the decision above. The
+  assertion checks the *absence of the key* after validation, which is the only place this is visible.
+- **A duplicate copies the whole price table, retired rows included.** After the retirement step the
+  source holds one active price and one inactive; the copy gets both. Filtering to active rows would
+  silently drop configuration the source screen shows, and the retired copy is neither active nor default
+  so it is invisible in the catalogue.
+- **A module dropped from the set resolves as `false`, not as "unchanged".** `emptyModules()` seeds every
+  §11.1 key, and `PUT /:id/modules` replaces the table — so removing a row denies the module.
+- **A plain `PATCH /:id` rename flushes the entitlement cache.** The snapshot caches the plan's `name`, so
+  a rename that skipped invalidation would leave every subscribed school reporting the old one. Asserted
+  alongside the limit and module cases.
+- **`invalidatePlan()` flushes the whole entitlement namespace, not one school.** There is no reverse
+  index from a plan to its schools, and a stale ceiling is worse than a cold cache. The assertions pin
+  the *effect*, so replacing the flush with a targeted invalidation later will not fail the suite.
+- **A `denied_permissions` entry on a Super Admin really does deny.** `buildPermissionGuard` has no
+  super-admin bypass, which is what makes it possible to prove the five `plans.*` keys are five distinct
+  keys rather than one wearing five names: denying `plans.pricing.manage` breaks `PUT /:id/prices` and
+  leaves `PUT /:id/limits` working.
+- **`settings` on a module row survives `stripUnknown: true`.** `validate.js` strips unknown keys, which
+  takes precedence over `.unknown(true)` — so a free-form JSON map has to be declared as
+  `Joi.object().pattern(...)` or it arrives as `{}` with no error to explain where the keys went. The
+  assertion checks the keys are still there after validation *and* after the LONGTEXT round trip.
+- **A failed duplicate leaves nothing behind.** The copy and its four collections are one transaction; a
+  taken code raises 409 `PLAN_CODE_TAKEN` and the plan count is asserted unchanged.
+
+---
+
+## 2h. Phase 3.D (fifth module group) — The add-on catalogue, SRS §11.3 / FR-SUB-009 ✅ Complete and verified
+
+What a school may buy *on top of* its base plan. This completes the subscription **catalogue**: after
+§2g a Super Admin can build a plan, and after this a Super Admin can configure and price the seven
+add-ons that extend one. Nothing here can yet be sold — that is the subscriptions module.
+
+**Provenance, stated plainly because it affects how much of this section can be trusted.** The four
+module files, the `/addons` mount in `src/app.js` and the two `/addons` assertions in
+`scripts/verify-app.js` were written in **session 11, which ended without updating this log** — this file
+still said `addons/` did not exist. `scripts/verify-addons.js` existed but **aborted on a TypeError at
+76 checks and had never passed**. Session 12 found that, fixed the script, and got it green; it did not
+write the module. So: the module's *behaviour* is now verified by 169 assertions, and that is
+first-hand. The design *rationale* below is transcribed from the file headers session 11 left, not
+reconstructed from a conversation this log does not have.
+
+| File | Lines | What it does |
+|---|---|---|
+| `src/modules/addons/addons.validation.js` | 247 | Six schemas; `forbiddenField()` for the four SRS-fixed columns |
+| `src/modules/addons/addons.service.js` | 446 | `list`/`findById`/`update`/`setActive`/`setPrices`, `readiness()`, `scopeFor()` |
+| `src/modules/addons/addons.controller.js` | 141 | Thin handlers; `present()` = `toJSON()` + `readiness()` |
+| `src/modules/addons/addons.routes.js` | 124 | Six routes, two `addons.*` permissions, platform scope on all four writes |
+| `scripts/verify-addons.js` | 1,348 | 169 checks — schemas, routing, the service, then real HTTP |
+| `src/app.js` | 338 | the `addonRoutes` require (line 77) and the mount at index 14, with its reasoning |
+| `scripts/verify-app.js` | 775 | +2 assertions pinning `/addons` past `resolveTenant`; its total moved 129 → 131 |
+
+### What the source says, and what it does not
+
+SRS §11.3 fixes the seven add-ons — Extra Students, Extra Teachers, Extra Storage, AI Credits, SMS
+Credits, Custom Domain, Premium Reports — and FR-SUB-009 is the single requirement behind this module:
+*"configure add-ons purchasable in addition to the base plan."* The seven, their `effect_type` and their
+`effect_target` are already in `config/constants.js` as `ADDON_LIST` / `ADDON_EFFECTS`, and seeder
+`05-addons.js` has been writing them since Phase 3.B.
+
+What the source does not say: nothing about block sizes (so `units_per_quantity` seeds at 1), nothing
+about add-on prices beyond the §10.3 cycles it shares with plans, and nothing about creating or deleting
+an add-on. That last silence is load-bearing — see the first decision below.
+
+### The six endpoints
+
+| Method | Path | SRS / FR | Permission |
+|---|---|---|---|
+| GET | `/addons` | §11.3 | `addons.view` |
+| GET | `/addons/:id` | §11.3 | `addons.view` |
+| PATCH | `/addons/:id` | FR-SUB-009 | `addons.manage` + platform |
+| POST | `/addons/:id/activate` | FR-SUB-009 | `addons.manage` + platform |
+| POST | `/addons/:id/deactivate` | FR-SUB-009 | `addons.manage` + platform |
+| PUT | `/addons/:id/prices` | FR-SUB-009, §10.3 | `addons.manage` + platform |
+
+Two permission keys, not five as `/plans` has: FR-SUB-009 is one requirement over one screen, and
+inventing `addons.pricing.manage` to mirror `plans.pricing.manage` would have added a 110th permission
+the source does not name. Built with `createRouter()`, mounted at index **14** — below `enforceTenant`.
+
+### Design decisions taken in this module
+
+- **There is no `POST /addons` and no `DELETE /addons/:id`.** The row *set* is fixed by §11.3 and
+  `addons.key` is validated against `ADDON_LIST`, so an eighth add-on cannot exist (§35 — nothing
+  invented) and deleting one of the seven would fail anyway, because `subscription_addons.addon_id` is
+  `RESTRICT`. FR-SUB-009 is configuration *of* a fixed list, not authorship *of* a list.
+- **Four columns are refused, not silently stripped.** `key`, `name`, `effect_type` and `effect_target`
+  each answer 422 through `forbiddenField()`, with a message naming *why*: `name` "would not survive the
+  next seed run" (the seeder repairs SRS-fixed fields), and the two effect columns "come from
+  `ADDON_EFFECTS` and are what entitlement resolves through". `unit` is refused too and re-derived from
+  `LIMIT_UNITS`, so it cannot disagree with the limit it describes. This is the **opposite** of the
+  `plans` module's choice to strip `status` — and deliberately so: a stripped field leaves the operator
+  with a 200 and no explanation, which is tolerable for a field they can set another way (`/activate`)
+  and not for one they can never set at all.
+- **`is_active` is refused on `PATCH` and owned by `/activate` and `/deactivate`.** Those two record a
+  `reason` into `audit_logs.reason`, which is the only column for it; allowing the flip through the
+  general edit would have made the reason optional in practice.
+- **Nothing in this module invalidates the entitlement cache, and that absence is asserted.** This is
+  the first subscription-area write module that must *not* call `entitlementService.invalidate*`.
+  `resolveSchool()` reads add-ons from `subscription_addons`, taking `effect_type`, `effect_target`,
+  `units_granted` and `quantity` from the purchase row and **never joining `addons`** — those columns are
+  copied at purchase, exactly as a subscription copies its billing terms from `plan_prices`. So editing
+  `units_per_quantity` changes what the *next* purchase grants and cannot change what an existing one
+  granted; there is no cached value to stale. The obligation lands on whatever writes
+  `subscription_addons`, i.e. the subscriptions module's purchase and cancel endpoints.
+- **Activation carries no precondition, unlike a plan's.** `plans.service.setStatus()` refuses to
+  activate a plan with no active price; this module does not, because
+  `subscription_addons.addon_price_id` is **nullable** — a granted add-on with no price row is a shape the
+  schema deliberately allows (bundled, or comped in a negotiation). Refusing would forbid an arrangement
+  the tables were built to hold. `readiness().purchasable` reports the situation instead.
+- **`readiness` is derived, never stored** — same rule as `/plans`. Five counts per response:
+  `priceCount`, `activePriceCount`, `planRestrictedPriceCount`, `unrestrictedPriceCount`, and
+  `purchasable`, which requires *both* `is_active` and at least one active price.
+- **A price row a purchase points at is retired, not deleted** — the same rule and the same reason as
+  `plans.setPrices()`, and `PUT /:id/prices` reports `created` / `deleted` / `retired` separately so the
+  screen can explain why the count does not match what was sent.
+- **Every write is platform-scoped; neither read is.** `addons` has no `school_id`, so one edit changes
+  what every school is offered. But a school has to be able to see what it can buy, so
+  `scopeFor()` confines a non-platform caller to the **active** add-ons (`{ is_active: true }`) and
+  `detailInclude()` confines it to the **active** price rows. A deactivated add-on is invisible to a
+  school and answers 404, not 403.
+
+  One thing that confinement does *not* do, checked in session 12 by reading both functions rather than
+  assumed from the suite: it does **not** filter prices by `plan_id`. A school therefore sees an active
+  price restricted to a plan it is not on. That is not a leak — prices are catalogue data, and
+  `readiness().planRestrictedPriceCount` exists precisely so a screen can distinguish them — but it does
+  mean the API alone does not answer "what may *this* school buy". Recorded in Known Issues #17 rather
+  than fixed, because the SRS says nothing about it and the subscriptions module is where the question
+  actually arises.
+
+### Verification — `scripts/verify-addons.js`, 169 checks, 0 fail
+
+Fixtures: two users under `@verify-addons.local`, one organization, one school, one plan (built through
+`/plans`, a path the plans suite already verifies) and one subscription with a purchased add-on. One
+seeded role is mutated — the `principal` role gains `addons.view` — and the **seeded add-on catalogue
+itself** is edited and restored, which no other suite does; the restore is asserted column by column
+against a baseline captured before the first write. `CACHE_TTL=600` is set at the top for the same reason
+as in `verify-plans.js`: the invalidation assertions here prove a *negative* (that a catalogue edit does
+**not** move a resolved ceiling), and a short TTL would make that pass whether the code was right or not.
+
+The end-to-end section proves the entitlement claim above with real numbers: a plan granting
+`student_limit: 100` plus a purchase of 500 granted units resolves to a ceiling of **600**; the block
+size is then changed to 1,000, the catalogue row is confirmed changed, and the resolved ceiling is
+confirmed **still 600**. The add-on is then deactivated and the school still resolves 600 after a forced
+re-resolve, because resolution reads `subscription_addons.status`, not `addons.is_active`.
+
+### Behaviours asserted deliberately, because each could be mistaken for a defect
+
+- **A deactivated add-on answers 404 to a school, and 200 to the platform admin.** `scopeFor()` folds
+  the scope into the lookup, so the row is invisible rather than forbidden — the id is not an
+  enumeration oracle. Same property `/plans` has for a private plan.
+- **A filter cannot widen a scope.** `?is_active=false` from a school-scoped caller returns an empty page
+  *and* `meta.pagination.total: 0` — not the row it was just denied. The total is asserted separately
+  because returning `[]` with a total of 7 would leak the count.
+- **A reactivated add-on with no price comes back `is_active: true` but `purchasable: false`.** That is
+  the nullable-`addon_price_id` decision above, made visible.
+- **`GET /addons` on a fresh database returns seven rows, unlike `GET /plans` which returns none.**
+  §11.3 fixes the add-ons, so seeding them is not inventing data; §10 fixes no plans, so seeding one
+  would be. The two modules differ here for a reason recorded in the seeders, not by oversight.
+- **The default sort is `display_order`, and it reproduces the §11.3 listing order.** Asserted as a
+  sequence, not a set, because the seeder derived the order from the source's own list.
+
+---
+
+## 2i. Phase 3.D (sixth module group) — The subscription lifecycle, SRS §12 / §30 / §33 ✅ Complete and verified
+
+The module that makes the catalogue sellable. After §2g a Super Admin could build a plan and after
+§2h price the seven add-ons; **nothing before this could put a school on one.** It closes what §3
+called the single largest gap in the backend: entitlement decisions are no longer taken against an
+absent row.
+
+| File | Lines | What it does |
+|---|---|---|
+| `src/modules/subscriptions/subscriptions.validation.js` | 596 | Sixteen schemas (fifteen its own, plus the shared `idParam`); the `cycle`/`custom_days` pair, the required `when` on downgrade |
+| `src/modules/subscriptions/subscriptions.service.js` | 2,608 | `create`, the six-edge `transition()` table, `upgrade`/`downgrade`/`renew`, add-on purchase, §33 overrides, `runLifecycleSweep()` |
+| `src/modules/subscriptions/subscriptions.controller.js` | 482 | Thin handlers; `present()`; the money/`change` blocks each response carries |
+| `src/modules/subscriptions/subscriptions.routes.js` | 304 | Nineteen routes, three guard shapes, `/catalogue` declared before `/:id` |
+| `scripts/verify-subscriptions.js` | 3,040 | 208 checks — schemas, routing, the service offline, then real HTTP, then the sweep |
+| `src/app.js` | 370 | the `subscriptionRoutes` require (line 78) and the mount at index 15 (line 363) |
+| `scripts/verify-app.js` | 780 | +2 assertions pinning `/subscriptions`; its total moved 131 → **133**, and `/api/v1` fifteen layers → **sixteen** |
+
+Four module files, 3,990 lines, the largest module in the backend by a wide margin — `plans/` is
+1,746 and `auth/` 1,474. It is large because §12 has six sub-sections (§12.1 trial, §12.2 grace,
+§12.3 upgrade with proration, §12.4 downgrade with a deferral, §12.5 renewal) and it also absorbs
+§11.3's purchase side and all three of §33's override kinds.
+
+### The nineteen endpoints
+
+| Method | Path | SRS / FR | Guard |
+|---|---|---|---|
+| GET | `/subscriptions/catalogue` | §12 | `view` \| `self.view` |
+| GET | `/subscriptions` | FR-SUB-010 | `view` \| `self.view` |
+| POST | `/subscriptions` | FR-SUB-010 | platform + `manage` |
+| GET | `/subscriptions/:id` | FR-SUB-010 | `view` \| `self.view` |
+| GET | `/subscriptions/:id/history` | FR-SUB-010 | `view` \| `self.view` |
+| PATCH | `/subscriptions/:id` | FR-SUB-011, FR-SUB-012 | platform + `manage` |
+| POST | `/subscriptions/:id/activate` | FR-SUB-010 | platform + `lifecycle` |
+| POST | `/subscriptions/:id/suspend` | FR-SUB-010 | platform + `lifecycle` |
+| POST | `/subscriptions/:id/reactivate` | FR-SUB-010 | platform + `lifecycle` |
+| POST | `/subscriptions/:id/pause` | FR-SUB-010 | platform + `lifecycle` |
+| POST | `/subscriptions/:id/resume` | FR-SUB-010 | platform + `lifecycle` |
+| POST | `/subscriptions/:id/cancel` | FR-SUB-010 | platform + `lifecycle` |
+| POST | `/subscriptions/:id/upgrade` | FR-SUB-013, §12.3 | `lifecycle` \| `self.manage` |
+| POST | `/subscriptions/:id/downgrade` | FR-SUB-014, §12.4 | `lifecycle` \| `self.manage` |
+| POST | `/subscriptions/:id/renew` | FR-SUB-015, §12.5 | `lifecycle` \| `self.manage` |
+| POST | `/subscriptions/:id/addons` | FR-SUB-009, §11.3 | `manage` \| `self.manage` |
+| POST | `/subscriptions/:id/addons/:addonId/cancel` | FR-SUB-009 | `manage` \| `self.manage` |
+| POST | `/subscriptions/:id/overrides` | §33 | platform + `overrides.manage` |
+| POST | `/subscriptions/:id/overrides/:overrideId/revoke` | §33 | platform + `overrides.manage` |
+
+Six `subscriptions.*` permission keys, all pre-existing in `config/permissions.js` — no seventh was
+added. Built with `createRouter()`, mounted at index **15**, below `enforceTenant`.
+
+### Design decisions taken in this module
+
+- **Three guard shapes, one per SRS actor line.** `requirePlatformScope()` + a permission wherever
+  the source names the Super Admin alone (FR-SUB-010/011/012); `requireAnyPermission(a, b)` wherever
+  it names both (FR-SUB-013/014/015 are *"Super Admin / School"*, FR-SUB-009 is *"Super Admin and/or
+  school"*); a permission alone for the reads, because `subscriptions.self.view` is seeded to four
+  roles and the service confines every read by tenant anyway. Requiring `subscriptions.lifecycle` on
+  upgrade would have made `subscriptions.self.manage` a dead key — granted to two roles, reachable by
+  none.
+- **`PATCH /:id` serves both FR-SUB-011 and FR-SUB-012.** Two FRs because §12.1 and §12.2 are two
+  settings, but they are two columns on one row edited from one screen; `PATCH /:id/trial` +
+  `PATCH /:id/grace` would let an operator adjusting both half-fail.
+- **`runLifecycleSweep()` is exported with no route.** FR-SUB-010's date-driven half and FR-SUB-015's
+  Automatic Renewal have the *system* as their actor. `package.json` already declares
+  `"cron": "node src/jobs/cron.js"`; `src/jobs/` is Phase 5. The behaviour is not deferred — only the
+  trigger. Adding `POST /run-renewals` would invent an endpoint (§35).
+- **No `DELETE /:id`.** Cancelled and Expired are §12's terminal states and both keep the row: it is
+  the school's billing history, and `subscription_items` and §13's invoices point at it.
+- **No second usable subscription per school.** `findGoverningSubscription()` picks one row, so two
+  open subscriptions would make entitlement depend on insert order. `create()` refuses it — but a
+  *cancelled* subscription does not block a new one, which is asserted.
+- **The transition table is data, not six functions.** That is the seam §13 will use: when payments
+  exist, the approval path calls `transition(…, 'activate', …)` rather than reimplementing activation.
+- **`schools.subscription_state` is this module's column, and it feeds two caches.** Every state
+  change calls `syncSchoolState()`, then `afterWrite()` calls **both**
+  `entitlementService.invalidateSchool()` and `tenantService.invalidateSchool()` — the second because
+  `getSchool()` caches that column, so writing it without dropping the entry leaves the cached copy
+  lying to the dashboards.
+- **The purchase copy happens here.** `subscription_addons` receives `effect_type`, `effect_target`
+  and `units_granted = quantity × units_per_quantity` at purchase, so a later catalogue edit cannot
+  retroactively change what a school bought. `entitlementService` is explicit that it does not
+  multiply again.
+- **`subscriptions.overrides.manage` is a separate key, seeded to `super_admin` alone.** An override
+  is the highest-precedence source in the resolution chain — above add-ons and above the plan — so a
+  school able to write one could grant itself any module, feature or limit.
+
+### Verification — `scripts/verify-subscriptions.js`, 208 checks, 0 fail
+
+Five parts, on the `verify-addons.js` pattern: parts 1–3 offline (schemas, router shape, service
+exports and the state/event constants), then a baseline capture, fixtures, real HTTP over a booted
+app, and a `finally` that removes the fixtures **and asserts the restores** — add-on columns back per
+column, `AddonPrice` count back to baseline, and zero remaining fixture plans, schools, organizations,
+users and subscriptions.
+
+`CACHE_TTL=600` is pinned so a missing `invalidateSchool()` cannot pass by expiry. Every fixture
+subscription uses `custom_days`/30 rather than `monthly`, because `monthly` yields 28–31 days
+depending on the date and the proration expectations would then have to be re-derived from the
+function under test instead of stated as constants.
+
+What the HTTP part proves, in order: creation in `pending` and the whole administrative edge set;
+trial and grace configuration; the §12.3 upgrade with proration arithmetic asserted number by number
+(`{periodDays: 30, elapsedDays: 15, remainingDays: 15, unusedCredit: 15, prorationDue: 30,
+creditApplied: 15, amountDue: 15, creditBalance: 0}`); the §12.4 deferred downgrade and then its
+application on the next renewal; suspend/reactivate; add-on purchase and cancellation; subscription
+cancellation and a fresh subscription after it; all three §33 override kinds with replace and revoke;
+then `runLifecycleSweep()` against five hand-built subscriptions, asserting
+`{trialEnded: 1, renewed: 1, pastDue: 1, graceStarted: 1, expired: 1, expiring: 1, failed: []}` and
+the five resulting states. **Both caches are read back four times** through
+`entitlementService.resolveSchool()` and `tenantService.getSchool()`.
+
+**No defect was found in shipped subscriptions code.** All nine first-run failures were in the suite
+itself — see §5a session 13, where the fixture bug with the seven-failure blast radius is worth
+reading before writing another suite.
+
+### Behaviours asserted deliberately, because each could be mistaken for a defect
+
+- **A school may upgrade its own subscription but not cancel it.** FR-SUB-013/014/015 name the School
+  as an actor; FR-SUB-010, where Cancel sits alongside Activate/Suspend/Pause/Resume, says
+  *"System / Super Admin"*. A school cancelling its own subscription is a plausible product decision
+  and it is not this document's. One word changes it, against a stated requirement.
+- **An upgrade does not move the period boundary.** `current_period_end` is asserted unchanged to the
+  minute across the upgrade. §12.3 prorates *within* the cycle; a new cycle would silently grant the
+  school extra paid time.
+- **Pause → resume returns the subscription to `trial`, not `active`.** Resume restores the state
+  pause found, so pausing during a trial and resuming does not consume the trial.
+- **A trial that lapses with grace configured stops at `past_due`, not `expired`.** The sweep's pass
+  order is the reason, and it matches §12.2: grace is entered *from* past due.
+- **The sweep's renewal pass runs before its past-due pass.** Asserted explicitly by checking that
+  the automatically renewed subscription is **not** past due — with the passes reversed, every
+  auto-renewing subscription would be marked delinquent on its renewal day.
+- **An add-on purchase that names no `addon_price_id` is recorded at `unit_amount: 0` with a null
+  price pointer.** There is no implicit price selection here, unlike `selectPrice()` for plans. That
+  fallback is what keeps add-ons purchasable against the shipped seed data, where `addon_prices` is
+  empty — so it was kept and asserted rather than "fixed". Flagged for §13 invoicing; see Known
+  Issues #18.
+- **Re-applying an override to the same target returns 200, not 201 or 409.** The message says so
+  (*"Override replaced. The previous value for this target is no longer in force."*), the id is the
+  same row, and exactly one row for that target is asserted to remain.
+- **A cancelled add-on row is retained with `status: 'cancelled'`, not deleted** — §13's invoice line
+  was raised against it. Second cancel is 409.
+- **`:addonId` is a `subscription_addons.id`, not an `addons.id`.** A school may hold two purchases of
+  the same add-on and cancelling one must not cancel both; an id from another subscription 404s.
+
+---
+
+## 2j. Phase 3.I — School setup & academic structure, SRS §14 ✅ Complete and verified
+
+**FR-SCHOOL-001 … FR-SCHOOL-004.** Four modules — `settings/`, `sessions/`, `classes/`, `subjects/` —
+plus one new shared utility, `src/utils/schoolScope.js`. **Twenty-nine endpoints, all twenty-nine
+exercised over real HTTP.** No new table: all seven tables this group writes
+(`school_settings`, `academic_sessions`, `classes`, `sections`, `subjects`, `class_subjects`,
+`teacher_subjects`) already existed in the §29 sixty-four, and no 65th was added.
+
+**Provenance, stated plainly.** The module code and the first draft of the suite were on disk
+unrecorded when session 16 opened (mtimes 16:21–16:27, against a session-15 log entry written at
+16:16); who wrote them is not knowable without git history. Session 16 verified, audited and repaired
+them. Every claim below rests on an assertion in `scripts/verify-school-setup.js` that passes today, or
+on a file read during that audit — not on the fact that the suite was green when it was found.
+
+### What the source says, and what it does not
+
+§14.1 names ten settings fields — Logo, Name, Address, Phone, Email, Website, Favicon, Theme, Currency,
+Timezone. All ten are columns on `school_settings` and all ten are accepted by `PATCH`. §14.2 names
+exactly three session operations: **Create, Activate, Close.** There is therefore **no
+`DELETE /sessions/:id`** — close is the operation the source names, and `verify-school-setup.js:211`
+asserts the absence. §14.3 names Classes, Sections, Class Teachers, and associating Subjects with a
+class. §14.4 names subject creation, subject-to-class assignment, and teacher assignment.
+
+What the source does **not** name: any session status beyond the three the lifecycle implies, any
+numeric ceiling on classes or subjects, and **subject deletion**. `DELETE /subjects/:id` exists anyway
+— it was already shipped — but session 16 put a referential guard in front of it rather than removing a
+route (§5a session 16, defect 17).
+
+The actor throughout is **Principal / School Admin**, not the Super Admin, so **no route in this group
+carries `requirePlatformScope()`** — `verify-school-setup.js` asserts its absence across every write.
+Isolation is `resolveSchool()` plus `tenantWhere()`. A Super Admin reaches these endpoints by naming
+`school_id`, because they hold every key and have no school in tenant scope.
+
+**No entitlement guard, and that is deliberate.** SRS §11.2 fixes exactly eight plan limits —
+`student_limit`, `teacher_limit`, `staff_limit`, `admin_limit`, `storage_limit`, `ai_limit`,
+`api_limit`, `file_upload_limit` — and none of them counts classes, sections, subjects or sessions.
+`MODULES` (`src/config/constants.js:125`) likewise has no school-setup module: the twenty entries are
+students, teachers, staff, attendance, fees, finance, exams, online_exams, library, laboratory,
+timetable, homework, assignments, transport, hostel, parent_portal, ai, reports, certificates,
+id_cards. So `enforceLimit()` and `requireModule()` are correctly absent rather than forgotten —
+inventing a `class_limit` would be a ninth plan limit the source does not define, the same reasoning
+that kept `sms_limit` an add-on-only allowance (§2h).
+
+### The twenty-nine endpoints
+
+| Module | Endpoints |
+|---|---|
+| `school-settings` | `GET /`, `PATCH /` — 2 |
+| `sessions` | `GET /`, `GET /current`, `GET /:id`, `POST /`, `PATCH /:id`, `POST /:id/activate`, `POST /:id/close` — 7 |
+| `classes` | `GET /`, `POST /`, `GET /:id`, `PATCH /:id`, `DELETE /:id`, `GET /:id/sections`, `POST /:id/sections`, `PATCH /:id/sections/:sectionId`, `DELETE /:id/sections/:sectionId` — 9 |
+| `subjects` | `GET /`, `POST /`, `GET /:id`, `PATCH /:id`, `DELETE /:id`, `GET /:id/classes`, `POST /:id/classes`, `DELETE /:id/classes/:assignmentId`, `GET /:id/teachers`, `POST /:id/teachers`, `DELETE /:id/teachers/:assignmentId` — 11 |
+
+`GET /sessions/current` is declared **before** `GET /:id` so Express cannot read the literal as an id —
+the same trap `GET /invoices/summary` documents. All four routers are built with `createRouter()`, all
+twenty-nine responses go through `ApiResponse.*` (15 `ok`, 6 `created`, 5 `noContent`, 3 `paginated`),
+and every write carries `validate()` and `logActivity()`.
+
+### Design decisions taken in this module group
+
+- **`GET /school-settings` does not insert.** A settings screen opening is a read; the row is created by
+  the first `PATCH`. `GET` returns the column defaults as a virtual row, and
+  `verify-school-setup.js` asserts `school_settings` is still empty afterwards. The second `PATCH` then
+  takes the update branch — until session 16 added it, only the create half of that upsert had ever run.
+- **`school_settings.name` is the display name; `schools.name` is the platform record.** Patching one
+  does not touch the other, and that is asserted.
+- **Activate flags one session current and clears the flag on the school's others; it does not close
+  them.** A school may hold several `active` rows and exactly one `is_current`. Close stamps `closed`
+  and clears current, so a school may legitimately have no current session. The bulk flip uses
+  `validate: false` because Sequelize 6's `Model.update` with validation builds a skeleton from the
+  payload plus column defaults and throws even when zero rows match — the trap `coupons.expireLapsed`
+  hit first.
+- **A closed session cannot be edited or re-activated** (`SESSION_CLOSED`).
+- **Classes may be created against an *upcoming* session**, not only the current one — a Principal
+  preparing next year should not have to activate it first.
+- **A class is unique per `(school_id, academic_session_id, name)`**, so the same class name may exist
+  in two sessions.
+- **Teacher references are checked against the same school** by `loadTeacherInSchool()`, a `findOne`
+  rather than an invented teachers endpoint — §15 owns that module, not this one.
+- **Deletion refuses rather than cascading.** See §5a session 16 defects 17 and 18: both delete paths
+  now refuse while dependent rows exist, because those rows would otherwise be removed by MariaDB below
+  the application, leaving nothing in `audit_logs`.
+
+### Verification — `scripts/verify-school-setup.js`, 157 checks, 0 fail
+
+Three parts: request schemas with no database, the declared route tables, then real HTTP against the
+real database. It creates its own organization, two schools, four users and a teacher, and removes them
+again; it reads the seeded roles but never writes to `roles` or `role_permissions`.
+
+What the suite proves that it did not prove when session 16 found it:
+
+- **All twenty-nine routes are now requested over HTTP.** Six were previously asserted only as route-table
+  shapes in Part 2 — `GET /sessions`, `GET /classes/:id/sections`, `PATCH /classes/:id`,
+  `PATCH /classes/:id/sections/:sectionId`, `GET /subjects/:id/classes`, `PATCH /subjects/:id` — which
+  reads as coverage without being it. Measured, not assumed: extracting the access-log lines from a run
+  and normalising the ids yields exactly 29 distinct method+path shapes.
+- **The audit trail is asserted.** Nineteen `recordAudit()` calls and eighteen `logActivity()`
+  declarations were previously unverified — the suite could not distinguish a module that audits from
+  one that does not. It now asserts that all seven tables appear in `audit_logs`, that all three events
+  (`create`, `update`, `delete`) occur, that a settings update names `timezone` in `changed_fields`,
+  that closing a session records the `active → closed` transition in `old_values`/`new_values`, and
+  that every explicit removal is audited rather than left to the FK cascade. Those rows are read back as
+  **model instances, never `raw: true`** — under `raw` MariaDB returns `changed_fields` as a JSON
+  *string*, and `.includes('name')` on a string is a substring match that would also pass for `name_2`.
+- **The organization-scope regression is asserted** against the service directly, because no seeded role
+  both resolves to an organization-without-school tenant and holds `subjects.view`. See §5a defect 16.
+
+Behaviours asserted deliberately, because each could be mistaken for a defect:
+
+- `GET /school-settings` returning a row whose `id` is `null` — that is the virtual default, not a
+  half-written record.
+- A cross-school `PATCH /school-settings` failing with `CROSS_TENANT_ACCESS_DENIED` rather than
+  `CROSS_SCHOOL_ACCESS`: `enforceTenant` is a router-level layer and runs before the service's own
+  check, so the outer guard answers first. Both codes exist and both are correct at their own layer.
+- `currency` arriving as `pkr` and being stored as `PKR`; `theme` accepting any string, because §14.1
+  names a theme but enumerates no set of them.
+- A duplicate whole-class assignment returning 409 `CLASS_SUBJECT_TAKEN` from the service's own locking
+  read, not from the unique index — the index cannot enforce it (§5a defect 19).
+
+---
+
+## 2k. Phase 3.J (first module) — Teachers, SRS §15.3 ✅ Complete and verified
+
+**FR-TEACHER-001 and FR-TEACHER-002.** One module — `src/modules/teachers/` — six endpoints, no new
+table. It is short, and it is the most consequential module since the entitlement engine itself,
+because **it is the first route in the project behind an entitlement guard**.
+
+### Why that matters, and what was true before it
+
+`docs/IMPLEMENTATION_CHECKLIST.md` row FR-SUB-008 has said since session 4 that `enforceLimit`,
+`usageService` and all four measurement kinds were implemented and verified but that **no route
+mounted the guard** — `grep enforceLimit src/modules/` returned nothing. Everything built until now
+either governed the platform (the four §9 modules, the two catalogue modules), *sold* the allowances
+(`subscriptions/`), or was covered by no `MODULES` key at all (§14's school setup — SRS §11.2's eight
+limits contain no class or subject limit, so its permission keys carry `module: null`).
+
+`teachers.*` is the first permission group whose keys carry a real `module` binding
+(`MODULES.TEACHERS`, `src/config/permissions.js:93-95`). **That binding is metadata** — nothing in
+the request path reads it — so the guard has to be mounted explicitly or a school on a plan without
+the Teachers module would still reach every route. `teachers.routes.js` mounts
+`requireModule(MODULES.TEACHERS)` **router-level**, so a route added later cannot miss it.
+
+### The two halves of a limit, stated correctly
+
+An earlier revision of this section and of the module header stated this wrongly, and the wrong
+version is the more plausible one, so it is worth being precise:
+
+- **`enforceLimit('teacher_limit')` checks the ceiling.** For a *headcount* limit it counts **live** —
+  `getUsage()` routes `MEASUREMENT.HEADCOUNT` to `countHeadcount()` (`usageService.js:276-277`), a
+  `SELECT COUNT(*) FROM teachers WHERE is_active = 1`. It does **not** read `usage_records`.
+- **`usageService.syncHeadcount()` maintains the `usage_records` mirror**, which is *reporting* data —
+  the §9.1 dashboard and §13's overage lines read it. Enforcement does not depend on it.
+
+So a stale mirror corrupts reports, not the ceiling. The claim this file briefly carried — "a module
+that only mounts the guard enforces against a count that never moves" — is false for headcount limits
+and true only for *periodic* ones like `api_limit`, which do read the row. Corrected here rather than
+left, because a plausible-sounding wrong sentence is exactly what §8 exists to prevent.
+
+### The six endpoints
+
+| SRS | FR | Route | Guards |
+|---|---|---|---|
+| §15.3 | FR-TEACHER-001 | `GET /` | module · `teachers.view` |
+| §15.3 | FR-TEACHER-002 | `GET /dashboard` | module · `teachers.dashboard.view` |
+| §15.3 | FR-TEACHER-001 | `POST /` | module · `teachers.manage` · `enforceLimit(teacher_limit)` |
+| §15.3 | FR-TEACHER-001 | `GET /:id` | module · `teachers.view` |
+| §15.3 | FR-TEACHER-001 | `PATCH /:id` | module · `teachers.manage` |
+| §15.3 | FR-TEACHER-001 | `GET /:id/assignments` | module · `teachers.view` |
+
+`GET /dashboard` is declared before `GET /:id`. **No DELETE** — §15.3 names none; a teacher who leaves
+is deactivated through `PATCH`, which is the edit FR-TEACHER-001 does name.
+
+### Design decisions
+
+- **The dashboard resolves the teacher from `req.user.id`, never from a path id.** The actor is the
+  teacher themselves and `teachers.dashboard.view` is a key every teacher holds, so a path id would
+  let one teacher read a colleague's dashboard by changing a number. A `teacher`-role user with no
+  linked `teachers` row gets 404 `TEACHER_PROFILE_MISSING`, not 403 — they are legitimately
+  authenticated, there is simply no profile, which is the state FR-TEACHER-002's precondition excludes.
+- **A principal cannot open the dashboard at all.** The seeded grants give `teachers.dashboard.view`
+  to `super_admin` and `teacher` only. Asserted, because it looks like a bug and is not.
+- **Assignments are read here and written in §14.4.** FR-TEACHER-001 says "assigns Subjects and
+  Classes to the teacher" and FR-SCHOOL-004 says "assigns a teacher to the subject" — one relation,
+  `teacher_subjects`, named from both ends. `POST /subjects/:id/teachers` already writes it, including
+  the NULL-unique locking read of §5a defect 19. A second writer would be two implementations of one
+  invariant, so `GET /teachers/:id/assignments` reads and the §14.4 endpoints keep writing.
+  "Classes" is answered in both senses: classes the teacher is *class teacher* of
+  (`classes.class_teacher_id`) and classes they teach a subject in (`teacher_subjects.class_id`).
+- **`user_id` is accepted but never fabricated.** FR-TEACHER-002's precondition is "Teacher account
+  exists"; nothing says this module creates it, and FR-TEACHER-001 names only profile fields. It is
+  one-to-one and enforced in the service — see §5a defect 23.
+- **No `POST` creates a user, so `authService.sendVerificationEmail` is correctly not called here.**
+  `parents/` will be different: `parents.user_id` is NOT NULL, so FR-PARENT-001's "System creates a
+  Parent Account" is a real instruction there.
+
+### Verification — `scripts/verify-teachers.js`, 82 checks, 0 fail
+
+Three parts: schemas with no database, the route table and the router-level guard, then real HTTP.
+Fixtures: one organization, **four** schools and two plans differing in exactly one thing — whether
+`teachers` is enabled — plus six users. School A is subscribed to the enabled plan with
+`teacher_limit: 2`, B to the disabled plan, C has **no subscription**, and D is on the same plan as A.
+
+What the fixture shape buys, and why D exists: the two refusals are asserted **separately** —
+`MODULE_NOT_SUBSCRIBED` for B and `SUBSCRIPTION_INACTIVE` (402, not 403) for C — because collapsing
+them would hide which guard is running. And an isolation test needed a school that *clears* the
+entitlement guard: reading school A's teacher as B or C returns 403 before isolation is ever reached,
+which would look like a passing isolation test while proving nothing. D clears the guard, so its
+404 `TEACHER_NOT_FOUND` is `tenantWhere()` and nothing else.
+
+The limit is proven as a cycle rather than a single refusal: two teachers created, the third refused
+with `PLAN_LIMIT_EXCEEDED`, the mirror read back at 2, one teacher deactivated, the mirror falls to 1,
+the freed allowance is used — and then re-activating the deactivated one is refused (§5a defect 21).
+`joining_date` is asserted at a **flipped process timezone**, the technique Known Issues #20 produced.
+
+---
+
+## 2l. Phase 3.J (second module) — Students, SRS §15.1 ✅ Complete and verified
+
+**FR-STUDENT-001 (admission) and FR-STUDENT-002 (promotion / transfer / leaving).** Seven endpoints,
+no new table. The largest §15 module and the one everything downstream needs.
+
+### The seven endpoints, and the permission split the SRS itself dictates
+
+| SRS | FR | Route | Permission |
+|---|---|---|---|
+| §15.1 | FR-STUDENT-001 | `GET /`, `GET /:id` | `students.view` |
+| §15.1 | FR-STUDENT-001 | `POST /` (+ `enforceLimit`), `PATCH /:id` | `students.manage` |
+| §15.1 | FR-STUDENT-002 | `POST /:id/promote`, `/transfer`, `/leave` | `students.progression` |
+
+**The split is not a choice made here.** FR-STUDENT-001 names the actor as "Principal / School Admin /
+**Receptionist**"; FR-STUDENT-002 names only the first two. The seeded catalogue already encodes it —
+`receptionist` holds `students.manage` and not `students.progression` — so a receptionist can admit a
+child but cannot mark one as having left. Both halves are asserted over HTTP, because the two keys
+would otherwise look interchangeable.
+
+`requireModule(MODULES.STUDENTS)` is mounted router-level, as in `teachers/`. No DELETE: §15.1 names
+Leaving, which is the operation, and `students` is paranoid besides.
+
+### One ambiguity in FR-STUDENT-002, named rather than silently resolved
+
+`students.status` is `active|promoted|transferred|left|graduated|inactive`, and FR-STUDENT-002 says
+only "System updates the student's status/class/section accordingly". It does not say which status a
+*promoted* student holds, and the readings differ materially:
+
+- Promotion sets `status = 'promoted'` → a school that promotes its whole cohort at year end drops to
+  **zero** active students, `student_limit` usage falls to nothing, and the §11.2 ceiling stops
+  meaning anything.
+- Promotion keeps `status = 'active'` and records the movement in `promoted_at` and
+  `previous_class_id` — the columns §29 provides for exactly that. The student is still enrolled.
+
+The second is taken, and it is the safer one if wrong: a school is over-counted, not under-charged.
+**The consequence is recorded rather than hidden:** `promoted`, `graduated` and `inactive` are values
+this module never writes, so `GET /students?status=promoted` is a filter that will always return an
+empty page. The alternative — writing `promoted` and widening `HEADCOUNT_SOURCES` to count
+`active + promoted` — is a one-line change and remains open if a later reading of §15 prefers it.
+
+### FR-STUDENT-001's "System assigns a Student ID and Roll Number"
+
+Both are assigned when the caller omits them, and both are still *accepted*, because a school with an
+existing scheme must be able to keep it. The prefix is **not invented**: `schools.code` is documented
+as "also used as the student-ID prefix" (`src/models/core.js:145`), so the generated form is
+`<school code>-<year>-<sequence>`. Roll numbers are the next free number within school + class +
+section, and are **re-allocated on promotion** rather than carried across — see §5a defect 28.
+
+Both allocations run inside the create transaction with a locking read, and the sequence maximum is
+computed **numerically in JS** rather than by `ORDER BY student_id DESC` — a column sort here is
+lexicographic and wrong in two separate ways (§5a defect 26).
+
+### Verification — `scripts/verify-students.js`, 111 checks, 0 fail
+
+Fixtures: one organization, **four** schools, three plans. School A is on a plan with the Students
+module and `student_limit: 2`; B is on a plan without the module; C has no subscription at all; D is
+on a roomy plan with its own classes and sections. That shape exists for three reasons — B and C prove
+the two refusals are distinct (`MODULE_NOT_SUBSCRIBED` vs `SUBSCRIPTION_INACTIVE`, which is **402**);
+D clears the entitlement guard so a cross-school 404 is isolation rather than entitlement refusing
+first; and D has the headroom the allocator and promotion tests need, because school A is at its
+ceiling by the time they run.
+
+**Ordering inside this suite is load-bearing and was got wrong first.** `enforceLimit` sits after
+`validate()` but before the controller, so at the ceiling every *service*-level negative test comes
+back `403 PLAN_LIMIT_EXCEEDED` instead of the code it names — four assertions were passing-looking and
+reaching nothing. They now run while school A still has capacity. This is worth carrying into every
+later §15 module.
+
+The ceiling is proven as a cycle: two admissions, the third refused, the mirror read back at 2, a
+transfer (mirror → 1), a leaving (mirror → 0), then a fresh admission into the freed allowance — and
+the promotion in the middle asserted **not** to move the figure, which is what makes the status
+decision above verifiable rather than merely stated.
+
+---
+
+## 2m. Phase 3.J (third module) — Parents, SRS §15.2 ✅ Complete and verified
+
+**FR-PARENT-001 (parent account & multiple-children linking) and FR-PARENT-002 (parent dashboard).**
+Eight endpoints, no new table.
+
+### What makes it different from its two siblings
+
+**It creates a `users` row.** `parents.user_id` is **NOT NULL**, where `teachers.user_id` and
+`students.user_id` are nullable — so those modules *accept* an optional link to an account someone
+else made, and a parent row simply cannot exist without one. FR-PARENT-001 says so directly: "System
+creates a Parent Account". `POST /parents` therefore writes the account, the profile and any children
+named in the same request **inside one transaction**, then issues the verification email.
+
+Only `principals/` had done this before, and this module follows it deliberately rather than
+inventing a second way: the same `hashPassword`, the same `must_change_password: true`, the same
+`authService.sendVerificationEmail()` afterwards, and the same decision that a **mail failure is not
+fatal** — the account and its token columns already exist, so failing the request would leave a
+created parent behind a 500 with no way to say which. The response carries `verificationEmailSent`.
+
+The unique-violation mapping is `usersService.rethrowUniqueViolation`, the mapper `principals/` uses,
+rather than a second copy of `EMAIL_TAKEN` / `USERNAME_TAKEN` free to drift from the §33 Users screen.
+
+### `user_id` is `forbidden()` here and accepted there
+
+Naming an account would be a second route to a NOT NULL column with different guarantees behind it.
+The account's `email`, `username` and `password` are likewise refused on `PATCH`: `users` is owned by
+§33's screen, and a second write path to the sign-in identifier is a second place uniqueness and
+lower-casing have to hold. `parents.email` — a contact column on the *profile* — is separate from
+`users.email` and is editable, which is why the create schema calls it `contact_email`.
+
+### The join table, and the trap it would have walked into
+
+`parent_students` carries `school_id` and **no `organization_id`** — like `class_subjects` and
+`teacher_subjects`, and unlike every other table this phase touches. `tenantWhere()` is model-agnostic
+and writes `organization_id` for a caller with an organization but no school in scope, which MariaDB
+answers with a 500. That is §5a defect 16, which has shipped **twice**. This module never uses
+`tenantWhere()` on the join table: `childScope(parent, where)` scopes by the already-tenant-verified
+parent, and the branch is asserted against the service directly, because no seeded role both resolves
+to an organization-without-school tenant and holds `parents.view` — which is precisely why the same
+defect got through twice before.
+
+### One account per parent, enforced by the database
+
+`parents_user_unique` is a real unique index on `user_id` — the only one of the three people tables
+that has it. `teachers/` and `students/` had to enforce the same rule in their services because their
+indexes are plain (§5a defects 23 and 29); here the constraint is *mapped* rather than duplicated,
+since a pre-check alone would still race and the index cannot.
+
+**No `enforceLimit`, and that is checked rather than assumed.** SRS §11.2's eight limits contain no
+parent limit, and a parent account is not in `SCHOOL_ADMIN_ROLES`, so it consumes no `admin_limit`
+either. Asserted, so a later reader does not "fix" it.
+
+### Verification — `scripts/verify-parents.js`, 112 checks, 0 fail
+
+Four schools and two plans differing only in whether the Parent Portal module is enabled, so a refusal
+can only be about the module under test. The assertions worth naming:
+
+- **A failed create leaves no orphan account — and the assertion that proves it had to be rebuilt.**
+  The first version rested on three negatives that all failed at or *before* the first statement in
+  the transaction: the two duplicate-account cases throw on `db.User.create` itself, and the
+  cross-school child is rejected before the transaction even opens. None of them could prove the
+  transaction spanned the later writes — removing `{ transaction: t }` from the parent insert and the
+  child loop left all of them green. The suite now also names the **same child twice**, which passes
+  both pre-checks, commits the user and the parent, and then violates `parent_students_unique` on the
+  second link — and it counts **both** tables afterwards. Regressing the parent insert out of the
+  transaction now fails the run.
+- **The created account really works.** The suite signs in as the new parent, asserts it is told to
+  change its password first (§9.3), performs the forced change, and only then reads the dashboard —
+  so the account, the flag and the dashboard are proven end to end rather than inferred from a row.
+- **A child can have two parents**, which is the point of a join table: `GET /parents?student_id=`
+  returns both.
+- **The audit never carries the password hash**, asserted positively rather than assumed from the
+  field list.
+- **Deactivation actually revokes.** `PATCH { is_active: false }` disables the account, the dashboard
+  stops answering, and the parent can no longer sign in at all — then reactivation restores each. See
+  §5a defect 31 for why that needed fixing.
+- **A parent cannot read the path-id routes.** The module's whole safety argument is that
+  `parents.dashboard.view` is a key every parent holds, so `GET /parents`, `GET /parents/:id` and
+  `GET /parents/:id/children` must be closed to them. A parent token had only ever been sent to
+  `/dashboard`; all three are now asserted at 403.
+- **`PATCH` is exercised over HTTP**, including the `contact_email` → `parents.email` remap, the
+  empty-body refusal, the three forbidden account fields and the cross-school 404. Until that block
+  existed, one of the four write routes had no runtime coverage at all.
+
+---
+
+## 2n. Phase 3.J (fourth module) — Staff, SRS §15.4 ✅ Complete and verified — **§15 is closed**
+
+**FR-STAFF-001.** Four endpoints, no new table, and deliberately the least interesting module in the
+phase: `teachers/` is the worked example and this follows it rather than finding a new shape.
+
+| SRS | FR | Route | Permission |
+|---|---|---|---|
+| §15.4 | FR-STAFF-001 | `GET /`, `GET /:id` | `staff.view` |
+| §15.4 | FR-STAFF-001 | `POST /` (+ `enforceLimit`), `PATCH /:id` | `staff.manage` |
+
+### What §15.4 does *not* name, and is therefore absent
+
+FR-STAFF-001 says only "creates/manages staff records under the categories Receptionist, Accountant,
+Librarian, and Other Staff". So there is **no dashboard** — §15.3 and §15.2 each name one and §15.4
+does not — **no lifecycle operations**, which §15.1 has, and **no DELETE**. All three absences are
+asserted rather than left to be noticed, because "the sibling module has one" is exactly the reasoning
+that would invent them.
+
+The four categories come from the `staff.category` enum via `STAFF_CATEGORIES`, and the suite asserts
+that the constant and the model's enum are **the same list** — so a fifth category cannot be
+introduced in one place and missed in the other.
+
+### The one place it deliberately differs from `teachers/`
+
+It carries the **re-activation ceiling from the start**. `staff_limit` counts `is_active: true`, and
+`enforceLimit` is a route guard mounted on `POST /` — so a `PATCH` flipping the flag back is a limit
+event the guard cannot see. `teachers/` shipped without that check and it became §5a defect 21, found
+only by audit. Here `staff.service.update()` asserts the ceiling on the transition, and the suite
+proves it as a full cycle: create to the ceiling, refuse the third, deactivate one, reuse the freed
+allowance, then **fail to re-activate** — with the mirror read back at each step.
+
+That is the payoff of writing the smallest module last: the **five** defects `teachers/` had to be
+fixed for (§5a 21–25) were all avoidable here by construction, and the audit confirmed that every one
+of the five fixes is carried and none was reintroduced.
+
+### Verification — `scripts/verify-staff.js`, 86 checks, 0 fail
+
+Four schools and two plans differing only in whether the Staff module is enabled — the same shape the
+three sibling suites use, for the same three reasons (distinguishing `MODULE_NOT_SUBSCRIBED` from
+`SUBSCRIPTION_INACTIVE`, giving a cross-school 404 something that clears the guard, and leaving
+headroom where school A is at its ceiling).
+
+**It was green on its first run**, which §8 treats as a warning rather than a result — and the audit
+that followed justified the suspicion. The module itself was clean: all five `teachers/` fixes are
+carried and none was reintroduced. **The suite was not.** Four of its assertions could not fail, and
+closing them took it from 74 to 86 — see §5a session 16, fifth part.
+
+Two regressions confirm the two that matter most. Removing the `assertWithinLimit` call turns four
+checks red with exactly the predicted values — a 200 where a 403 belongs, and a headcount of 3 against
+a limit of 2. Removing `tenantWhere` from `list()` now fails three more, showing every school's staff
+in every caller's list; before the fixture gained a row outside school A, that same edit left the suite
+entirely green.
+
+---
+
+## 2o. Phase 3.K — Attendance, SRS §16 ✅ Complete and verified — **§16 is closed**
+
+**FR-ATT-001 (mark students), FR-ATT-002 (reports), FR-ATT-003 (teacher attendance).** Five endpoints,
+two tables, no new table.
+
+| SRS | FR | Route | Permission |
+|---|---|---|---|
+| §16 | FR-ATT-001 | `POST /attendance/students` | `attendance.mark` |
+| §16 | FR-ATT-001 | `GET /attendance/students` | `attendance.view` |
+| §16 | FR-ATT-002 | `GET /attendance/students/report` | `attendance.view` |
+| §16 | FR-ATT-003 | `POST /attendance/teachers` | `attendance.teacher.mark` |
+| §16 | FR-ATT-003 | `GET /attendance/teachers` | `attendance.teacher.view` |
+
+### The first module that consumes rather than creates
+
+Every Phase 3.J module owned its own table. This one writes two tables whose rows reference
+`students`, `teachers` and `classes`, so most of its correctness is in *checking what it is given* —
+a child must belong to the school **and** to the class and section being marked, proved in one query
+per request rather than one per entry.
+
+Both `student_attendance` and `teacher_attendance` carry `organization_id` as well as `school_id`,
+checked against the model rather than assumed, so `tenantWhere()` is safe here and the trap that has
+shipped twice (§5a defect 16) does not apply.
+
+### Marking is an upsert, and the index is the whole mechanism
+
+`student_attendance_student_date_unique (student_id, attendance_date)` and
+`teacher_attendance_teacher_date_unique (teacher_id, attendance_date)` both cover **NOT NULL** column
+pairs — so unlike `class_subjects` (§5a defect 19) there is no NULL-distinct hole, and
+`bulkCreate({ updateOnDuplicate })` makes re-marking a register a **correction** rather than a
+duplication. That is what a teacher fixing a mistake expects, and it is why there is no `PATCH` and no
+`DELETE`: re-posting the register is the edit operation §16 describes.
+
+### One ambiguity named, and one grant narrower than its FR
+
+**§16 lists "Percentage" among the reports and defines no formula.** The reading taken is
+`(present + late) ÷ marked`:
+
+- `late` counts as attendance — the child was there.
+- `leave` counts in the **denominator** but not the numerator: it is a marked day the child did not
+  attend. Excluding it from both would flatter a school that grants a lot of leave, which is the less
+  safe direction to be wrong in.
+- A day with no row is counted neither way — the module cannot tell a holiday from an oversight.
+
+Every raw count is returned beside the percentage, so a consumer preferring another definition can
+compute it without this module guessing twice. A period with no register reports `percentage: null`
+rather than `0`, because an unmarked period is *unknown*, not catastrophic.
+
+**FR-ATT-003 lists Teacher among its actors; the seeded catalogue does not.** The `teacher` role holds
+neither `attendance.teacher.mark` nor `attendance.teacher.view` — only `attendance.self.view`. The
+seeded grants are taken as authoritative, because they are part of the §29-fixed 109 and because they
+are the safer reading: letting every teacher record the whole staff's attendance is wider than §16
+anywhere asks for, and widening it would mean editing the seeded catalogue on an inference. Asserted
+over HTTP, so the narrowness is recorded rather than discovered.
+
+`attendance.self.view` has **no endpoint** — §16 names no self-service view, exactly as
+`students.self.view` was left in §15.
+
+### Why there is no per-row audit, and that is a decision
+
+`student_attendance` carries `marked_by` and `marked_at` **on the row** — the schema gives this table
+its own provenance, which no other table in the project does. A per-child `audit_logs` entry would
+duplicate that at roughly two hundred times the volume (one per child, per day, per year). The batch
+is recorded once in the activity trail instead, naming the class, section, date and count. The suite
+asserts **both** halves: that the activity rows exist, and that `audit_logs` holds nothing for either
+table — so the absence reads as the decision it is.
+
+### Verification — `scripts/verify-attendance.js`, 79 checks, 0 fail
+
+Four things this suite does from the start that the four §15 suites each had to be *corrected* to do,
+because their audits found each one passing while proving nothing: rows exist outside school A so
+tenant scoping has a counter-example to find; an organization-scoped fixture exists so
+`tenantWhere`'s `organization_id` branch actually runs; the status list is asserted schema-against-model
+rather than constant-against-itself; and the entitlement-limit check inspects the router rather than a
+constant.
+
+The percentages are asserted against **hand-computed** figures — 75% for the day, 80% for the year —
+rather than against whatever the code returned, which for a formula the source does not define is the
+only way the assertion means anything.
+
+One surprising interaction is asserted because it is surprising: an organization admin naming **no**
+school gets `400 SCHOOL_CONTEXT_REQUIRED` from `requireModule`, not a permission or isolation error —
+two schools in one organization can be on different plans, so `resolveGatedSchoolId` refuses rather
+than guessing which entitlement applies.
+
+---
+
+## 2p. Phase 3.L — Fee Management, SRS §17 ✅ Complete and verified — **§17 is closed**
+
+Two requirements, read off `docs/SRS-extracted.md:902-930`. **FR-FEE-001** — the school defines a fee
+structure comprising Monthly, Admission, Exam and Transport fees, and *may configure* a Fine and a
+Discount; actor Principal / School Admin / **Accountant**; precondition "Academic session/class exists";
+outcome "Fee Structure is available for **assignment** to students". **FR-FEE-002** — the school records
+a payment, **in full or as a Partial Payment**; the system tracks the Pending Fee balance and generates
+a Payment Receipt; actor **Accountant / Receptionist**; precondition "Fee Structure **is assigned** to
+the student".
+
+This is the first **school-side** module that moves money. It reuses §13's `utils/money.js` and
+`utils/documentNumber.js` rather than growing a second arithmetic beside them.
+
+### The eight endpoints
+
+| Route | Permission | Requirement |
+|---|---|---|
+| `GET /api/v1/fees/structures` | `fees.view` | FR-FEE-001 |
+| `POST /api/v1/fees/structures` | `fees.manage` | FR-FEE-001 |
+| `GET /api/v1/fees/structures/:id` | `fees.view` | FR-FEE-001 |
+| `PATCH /api/v1/fees/structures/:id` | `fees.manage` | FR-FEE-001 |
+| `POST /api/v1/fees/assignments` | `fees.manage` | the bridge both FRs name |
+| `GET /api/v1/fees/ledger` | `fees.view` | FR-FEE-002 |
+| `POST /api/v1/fees/payments` | `fees.collect` | FR-FEE-002 |
+| `GET /api/v1/fees/payments` | `fees.view` | FR-FEE-002 |
+
+`requireModule(MODULES.FEES)` is mounted router-level. **No `enforceLimit`** — §11.2's eight limits
+contain nothing fee-shaped, and neither a structure nor a ledger row is a headcount. Asserted against
+the router, not against a constant.
+
+### Why `/assignments` exists, and why it is `fees.manage`
+
+FR-FEE-001's outcome names *assignment* and FR-FEE-002's precondition names *is assigned*. The source
+names the operation at both ends without giving it its own FR, so it is the bridge between the two
+rather than an invention — without it FR-FEE-002 has no precondition it could ever satisfy. It carries
+`fees.manage` because deciding what a family owes is the FR-FEE-001 half: a Receptionist may take money
+against a fee, and may not create one. That split is asserted on both paths.
+
+### The ledger arithmetic, stated once
+
+    net_amount     = amount − discount_amount + fine_amount        (clamped at 0)
+    paid_amount    = Σ(fee_payments.amount) for this student_fee
+    pending_amount = max(0, net_amount − paid_amount)
+
+Every figure runs through `utils/money.js` and every comparison is made in integer minor units. The
+suite asserts `netOf(0.1, 0, 0.2) === 0.3` and the same case end-to-end over HTTP, which is the
+assertion that fails if someone replaces the helpers with `+` and `-`.
+
+**The balance is recomputed, never incremented.** `applyPayment()` re-derives `paid_amount` from a SUM
+over the fee's payments inside the payment's own transaction, behind a `LOCK.UPDATE` read on the
+`student_fees` row — the shape `invoices.applyPayment()` uses, for the same reason: two receptionists
+at one counter would otherwise both read the same pending figure and one payment would vanish. Proved
+by deliberate regression — replacing the SUM with an increment fails 15 assertions.
+
+An overpayment settles the fee and clamps the balance at zero rather than going negative, which is the
+reading `invoices` already takes. Asserted explicitly so it reads as a decision.
+
+### What §17 does not name, and is therefore not built
+
+- **No automatic fine accrual.** `fine_type` includes `per_day`, but §17 says only that a user *may
+  configure* a Fine and describes no clock-driven process that grows one. A fine is configured on the
+  structure and, if it applies, set explicitly on the assignment. When the policy is specified the
+  accrual belongs in the Phase 5 scheduler beside `invoices.markOverdue()`.
+- **No waiver.** `student_fees.status` carries `waived` and the two columns to go with it, and §17 names
+  no waiving operation. Left unwritten rather than guessed at. `pay()` refuses a waived fee, so the
+  status is honoured where it would otherwise be silently ignored.
+- **No DELETE, on any of the three tables.** Deleting a `fee_payments` row would erase a receipt already
+  handed to a parent and silently raise the balance again; deleting a `student_fees` row cascades into
+  its payments. A component no longer charged is retired with `is_active: false`.
+- **`fees.self.view` has no endpoint** — §17 names no self-service view, the same treatment
+  `students.self.view` and `attendance.self.view` already have.
+
+### Two decisions a reader would otherwise have to take on trust
+
+**`fee_payments.discount_given` is recorded and inert.** It lands on the receipt and moves nothing.
+§17 puts the Discount on the fee *structure*; letting a collector knock money off at the counter would
+be a second, undocumented discount mechanism that silently settles a fee nobody paid. The balance moves
+only on `fee_payments.amount`. Asserted, so the inertness is on the record rather than looking like an
+oversight.
+
+**Editing a structure does not re-price a fee already assigned.** A `student_fees` row is what a family
+was told they owe; the catalogue changing afterwards must not rewrite a bill already issued. Asserted by
+re-pricing the monthly structure from 1000 to 1500 and checking the assigned fee still reads 950.
+
+### The receipt series is per school
+
+`fee_payments`' unique index is `(school_id, receipt_number)` — unlike the four billing columns, which
+are unique table-wide. `documentNumber.nextNumber()` therefore grew an optional `scope` parameter, and
+`pay()` passes `{ school_id }`. Unscoped it would still have been *correct* (a globally rising number
+satisfies a per-school index trivially), but each school's receipt series would carry the gaps left by
+every other school's collections — wrong on a printed receipt and a disclosure of other tenants'
+transaction volume. Asserted by giving two schools a payment in the same month and checking both get
+`RCP-202505-00001`; deliberate regression turns the second into `RCP-202505-00006`.
+
+The retry passes `withRetry` the **index** name, not the column. `isDuplicateNumber()` substring-matches
+what MySQL reports, which is the index, and billing gets away with `'invoice_number'` only because its
+indexes are auto-named after their column. `fee_payments_school_receipt_unique` does not contain the
+string `receipt_number`, so passing the column would have silently disabled the retry — the §5a
+substring trap from the parents module, pointing the other way. Both directions are asserted.
+
+### Verification — `scripts/verify-fees.js`, 161 checks, 0 fail
+
+Three parts: the schemas and the pure ledger arithmetic, the route table and the router-level guard,
+then real HTTP against the real database. Every arithmetic expectation is a **hand-computed** figure,
+never a re-derivation of the implementation's own answer.
+
+Four audit lessons carried in from the start: rows exist outside school A (school D keeps its own
+structures, fees and payments) so every scoping assertion has a counter-example; an organization-scoped
+fixture exists so `tenantWhere`'s second branch runs; every enum is asserted schema-against-**model**
+(`db.FeeStructure.rawAttributes.component.values`), never constant-against-itself; and **both**
+`DATEONLY` columns — `due_date` and `period_month` — are round-tripped at a flipped `process.env.TZ`
+and re-read off the raw row.
+
+Five assertions were corrected on the first run, all of them my expectation being wrong about the
+codebase rather than a code defect, and each replaced with what is actually true: a DECIMAL crosses the
+wire as a **number** because `config/database.js:59` sets `decimalNumbers: true` (I had written that it
+arrives as a fixed-2 string); a `create()` response omits a nullable column the caller never set, so
+"applies school-wide" is asserted on a read-back; the missing-permission code is
+`INSUFFICIENT_PERMISSION`; and a principal naming another school's `school_id` is stopped by the tenant
+chain with `CROSS_TENANT_ACCESS_DENIED` **before** `resolveSchool()` runs — which is a stronger fact
+than the one I assumed, since it means the guard survives a service that forgot to call it.
+
+---
+
+## 2q. Phase 3.M — Finance Management, SRS §18 ✅ Complete and verified — **§18 is closed**
+
+Three requirements, read off `docs/SRS-extracted.md:934-966`. **FR-FIN-001** — the school records
+Income and Expenses, *"including Salaries and Other Expenses"*; actor Accountant / Principal / School
+Admin. **FR-FIN-002** — the system computes Net Balance as Income minus Expense; actor literally
+**"System"**, outcome *"Net Balance is displayed on the finance dashboard"*. **FR-FIN-003** — the system
+generates Financial Reports *"based on recorded Income and Expenses"*.
+
+§18 is unusual in stating its own arithmetic outright — `Income − Expense = Net Balance` — and in
+closing with *"No other financial functionality is documented in the source."*
+
+### The nine endpoints
+
+| Route | Permission | Requirement |
+|---|---|---|
+| `GET /api/v1/finance/report` | `finance.view` | FR-FIN-002 + FR-FIN-003 |
+| `GET /api/v1/finance/incomes` | `finance.view` | FR-FIN-001 |
+| `POST /api/v1/finance/incomes` | `finance.manage` | FR-FIN-001 |
+| `GET /api/v1/finance/incomes/:id` | `finance.view` | FR-FIN-001 |
+| `PATCH /api/v1/finance/incomes/:id` | `finance.manage` | FR-FIN-001 |
+| `GET /api/v1/finance/expenses` | `finance.view` | FR-FIN-001 |
+| `POST /api/v1/finance/expenses` | `finance.manage` | FR-FIN-001 |
+| `GET /api/v1/finance/expenses/:id` | `finance.view` | FR-FIN-001 |
+| `PATCH /api/v1/finance/expenses/:id` | `finance.manage` | FR-FIN-001 |
+
+`requireModule(MODULES.FINANCE)` router-level. **No `enforceLimit`** — §11.2 has nothing
+finance-shaped, asserted by reading the router's source rather than a handler name (see §5a).
+
+### Three design questions the source leaves open, and how each was settled
+
+Each was put to three independent reviews with different lenses — strict source fidelity, functional
+correctness, and what the fixed schema implies — before a line was written. All three agreed on the
+first two questions and split 2–1 on the third.
+
+**1. Does a fee collection post into `incomes`? No — unanimously.** The schema plainly anticipated it:
+`INCOME_CATEGORIES.FEES` exists, `incomes.student_id` exists, and `fee_payments.income_id` carries the
+comment *"Set when this collection has been posted to `incomes`, so it posts once."* But §18's
+behaviour is *"User records Income entries"* — a manual act by the actor it names — and FR-FIN-003 says
+*"based on **recorded** Income and Expenses"*. A report that quietly read `fee_payments` would
+double-count the moment anyone recorded that money by hand (neither table has a unique index), would
+couple `/finance` to the separately subscribable `MODULES.FEES`, and would cross a permission boundary
+— `fees.collect` reaches a Receptionist, `finance.manage` does not. **The consequence is real and is
+recorded rather than hidden**: a school that has collected tuition and paid salaries sees the salaries
+and not the tuition. The suite collects a real fee and asserts the net balance does not move and
+`income_id` stays NULL. Adding the posting step later is purely additive; a report that secretly read
+`fee_payments` would not be.
+
+What a human *can* do is record it: `POST /finance/incomes` accepts `category: 'fees'` and
+`student_id`, so those columns are filled by the actor FR-FIN-001 names rather than left dead.
+
+**2. What shape is a "Financial Report"? One endpoint, a window, no periods — unanimously.** The
+decisive fact came from outside §18: **SRS §22 is a separate "Reports" section** naming *"Expense
+Reports"* and *"Fee Reports"* among seven report types with PDF / Excel / Print export (FR-REPORT-001,
+FR-REPORT-002), and no module implements it yet. §16 named Daily / Monthly / Yearly and attendance
+offers exactly those three; §18 names no period at all, so a period enum here would transcribe another
+section's requirement and pre-empt §22. The report takes an optional `from`/`to` instead, which names
+no taxonomy and contains every period.
+
+`net_balance` is a **field on that report, not a route**. FR-FIN-002's actor is "System" — a
+computation, not a user operation — and `finance.view` is a single seeded key named *"View income,
+expenses & net balance"*, bundling all three read surfaces where §29/§30 fix them. It is the same
+shape FR-ATT-002's percentage takes on the attendance report.
+
+**3. Is there a correction path? Yes, PATCH — 2–1.** §18's only write verb is *"records"*, so an edit
+path is not spelled out. It is here because the schema supports it and the alternative is worse: both
+tables carry `updated_at`, neither is `paranoid` and neither has a `status`, `posted_at` or `voided_at`
+column marking a row immutable, and with no DELETE either a single mistyped amount would permanently
+corrupt the one figure FR-FIN-002 defines, with nothing able to correct it. Attendance needs no PATCH
+because re-posting a register *is* the correction; `fee_payments` has none because a receipt is money
+that changed hands and was handed to a parent. A finance entry is the school's own bookkeeping record,
+and every correction lands in `audit_logs` with the before/after. The dissenting lens argued that
+"records" licenses no edit at all; that reading is recorded here rather than discarded.
+
+### The aggregate, and the trap inside it
+
+The grouped sum is `findAll` + `fn('SUM', col('amount'))` + `group` + `raw: true`, the shape
+`attendance.report()` uses with COUNT swapped for SUM. It is **not** `Model.sum('amount', {group})`:
+that call silently returns only the **first group's** number. Verified against this database — three
+expenses (salaries 100, salaries 50, other_expenses 25) return `150` from `Model.sum` with a group and
+the correct two-row breakdown from `findAll`. A plausible figure that is wrong is the worst possible
+result for a financial report, so the suite pins it beside the service's own aggregate.
+
+`raw: true` is safe here only because the selection is `category`, `currency` and the SUM alias. Both
+tables carry a `metadata` JSON column, which under `raw: true` would come back a string (§8).
+
+### Currency, and two small decisions
+
+`school_settings.currency` (§14.1) says a school has one currency, but every row carries its own and
+`SUM(amount)` would add pesos to dollars. The aggregate groups by currency as well as category, and a
+window holding more than one currency with no filter named is **refused** with a 422 listing what it
+found. A single net balance across two currencies is not a number that means anything, and this
+codebase fails closed rather than emit a plausible wrong answer — the instinct that makes
+`tenantWhere()` throw rather than build an unscoped query.
+
+`net_balance` is **0** over an empty window, not `null`: attendance returns `null` for its percentage
+because a ratio over zero marks is *undefined*, whereas a balance over zero transactions is defined and
+is zero. And it is **never** `clampNonNegative`'d — a school that overspent has a deficit, and
+reporting it as 0.00 would hide exactly the thing the figure exists to show.
+
+### Verification — `scripts/verify-finance.js`, 163 checks, 0 fail
+
+Every arithmetic expectation is **hand-computed**: income 1000.00 + 250.50 + 500.25 = 1750.75, expense
+800.00 + 200.00 + 150.75 = 1150.75, net balance exactly 600.00.
+
+The window's inclusivity is tested by landing the bounds **exactly on two existing rows** rather than by
+adding new ones — the 1000.00 income of 05-10 sits on `from`, the 200.00 salary of 05-25 sits on `to`.
+Making the bounds exclusive turns those figures into 250.50 and 800.00, which is asserted by deliberate
+regression. The first version of that test put every row strictly inside the window and would have
+stayed green either way.
+
+Also asserted: the `Model.sum` trap; that a real fee collection moves the net balance by exactly zero
+and leaves `income_id` NULL; that a deficit reports negative; that a transposed window is refused
+rather than answered with a confident `0.00`; that an amount finer than the column scale is rounded so
+the response, the row and the report are one figure; that both PATCH routes require `finance.manage`;
+and all three `DATEONLY` columns — `expense_date`, `salary_month`, `income_date` — round-tripped at a
+flipped `process.env.TZ` and re-read off the raw row.
+
+Five expectations were corrected on the first run, all of them mine being wrong about the codebase
+rather than code defects, and each replaced with what is actually true: a DECIMAL crosses the wire as a
+**number** (`config/database.js:59` sets `decimalNumbers: true`); a `create()` response omits a nullable
+column the caller never set, so "applies school-wide" is asserted on a read-back; the missing-permission
+code is `INSUFFICIENT_PERMISSION`; and a principal naming another school's `school_id` is stopped by the
+tenant chain with `CROSS_TENANT_ACCESS_DENIED` **before** `resolveSchool()` runs.
+
+---
+
+## 2r. Phase 3.N — Examinations & Results, SRS §19 ✅ Complete and verified — **§19.1–19.3 closed, FR-EXAM-005 delivered in half**
+
+Five requirements over five tables — `grades`, `exams`, `exam_subjects`, `marks`, `results` — in **one**
+module, `src/modules/exams/`, mounted at `/api/v1/exams` (index 32, `/api/v1` is now 33 layers).
+
+The module-shape rule this settles, because it was decided by evidence rather than habit: **one router per
+subscribable `MODULES` key, not one per SRS section.** §14 became four routers and §15 four more because
+§11.1 defines four keys for each; §16 is a single module despite two tables and a five-way permission seam,
+because there is one `ATTENDANCE` key. §19 has one key, so it is one module. A permission seam is not a
+module boundary.
+
+### The nineteen endpoints
+
+| FR | Route | Permission |
+|---|---|---|
+| 001 | `GET/POST /grade-scales`, `PATCH /grade-scales/:id` | `exams.view` / `exams.manage` |
+| 001 | `GET/POST /`, `GET/PATCH /:id` | `exams.view` / `exams.manage` |
+| 001 | `GET/POST /:id/subjects`, `PATCH /:id/subjects/:examSubjectId` | `exams.view` / `exams.manage` |
+| 002 | `GET /marks`, `POST /marks`, `POST /marks/submit` | `exams.view` / `marks.enter` |
+| 004 | `GET /results`, `GET /results/:id`, `GET /:id/results` | `results.view` |
+| 004 | `POST /:id/results`, `POST /:id/publish` | `results.generate` |
+| 005 | `GET /my-results` | `results.self.view` |
+
+`requireModule(MODULES.EXAMS)` router-level; **no `enforceLimit`** (§11.2 has nothing exam-shaped).
+Every literal path is declared before the `/:id` family — load-bearing, because `GET /marks` and `GET /:id`
+both match `/marks` and Express takes the first.
+
+### FR-EXAM-003 — the calculation, stated once
+
+    subject_full     = full_marks + (practical_full_marks ?? 0)
+    subject_obtained = is_absent ? 0 : (marks_obtained ?? 0) + (practical_marks_obtained ?? 0)
+    percentage       = round3(Σ obtained ÷ Σ full × 100)          over SUBMITTED papers only
+
+`recalculate()` is the only writer of every calculated column, requires a transaction, re-derives from the
+exam's own rows and never increments — the shape `invoices.applyPayment()` and `fees.applyPayment()` use.
+Arithmetic runs in integer hundredths; only the percentage needs three decimals, which `round3()` does.
+
+Three readings §19 leaves open, each decided and each asserted:
+
+- **Weighting is not applied.** `exam_subjects.weightage` exists and is commented as an aggregation weight,
+  but §19 names Total, Percentage, Grade and Pass/Fail and never mentions weighting. The column is
+  `forbidden()` in both request schemas — refused, not stripped, because a stripped key answers 200 having
+  changed nothing — so it holds its default of 1 for every exam this system can create.
+- **Practical marks are aggregated, on both sides.** The line against weightage is that weighting changes
+  the *formula*; a practical paper is simply more marks. Including the numerator without the denominator
+  would let a percentage exceed 100, which no band can match — so both halves, or neither. Both.
+- **Pass/Fail is conjunctive, and any failing signal wins**: fail if any paper failed, else fail if the
+  matched band is `is_failing`, else pass. That resolves the case the source leaves open — a student who
+  passes every paper and lands in a failing band fails, because `grades.is_failing`'s own column comment
+  states that rule unconditionally and cites §19.2.
+
+### Two completeness rules, at opposite ends
+
+A paper cannot be **submitted** while any student in the cohort lacks a row on it, and an **entry** must
+record a mark or an absence. Together they stop a forgotten mark and a deliberate absence reaching the
+calculation as the same thing — a forgotten row would quietly shrink a denominator and improve a
+percentage.
+
+At the other end, a student with **no** mark on any counted paper gets no result row, and a student with
+**fewer marks than there are papers** is calculated but not ranked and not published. That one test —
+`subjects_count === papers.length` — covers three ways a row drifts out of a cohort, all reachable and none
+caught by a status filter: a child who transferred out mid-exam, a child who was promoted or moved section
+(`students.promote()` leaves `status` untouched), and a child who enrolled after a paper was submitted.
+
+### FR-EXAM-004 — Position
+
+Ranked on the **stored** `percentage` compared in integer thousandths, so two cards printing 87.500 cannot
+print different places. Ties share a position and the next skips (1, 2, 2, 4, 5). The population is the
+exam's own — `exams.section_id` set means one section sat it, null means the whole class — so
+`results.class_id`/`section_id`, which are per-student copies, are for filtering and never for partitioning
+the ranking.
+
+### FR-EXAM-005 — delivered in half, and the half is named
+
+**The Result Card payload is produced; no PDF is rendered.** `results.result_card_path` stays NULL and is
+`forbidden()` in every schema. This is a deferral, recorded rather than disguised, and the checklist marks
+FR-EXAM-005 **In Progress**, not Completed.
+
+Rendering would mean building three things this codebase does not have, inside one feature module: a
+document generator (`pdfkit` is installed and imported nowhere), somewhere to put the bytes (a seventh
+upload profile, where six exist and adding one is a recorded constraint), and a way to serve them — there is
+**no** `res.download`, `res.sendFile`, `express.static` or streamed response anywhere in the application,
+verified by search. It would also make this the first production writer of stored bytes, which
+`LIMITS.STORAGE_LIMIT` is specified for and nothing yet enforces. And §22 is a separate Reports section that
+owns PDF/Excel/Print for seven report types including Exam Reports.
+
+The test of whether that is honest rather than convenient: a renderer must draw the card from **one**
+response with no follow-up call. `resultCard()` is written to that standard, and `GET /my-results` reaches
+FR-EXAM-005's Parent and Student actors — the one self-service view §19 actually names, unlike §16 and §17
+where `.self.view` was left unmounted because those sections describe none.
+
+### The Teacher actor mismatch, recorded rather than resolved
+
+FR-EXAM-001 and FR-EXAM-004 name **Teacher**; the seeded catalogue gives the role `exams.view`,
+`marks.enter` and `results.view` and withholds `exams.manage` and `results.generate`. The catalogue is taken
+as authoritative — the same reading §16 reached for FR-ATT-003 — because widening a grant means editing one
+of the 109 fixed permissions on an inference, and because `marks.enter` is exactly FR-EXAM-002's actor list,
+the part of §19 that names a teacher alone.
+
+### Verification — `scripts/verify-exams.js`, 206 checks, 0 fail
+
+The fixture ledger is hand-computed and every branch of the calculation is reached by it: two papers give
+every student a denominator of 100 + (70 + 30) = 200, **Bilal and Dara tie** at 70.000 so they share place 2
+and place 3 is skipped, **Elif clears every bar exactly** (40 ≥ 40, 28 ≥ 28, 12 ≥ 12) and still fails on the
+band, and **Chidi is absent** for one paper which still counts 100 against him.
+
+Seven fixes were proved by deliberate regression — the departure case, publication of unranked rows, the
+published-exam guard, silent entries, re-pricing a paper under existing marks, the band boundary, and
+`result_card_path` — each reverted in turn and each failing the assertion written for it.
+
+---
+
+## 2s. Phase 3.O — Timetable, SRS §20.1 ✅ Complete and verified — **§20.1 is closed**
+
+Two requirements over one table. `src/modules/timetable/` mounted at `/api/v1/timetable` (index 33,
+`/api/v1` is now 34 layers), six endpoints, `MODULES.TIMETABLE`, no `enforceLimit`.
+
+§20 as a whole is the largest section in the document — seven FRs across five sub-sections — and by the
+rule §19 settled (one router per subscribable `MODULES` key) it is **five modules**: `TIMETABLE`,
+`HOMEWORK`, `ASSIGNMENTS`, `LIBRARY`, and Documents under `CERTIFICATES`/`ID_CARDS`. This is the first.
+
+### The six endpoints
+
+| FR | Route | Permission |
+|---|---|---|
+| 001 | `GET /class/:classId` — the **Class Timetable** | `timetable.view` |
+| 001 | `GET /teacher/:teacherId` — the **Teacher Timetable** | `timetable.view` |
+| 001 | `GET /`, `GET /:id` | `timetable.view` |
+| 001 | `POST /` | `timetable.manage` |
+| 002 | `PATCH /:id` | `timetable.manage` |
+
+`timetable.manage` is granted to exactly Principal / School Admin / Super Admin — an exact match for
+FR-TT-001's actor list. `timetable.view` reaches almost everyone including Student and Parent, and there
+is **no `timetable.self.view` permission at all**, so unlike §19 there is nothing narrower to mount: a
+student reads their class's week through the same route everyone else uses.
+
+§20.1 names a Class Timetable and a Teacher Timetable as two things and §29 gives one table, so they are
+two views of the same rows — the same week asked two different questions. Both return **rows in week
+order**, not a grid: a grid is a shape §20.1 never names, and `day_of_week` is an ENUM declared
+Monday-first, which MySQL orders by declaration rather than alphabetically, so the week arrives as a
+week for free. Asserted, because alphabetical order would start on Friday.
+
+### FR-TT-002 — conflicts are prevented, not flagged
+
+FR-TT-002's outcome reads *"Conflicting timetable entries are flagged/prevented"* — one phrase for two
+different products. Implemented as **prevented**, with a 409 carrying the colliding row in `details` so
+a client can render it as a flag. The decisive argument is the schema's: **there is nowhere to store a
+flag** and §35 forbids adding a column, so "flagged" is not implementable while "prevented" is. Two
+supporting ones: the unique index already prevents one of the three named conflicts at the database
+level, so flagging the other two would refuse one clash and accept another in the same request; and
+failing closed is what `finance` already does rather than adding pesos to dollars.
+
+The three named conflicts, each with a **refusal and a near-miss** in the suite:
+
+- **Period** — a section cannot hold two entries in one `(day, period)`. The unique index does this
+  when the section is named; the service does it when it is not.
+- **Teacher** — only when `teacher_id` is set. Two entries that both name *no* teacher double-book
+  nobody and are allowed.
+- **Room** — only when `room` is a non-empty string. A different room in the same slot is allowed.
+
+**`is_break` needs no special case, and that is worth stating because it looks like it should.** A break
+carries a null `teacher_id`, so the teacher rule simply never fires for it, while it still occupies its
+section's slot — which is right, since a class cannot have a break and a lesson in period 3.
+
+**`period_number` is authoritative, not the clock.** All three of the schema's conflict indexes key on
+it and none keys on the times, so two rows sharing a period number with different times *are* a
+conflict and two rows overlapping in clock time under different period numbers are *not*. That is the
+schema's choice, and there is no `periods` table to make the numbering canonical.
+
+**The check ignores `is_active` and `academic_session_id`, deliberately, because the unique index
+does.** A service that allowed a second row for an inactive slot would be overruled by the database a
+moment later with a refusal it had just called fine. One rule governs and it is the index's. The
+consequence, stated plainly and asserted: **`is_active: false` does not free a slot.** A section's grid
+is one living plan rather than a per-session history — the index carries no session column — so
+rearranging it means editing the rows that are there. There is no DELETE, as §20.1 names none.
+
+### The NULL-permissive unique index — §5a defect 19's shape, third sighting
+
+`timetables_section_day_period_unique` is UNIQUE on `(section_id, day_of_week, period_number)` and
+`section_id` is **nullable**, so MySQL's NULL-is-distinct rule means the index does not constrain
+class-wide rows at all. A null section is taken to mean **the whole class sits this period** — the
+meaning `exams.section_id` documents for the identical column shape — and two consequences follow, both
+enforced and both asserted: two class-wide rows in one slot are a duplicate, and a class-wide row plus
+a section row of that class in the same slot double-books that section (tested in both orders).
+
+The alternative — requiring `section_id` on every entry, making the index fully effective and needing
+no guard — was rejected because `sections` is a separate table that may be empty: a school that has not
+divided its classes could then not build a timetable at all, and `class_id` is the NOT NULL column.
+
+### Two column facts, measured rather than assumed
+
+- **A `TIME` column does not round-trip.** Setting `'09:30'` returns `'09:30'` from the create response
+  and `'09:30:00'` on every later read — the same response-versus-row divergence as §5a defect 37, in a
+  different column type. Times are normalised to `HH:MM:SS` on write, and the suite asserts the
+  response and the stored row are the same string.
+- **MySQL accepts `24:00`.** `TIME` is a *duration* type with a ±838:59:59 range, so the column will
+  not refuse an out-of-clock time; the Joi pattern is the only guard. Its two-digit hour is
+  load-bearing twice over, because the model's `timeOrdered` validator compares the values as
+  **strings**.
+
+### Provenance — these three decisions were made solo
+
+§17, §18 and §19's open questions each went to three independent reviewers before any code was written.
+§20.1's three did not: the API returned `529 Overloaded` for **twenty-two consecutive agents across two
+attempts**, and blocking on a degraded service would have bought nothing. The reasoning is set out at
+the length a panel's would have been and each counterargument is named in the service header rather
+than omitted — but a later reader should know the provenance differs, and should treat these three as
+more likely to want revisiting than §17–§19's.
+
+### Verification — `scripts/verify-timetable.js`, 112 checks, 0 fail
+
+Every FR-TT-002 rule is tested twice — a counter-example that must be refused and a near-miss that must
+be allowed — because an assertion that only exercises the refusal proves the happy path and nothing
+else. Ten deliberate regressions were run and each failed the assertion written for it: removing the
+class-wide guard, making a class-wide row stop occupying its sections, disabling the teacher check,
+disabling the room check, treating a NULL teacher as a clash, dropping the self-exclusion on edit,
+removing TIME normalisation, unordering the week, and loosening the hour pattern.
+
+Two of the suite's own assertions were reported as **crashes rather than failures** on the first
+regression run, because they used the throwing `expectOk()` helper on a path a regression makes fail.
+Both were converted to plain calls with an explicit status assertion — a stack trace tells a reader
+less than a named claim, which is the §5a lesson applied to the suite rather than to the code.
+---
+
+## 2t. Phase 3.P — Homework, SRS §20.2 ✅ Complete and verified — **§20.2 is closed**
+
+One requirement, one table, four endpoints at `/api/v1/homework` (index 34; `/api/v1` is now 35 layers).
+FR-HW-001 names three things a teacher does — Create Homework, Upload File, Set Due Date — and all three
+are one request: the file arrives as multipart on the create.
+
+| FR | Route | Permission |
+|---|---|---|
+| HW-001 | `GET /` | `homework.view` |
+| HW-001 | `POST /` | `homework.manage` |
+| HW-001 | `GET /:id` | `homework.view` |
+| HW-001 | `PATCH /:id` | `homework.manage` |
+
+`requireModule(MODULES.HOMEWORK)` router-level; no `enforceLimit` (§11.2 has nothing homework-shaped).
+No DELETE — §20.2 names none, and `is_published: false` withdraws a piece of homework, which also removes
+it from every student's list because students are served published rows only.
+
+**The permissions match FR-HW-001 exactly, for once.** Its actor is Teacher, and `homework.manage`
+reaches Teacher, Principal, School Admin and Super Admin — a superset containing the named actor rather
+than excluding it. §16 and §19 both had to record a mismatch where the catalogue withheld a permission
+from an actor the FR named; §20.2 has none, and that is stated so the absence is not read as an oversight.
+
+### The first upload the application actually performs
+
+`middlewares/upload.js` has carried a `homework` profile since it was written — PDF/JPEG/PNG/WebP, one
+file, its own rules table citing *"§20.2 / FR-HW-001 — Upload File (format not specified)"* — and nothing
+had ever called it. The payment screenshot was the only upload in the whole application. So this module
+used the profile reserved for it rather than adding a seventh, and `verify-homework.js` posts **real**
+multipart bytes: the file lands on disk under `school-<id>/homework/<random>`, the row keeps the original
+filename, and a file type outside the allowlist is refused with 415.
+
+`relativeUploadPath()` moved out of `payments.service.js` into `middlewares/upload.js` for this. A
+school-side module reaching into a **billing service** for a path helper would be the wrong dependency,
+and the helper belongs beside `cleanupUploads()`, which every upload caller needs anyway. `payments`
+re-exports it, so nothing that already imported it had to change, and `verify-billing.js` stayed at
+216/216 through the move.
+
+**The stored path never reaches a caller.** `present()` reduces it to `attachment_name` and a
+`has_attachment` boolean — the shape `payments` uses for its screenshot, and for the same reason: a path
+in a response is a directory layout in a response. `attachment_path` and `attachment_name` are
+`forbidden()` in both schemas, refused rather than stripped.
+
+**What FR-HW-001 does not get:** there is no download route, because there is no file-serving anywhere in
+this application. §20.2's outcome is that the homework is "available to the relevant class/students", and
+it is — title, description, due date and the attached file's name. The bytes are not yet retrievable.
+That is the same deferral FR-EXAM-005 took, and it is now two requirements deep: §20.5's FR-DOC-001 is
+where the shared plumbing has to be built, together with Known Issues #26.
+
+### Who sees which homework, and why the service has to decide
+
+The seeded catalogue gives `homework.view` to staff **and** to students and parents, and there is no
+`homework.self.view` to tell them apart — unlike §19, where `results.self.view` exists and carries its own
+endpoint. So the narrowing lives in the service: a student sees their own class's published homework, a
+parent sees their children's, and everyone else sees the school's.
+
+Without it a student holding the same key as a teacher would list every class in the school. §20.2's
+outcome names "the relevant class/students", which is the sentence this implements; the alternative is not
+a narrower reading of the requirement but a disclosure the requirement never asks for.
+
+The narrowing holds on a **read by id** as well as on the list. A narrowing that applied only to the list
+would be a courtesy any caller could step around by guessing an id — and the suite proves it by trying.
+
+Both profiles are consulted rather than the first one found, because one account can be both a student and
+a parent; resolving only the student half would silently hide their children's homework. That was a real
+defect in §19's `myResults()` (§5a session 19), and the fixture here makes the two audiences see
+**different** classes so a test cannot pass by conflating them.
+
+**An Organization Admin can read no homework at all.** The role holds `timetable.view` but no homework key
+whatsoever, so it is refused with `INSUFFICIENT_PERMISSION` even when naming a school. That is the
+opposite of §17, §18 and §19, where an org admin reads; it is a property of the fixed catalogue, and it is
+asserted against the catalogue itself so it reads as a decision rather than a gap.
+
+### Verification — `scripts/verify-homework.js`, 98 checks, 0 fail
+
+Every self-scope assertion has a counter-example that must be excluded: a second class in the same school
+with its own homework, and an unpublished draft for the student's own class. Six fixes were proved by
+deliberate regression — the self-scoping, the published filter, the read-by-id narrowing, the path
+suppression, the refusal of a body-supplied path, and the section revalidation — each reverted in turn and
+each failing the assertion written for it.
+
+
+
+---
+
+## 2u. Phase 3.Q — Assignments, SRS §20.3 ✅ Complete and verified — **§20.3 is closed**
+
+One requirement, **one table holding two shapes**, eight endpoints at `/api/v1/assignments` (index 35;
+`/api/v1` is now 36 layers). FR-ASG-001 is a lifecycle rather than a screen — *"Teacher creates an
+assignment. Student submits the assignment. Teacher reviews the submission."* — and §29 lists **no
+submissions table**, so `assignments.record_type` is `assignment` or `submission` and the model's own
+`shapeMatchesRecordType` validator enforces the pairing from underneath.
+
+| FR | Step | Route | Permission |
+|---|---|---|---|
+| ASG-001 | — | `GET /submissions` | `assignments.view` |
+| ASG-001 | — | `GET /submissions/:id` | `assignments.view` |
+| ASG-001 | three | `PATCH /submissions/:id/review` | `assignments.review` |
+| ASG-001 | — | `GET /` | `assignments.view` |
+| ASG-001 | one | `POST /` | `assignments.manage` |
+| ASG-001 | — | `GET /:id` | `assignments.view` |
+| ASG-001 | — | `PATCH /:id` | `assignments.manage` |
+| ASG-001 | two | `POST /:id/submissions` | `assignments.submit` |
+
+`requireModule(MODULES.ASSIGNMENTS)` router-level; no `enforceLimit` (§11.2 has nothing
+assignment-shaped). No DELETE — §20.3 names none, an assignment is withdrawn with `status: closed`, and
+deleting one would cascade its students' submissions away with it.
+
+**Declaration order is load-bearing on this router and on no other.** `GET /:id` above `GET /submissions`
+would swallow the literal path and hand `"submissions"` to `idParam`, which answers 422 for a route that
+exists — a break nothing about `/submissions` would explain. The order is asserted as a list, in the
+suite and again in `verify-app.js`, so a tidy-up reorder fails loudly.
+
+### The permissions match FR-ASG-001's two actors exactly
+
+`assignments.manage` and `assignments.review` reach Teacher, Principal, School Admin and Super Admin;
+`assignments.submit` reaches **Student** and Super Admin; `assignments.view` adds Parent. FR-ASG-001
+names Teacher *and* Student, and the catalogue has a key per verb — the cleanest alignment any module has
+had. §16 and §19 both had to record a mismatch; §20.2 and §20.3 have none.
+
+A Super Admin holding `assignments.submit` is the catalogue's construction, not a second actor: the route
+resolves the submitting student **from the authenticated user**, and a Super Admin has no student row, so
+they are refused with `NOT_A_STUDENT`. Asserted, so it reads as a decision rather than a gap. An
+Organization Admin holds no assignment key at all, exactly as with §20.2.
+
+**This is the first module in the application where a student's own request writes a row.** §20.2's
+student could only read.
+
+### The unique index is doing its job here, and that is the unusual part
+
+`assignments_submission_unique (parent_assignment_id, student_id)` is the **fourth** sighting of this
+index shape in the schema, and the first where nothing is wrong with it. In `class_subjects`, `timetables`
+and `fee_structures` the pair contains a nullable column that is legitimately NULL in ordinary use, MySQL
+treats NULL as distinct inside a UNIQUE index, and the index therefore rejects none of the duplicates it
+was written to reject — three separate defects (§5a 19, 47, 54), each needing a locking read as the only
+available backstop.
+
+Here both columns are **NOT NULL on every row the index constrains**: a submission cannot exist without
+both, because the model validator refuses it. So the index really does enforce one submission per student
+per assignment, at the database. On an `assignment` row both are NULL, so NULL-distinctness lets any
+number of assignments coexist — which is what is wanted. **The permissiveness that was a hole in the
+other three tables is the feature that makes the single-table design work in this one.** Said explicitly
+because a reader who has met the other three will assume this one is a defect too.
+
+The duplicate is still translated to a 409 rather than escaping as a 500, and the resubmission path takes
+a locking read — not to substitute for the index, but because it is a read-then-write.
+
+### `returned` is what makes a second attempt possible
+
+The index permits one submission row per student per assignment, and `SUBMISSION_STATUS` has three values
+— `submitted`, `reviewed`, `returned`. A returned submission is one the teacher handed back, and the only
+way that value can mean anything is if the student may then submit again. So a submit against a
+`returned` row **replaces it in place**: the text and file are overwritten, `submitted_at` is re-stamped,
+`is_late` is recomputed, and the previous review is **cleared**, because a mark given for work that has
+since been replaced is a mark for something nobody can read any more. A submit against a `submitted` or
+`reviewed` row is refused with 409.
+
+Replacing rather than inserting is what the index requires; the alternative is a second row the database
+will not accept. The route answers **201** on a first submission and **200** on a replacement, because a
+replacement is not a creation.
+
+### Who sees what, and why the two record types need different narrowings
+
+`assignments.view` reaches staff, students and parents with no `assignments.self.view` to tell them apart
+— the same catalogue shape §20.2 had. But the narrowing here is **two-dimensional**, and that is the part
+that would have been easy to get wrong:
+
+- an **assignment** is narrowed by `class_id`, to the caller's own class (or their children's), and to
+  `published`/`closed` — a draft has not been set yet;
+- a **submission** is narrowed by `student_id`, to the caller's own row (or their children's).
+
+Narrowing submissions by class instead — the obvious copy of §20.2 — would show one student every
+classmate's answer while passing every §20.2-shaped test. The fixture therefore puts two students in the
+**same class and the same section**, so that mistake is visible rather than merely possible.
+
+Both narrowings hold on a read by id as well as on a list, and a `student_id` filter naming somebody
+else's child **intersects to nothing** rather than overriding the narrowing.
+
+### The file belongs to the submission, not to the assignment
+
+FR-ASG-001 names no upload for the teacher's assignment — only §20.2's FR-HW-001 says "Upload File". And
+`middlewares/upload.js` carries a `submission` profile whose rules table cites *"§20.3 / FR-ASG-001 —
+student Submit"* by name, with no assignment profile beside it. Both readings agree, so the multer chain
+is on `POST /:id/submissions` alone, and `attachment_path`/`attachment_name` are `forbidden()` in every
+schema in the module. As in §20.2 the stored path never reaches a caller: `present()` reduces it to
+`attachment_name` and a `has_attachment` boolean.
+
+**Still no download route.** §20.3's outcome — *"Assignment lifecycle from creation to review is
+completed"* — is reached without one: the teacher sees that a file was submitted and what it was called.
+This is the same deferral FR-EXAM-005 and FR-HW-001 took, now **three** requirements deep, and §20.5's
+FR-DOC-001 is where the shared plumbing has to be built, together with Known Issues #26.
+
+### Verification — `scripts/verify-assignments.js`, 196 checks, 0 fail
+
+**Sixteen** deliberate regressions, each caught by the assertion written for it. The sixteenth exists
+because the fifteenth exposed a flaw in this suite rather than in the module: deleting the
+`student.class_id !== assignment.class_id` check left the suite green, because the fixture student had no
+section while the assignment had one, so the *section* guard answered the request with the same status
+and the same error code. The assertion was rewritten against an unsectioned assignment, where the class
+is the only guard that can refuse, and a separate regression was added for the section check.
+
+That is the §20.2 lesson applied one level deeper: it is not enough for an assertion to fail when the
+code is broken — it has to fail for the reason it claims.
+
+---
+
+## 2v. Phase 3.R — Library, SRS §20.4 ✅ Complete and verified — **§20.4 is closed**
+
+Two requirements, **two tables**, nine endpoints at `/api/v1/library` (index 36; `/api/v1` is now 37
+layers). FR-LIB-001 is the catalogue — *"Books, Authors, Categories, and Quantity"* — and FR-LIB-002 is
+the loan — *"Librarian issues a book… records a book return… System calculates/records a Fine where
+applicable."*
+
+| FR | Route | Permission |
+|---|---|---|
+| LIB-001 | `GET /books` | `library.view` |
+| LIB-001 | `POST /books` | `library.manage` |
+| LIB-001 | `GET /books/:id` | `library.view` |
+| LIB-001 | `PATCH /books/:id` | `library.manage` |
+| LIB-002 | `GET /transactions` | `library.view` |
+| LIB-002 | `GET /transactions/:id` | `library.view` |
+| LIB-002 | `POST /transactions` | `library.issue` |
+| LIB-002 | `PATCH /transactions/:id/return` | `library.issue` |
+| LIB-002 | `PATCH /transactions/:id/fine` | `library.issue` |
+
+`requireModule(MODULES.LIBRARY)` router-level; no `enforceLimit` (§11.2 has nothing library-shaped) and
+no upload. No DELETE — a book is retired with `is_active: false`, which also stops it being issued.
+
+### The first shared counter in the project
+
+Every other module's writes are independent rows. `books.available_quantity` is **one number two
+writers contend for**: two librarians issuing the last copy both read 1, both write 0, and two copies
+leave the building. So `issue()`, `returnLoan()` and the quantity branch of `updateBook()` each run in a
+transaction with a **locking read** on the book row — `fees.pay()`'s posture, which the §5a record shows
+is the one that works, rather than `fees.alreadyAssigned()`'s, which is the one that does not. All three
+lock the same single row, so there is nothing to deadlock against.
+
+The invariant the module maintains is
+
+    quantity - available_quantity === the number of copies currently on loan
+
+which is why editing `quantity` moves `available_quantity` by the **same delta** rather than leaving it,
+and why an edit that would drive it below the copies on loan is refused with `QUANTITY_BELOW_LOANS`. The
+model's `availableWithinQuantity` validator catches only the other direction. `available_quantity` is
+`forbidden()` in both book schemas: a caller who could set it directly could make a book look available
+while every copy was out.
+
+**A lost copy does not come back to the shelf.** `LIBRARY_TRANSACTION_STATUS` carries `lost`, §20.4 names
+only Issue/Return/Fine, and a copy that never comes back otherwise has no terminal state — the
+alternatives are a loan open for ever or one falsely marked returned. So the return route takes an
+`outcome` of `returned` or `lost`, and `lost` leaves `available_quantity` where it is: the gap against
+`quantity` is what records the loss. Nothing further is inferred — no price is charged and `quantity` is
+not adjusted, because the SRS says nothing about either.
+
+### Overdue is derived, never stored
+
+The enum has an `overdue` value and **nothing writes it**. Storing it would need a scheduled sweep §20.4
+does not ask for, and a stored flag is wrong every day between the due date and the next sweep. So
+`present()` derives `is_overdue` and `days_overdue`, and a `status=overdue` filter is translated into
+"issued, and past due". The stored column therefore only ever holds `issued`, `returned` or `lost`. That
+is recorded rather than left to be discovered, and asserted both ways: the filter finds an open overdue
+loan, and the row it finds still says `issued`.
+
+### The fine is calculated, and settled separately
+
+FR-LIB-002 says the *system* calculates it, so it is computed and not entered: `fine_per_day` from the
+book times whole days past `due_date`, in integer minor units through `utils/money.js`. The rate comes
+from the book at the moment of return rather than being copied onto the loan at issue, because §20.4
+puts `fine_per_day` on the book.
+
+Calculating and settling are separate routes because they are separate events. A fine that could only be
+recorded at the moment of payment could not be recorded at all for a borrower who has not paid — which
+is most of what *"manages associated fines"* is about. A payment above the fine is refused; a waiver
+settles it whatever the two numbers say.
+
+### Authors and categories are columns, and that is deliberate
+
+§20.4 lists "Books, Authors, Categories" like three entities. §29 lists none of the latter two, `books`
+carries `author STRING(255)` and `category STRING(120)`, and §35 forbids a 65th table. The free-text
+columns satisfy the requirement: the catalogue records an author and a category per book.
+
+`books.cover_path` exists as a column, §20.4 names no cover and `upload.js` has no profile for one, so
+it is `forbidden()` in both schemas and stripped from every response — **this module does not become
+Known Issues #26's sixth caller-supplied path**.
+
+### Borrower is not caller
+
+A book may be issued to a student, a teacher or a staff member, and the seeded catalogue gives
+`library.view` / `manage` / `issue` to Librarian, Principal, School Admin and Super Admin, plus
+`library.view` to Student. **A Teacher holds no library permission at all**, and neither does a Parent.
+So a teacher can borrow a book and cannot look the loan up. That is a property of the fixed catalogue
+(§29/§35); the suite asserts it against `DEFAULT_ROLE_PERMISSIONS` itself so it reads as something that
+was checked rather than something that was missed.
+
+A student's **catalogue** is not narrowed — FR-LIB-001's outcome is that it "is available", and a
+catalogue nobody may browse is not one. A student's **transactions** are narrowed to their own, on the
+read by id as well as the list, for the reason §20.3 narrowed submissions by student.
+
+The model's `borrowerMatchesType` validator checks only that the *matching* borrower id is present, so a
+row naming a student while also carrying a teacher id would pass it. The **exclusivity** is enforced in
+the schema, where a caller can be told which field was wrong.
+
+### Verification — `scripts/verify-library.js`, 161 checks, 0 fail
+
+Every issue and return assertion re-reads `[quantity, available_quantity]` **off the database** rather
+than out of the response, because a response can be right while the row is wrong. **Twenty-one**
+deliberate regressions, each caught by the assertion written for it — including one that first exposed a
+flaw in the suite rather than the module, described in §5a.
+
+---
+
+## 2w. Phase 3.S — Documents, SRS §20.5 ✅ Complete and verified — **§20.5 is closed, and with it the whole of §20**
+
+One requirement covering **seven** documents, three endpoints at `/api/v1/documents` (index 37;
+`/api/v1` is now 38 layers). FR-DOC-001: *"System generates: Student ID Card, Teacher ID Card, Admission
+Form, Fee Receipt, Result Card, Character Certificate, and Leaving Certificate."*
+
+| FR | Route | Permission |
+|---|---|---|
+| DOC-001 | `GET /` | `documents.view` |
+| DOC-001 | `POST /` | `documents.generate` |
+| DOC-001 | `GET /:id` | `documents.view` |
+
+### The only module router in the application that mounts no `requireModule()`
+
+Every other module has one subscribable key, so its router mounts one guard. §20.5 has **seven document
+types across four modules**: `DOCUMENT_TYPE_MODULE` sends the two ID cards to `id_cards`, the admission
+form and the two certificates to `certificates`, the fee receipt to `fees` and the result card to
+`exams`. The key is not known until the request body names a type.
+
+So the router mounts the **state** half — `requireActiveSubscription()`, which is what `requireModule`
+checks first anyway — and `documents.service.assertModuleForType()` does the **module** half per
+request, through the same `loadSnapshot`, in the same order, so a lapsed subscription is still reported
+as a lapsed subscription rather than as a missing module.
+
+A school subscribed to Certificates but not ID Cards can therefore issue a leaving certificate and is
+refused a student ID card — the *same caller*, in the *same school*. That is what §11.1 sells, and it is
+the fixture the suite is built around. A single router-level key could only have been wrong: too strict
+for six types or too lax for one.
+
+Reads are **not** gated by type: a document already generated is the school's own record of something it
+did, and §20.5 gives no reason for a later downgrade to hide it. Recorded as a decision.
+
+*(Both document permissions carry `module: null`. An earlier draft of these headers claimed that was
+unique in the catalogue and used it as evidence. It was wrong — **59 of the 109** seeded permissions do,
+and `app.js` already records that the field is metadata nothing in the request path reads. The claim was
+removed from all three files rather than softened. `DOCUMENT_TYPE_MODULE` is the evidence and it is
+enough.)*
+
+### The permissions match FR-DOC-001's actors exactly
+
+FR-DOC-001 names **Principal / School Admin / Accountant / Receptionist**, and `documents.generate`
+reaches precisely those four plus Super Admin — the closest match between an FR's actor list and the
+fixed catalogue anywhere in §20, and asserted as a set rather than by spot-check. `documents.view`
+additionally reaches Teacher, Student and Parent, and the service narrows all three: **three**
+self-audiences rather than §20.2's two, because a teacher is an **owner** here (their own ID card) as
+well as a reader.
+
+### `generation_payload` is the deliverable, and it is assembled from real records
+
+The column's comment says *"Values merged into the template when generated, so it can be reproduced."*
+So the service does not store a marker — it reads the underlying records and assembles the values: the
+student's class and section by **name** rather than by id a template cannot print, the teacher's
+employment record, the guardians §15.2 records, the receipt number and amount really paid with what it
+was paid against, and §19's stored result columns including the per-subject breakdown.
+
+`owner_type` is derived from the document type and refused from the body — each document is about
+exactly one kind of record, and a caller who could set the pair independently could ask for a Teacher ID
+Card against a student id. A **result card** is the one document that is not about a single record: §19
+makes a result the intersection of a student and an exam, and `documents` has one `owner_id`, so the
+student is the owner and `exam_id` is required for that type and forbidden for the other six.
+
+FR-DOC-001's precondition — *"Relevant underlying record exists"* — is enforced by loading that record
+**in the caller's school**. Without the school scoping a caller could generate a certificate for another
+school's student and print their name under this letterhead.
+
+### What §20.5 does not deliver, stated plainly
+
+**No bytes.** Rendering a PDF is checklist row 5.4 (Phase 5.4) and is not built, so `file_path`,
+`file_name`, `mime_type` and `file_size_bytes` stay null and `storage_limit` — a cumulative limit that
+is incremented explicitly — is not incremented, because nothing was stored. Mounting
+`enforceLimit(STORAGE_LIMIT)` would be a guard that could never fire. The suite asserts the absence
+**positively**: no file columns on a generated row, and storage usage still zero after the whole run.
+
+**No download route.** There is still no file-serving anywhere in this application. FR-EXAM-005,
+FR-HW-001 and FR-ASG-001 each recorded that they were waiting on one; so does this, and **Known Issues
+#26 must be closed before it is built**. What §20.5 delivers is the record — which document, for whom, by
+whom, when, and the exact values that reproduce it — which is what Phase 5.4 will render from. `present()`
+already suppresses `file_path`, so the response shape will not change when bytes arrive.
+
+### Verification — `scripts/verify-documents.js`, 120 checks, 0 fail
+
+**Nineteen** deliberate regressions, every one caught. Seven of them first exposed weaknesses in the
+suite's own assertions rather than in the module, and all seven are described in §5a — including a third
+sighting of the create-response trap and an `indexOf` ordering probe that a *deletion* satisfied.
+
+---
+
+## 2x. Known Issues #26 — the six caller-supplied path columns ✅ Closed
+
+Not a new SRS section; a defect recorded in session 19 and closed in session 23, before anything in this
+application serves a file. The issue was that six columns took a stored filesystem path straight from a
+request body, contradicting the doctrine `finance` and `fees` state and that §20.2, §20.3, §20.4 and
+§20.5 each enforced rather than joining.
+
+**The recorded count was wrong.** The row said "Five columns"; there were **six** — `photo_path` on
+`students`, `teachers`, `staff` and `parents`, plus `logo_path` and `favicon_path` on `school_settings`.
+Corrected while closing it.
+
+### The remedy is asymmetric, because the SRS is
+
+The issue's own Action cell said *"refuse all six from the body the way `finance` does, and write them
+only from an upload."* The first half is right for all six. The second is right for exactly **one**,
+because the SRS names the artefacts asymmetrically — read verbatim from `docs/SRS-extracted.md`:
+
+| Column | What the SRS says | Writer |
+|---|---|---|
+| `students.photo_path` | §15.1 lists **"Student Photo"**; FR-STUDENT-001: *"System captures Student Photo and Documents."* | `POST /students/:id/photo`, `PERSON_PHOTO` profile |
+| `teachers.photo_path` | §15.3 lists Teacher Profile, Qualification, Joining Date, Subjects, Classes, Teacher Dashboard — **no photo** | none |
+| `staff.photo_path` | §15.4 lists Receptionist, Accountant, Librarian, Other Staff — **no photo** | none |
+| `parents.photo_path` | §15.2 lists Parent Account, Multiple Children, Parent Dashboard — **no photo** | none |
+| `school_settings.logo_path` | §14.1 lists **Logo** beside Name, Address, Phone, Email, Website, Theme, Currency, Timezone | absolute http(s) URL |
+| `school_settings.favicon_path` | §14.1 lists **Favicon** in the same list | absolute http(s) URL |
+
+Giving the middle three an upload route would have been **inventing a requirement**; leaving them
+writable from a body was the defect. So they are refused and have no writer at all: the column stays
+(§35 forbids dropping one) and is permanently null. That is stated in each schema, because a reader who
+sees a column nothing writes will otherwise assume it was forgotten.
+
+### `students.photo_path` — the profile that waited three sections for a caller
+
+`UPLOAD_PROFILES.PERSON_PHOTO` has cited `'§15.1 / FR-STUDENT-001 — "Photo"'` in its own rules table
+since `upload.js` was written, and had never been called — the same situation `homework` and
+`submission` were in before §20.2 and §20.3, and it is now the third of those three to be wired up. Two
+of the six profiles remain uncalled: `ai_source` (§21) and `student_document` (§15.1's "Documents").
+
+`POST /students/:id/photo` follows the chain `payments.record` established and §20.2/§20.3/§20.5
+repeated: permission → `uploadSingle` → `validate` → `logActivity`. `students.manage` guards it rather
+than a new key, because the catalogue is fixed by §29/§35 and setting a photo is managing a student; it
+reaches the Receptionist FR-STUDENT-001 names.
+
+`present()` was added to `students` and to **no other** people module, and the asymmetry is deliberate:
+students is the only one of the four whose column will ever hold a path, so it is the only one with
+anything to suppress. A later session that gives another module a writer must add `present()` in the
+same change — recorded in the service.
+
+**A replacement orphans the previous file.** Nothing in this application collects an orphaned file, and
+collecting one would mean dereferencing a stored path — the very thing #26 exists to prevent while no
+route serves a file. §20.2 made the identical trade for homework and chose the same way.
+
+### The branding fields — a URL, and why it is normalised rather than pattern-matched
+
+§14.1 lists Logo and Favicon among nine configuration values, not as a capture step, and this module's
+own header had already described the two columns as holding *"stored paths (or URLs)"* while
+deliberately declining to invent a seventh upload profile (citing Known Issues #14's six-surface
+allow-list). So the URL reading became the only reading.
+
+A pattern guard is not enough, and this was **measured before choosing**:
+
+| value | `Joi.uri({scheme})` | `path.join(root, v)` escapes? | `new URL().href` | then escapes? |
+|---|---|---|---|---|
+| `../../../etc/passwd` | refused | **yes** | not a URL | — |
+| `https://a.test/../../../etc/passwd` | **accepted** | **yes** | `https://a.test/etc/passwd` | no |
+| `http://x/%2e%2e/%2e%2e/etc/passwd` | accepted | no | `http://x/etc/passwd` | no |
+| `https://cdn.test/logo..png` | accepted | no | unchanged | no |
+
+`Joi.uri({ scheme: ['http','https'] })` **alone admits a URL whose path escapes the uploads root**. A
+`.pattern(/\.\./, { invert: true })` guard both rejects a legitimate `logo..png` and misses the
+percent-encoded form. `new URL()` collapses `..`, decodes `%2e%2e`, leaves a two-dot *filename* alone,
+and yields a normalised `href` — which is what gets stored, so the value checked is the value written.
+That is the `.precision(2)` doctrine `finance` and `plans` record, applied to a URL.
+
+**The column name and its contents now disagree**, and §35 forbids renaming a column. Said plainly in
+the module header rather than left for a reader to trip over.
+
+### Verification — +45 assertions across five suites, 13 deliberate regressions
+
+`verify-students.js` 111 → **136**, and it now uploads real PNG bytes, proves them on disk under
+`school-<id>/person_photo/`, and proves the path is suppressed on the upload response, on a read by id
+and on **every row of the list** — with an explicit check that the list assertion is not vacuous.
+`verify-teachers.js` 82 → **85**, `verify-staff.js` 86 → **89**, `verify-parents.js` 113 → **116**,
+`verify-school-setup.js` 157 → **168**.
+
+---
+
+## 2y. Phase 3.T — AI Module, SRS §21 ✅ Complete and verified — **§21 is closed on its own terms**
+
+Two requirements, two tables that had never been touched, ten endpoints at `/api/v1/ai` (index 38;
+`/api/v1` is now 39 layers). FR-AI-001 is a nine-step workflow; FR-AI-002 is the usage limit that meters
+it.
+
+**Three things here had never run anywhere in this project.** `usageService.recordUsage` had **zero call
+sites in `src/`**. `question_banks` and `questions` were registered, associated and never read or
+written. `aiLimiter` and the `ai_source` upload profile both existed with no caller. §21 is where all
+four come alive.
+
+### Nine SRS steps, ten routes, three collapses
+
+| SRS step | Route | Permission |
+|---|---|---|
+| FR-AI-002 | `GET /usage` | `ai.usage.view` |
+| — | `GET /banks` | `question_bank.view` |
+| 1 Upload | `POST /banks` | `ai.generate` |
+| — | `GET /banks/:id` | `question_bank.view` |
+| 2 Extract Content | `POST /banks/:id/extract` | `ai.generate` |
+| 3 Analyze Topics | `POST /banks/:id/analyze` | `ai.generate` |
+| 4+5 MCQs & Answers | `POST /banks/:id/generate` | `ai.generate` |
+| 6 Select Difficulty | `POST /banks/:id/difficulty` | `ai.approve` |
+| 7 Preview | `GET /banks/:id/questions` | `question_bank.view` |
+| 8+9 Approve → Bank | `POST /banks/:id/approve` | `ai.approve` |
+
+Each collapse is forced by something that already existed. **Steps 4 and 5** share one
+`AI_WORKFLOW_STAGES` value and one row — `correct_option` and `answer_explanation` sit beside
+`question_text` under a validator that refuses an MCQ without its answer, so a separate "generate
+answers" call would have nothing to write. **Step 7** changes nothing; it is the teacher reading what
+step 5 produced. **Step 9** is the outcome of step 8, not a call: SRS:1164's Expected Outcome is that
+approved questions *are stored*, and approving is what stores them.
+
+### The workflow is a state machine, asserted for what it refuses
+
+`question_banks.workflow_stage` is the server's record of §21's order, and it is `forbidden()` in every
+schema. A body that could set it could jump straight to `approved` and put unreviewed questions in the
+Question Bank — precisely what FR-AI-001's preview-and-approve half exists to prevent. Every transition
+is therefore tried **out of order as well as in it**; a machine that only accepted the happy path would
+pass every ordinary assertion.
+
+### Exactly one route is metered, and where the increment sits is the whole of FR-AI-002
+
+§21's example is *"Plan: 1000 AI Requests — Usage: 750 / 1000"*. If extract, analyze and generate each
+counted, that plan would buy 333 question sets and the number on the invoice would mean something nobody
+wrote down. So **the generation is the AI request** — the only route with `enforceLimit(LIMITS.AI_LIMIT)`
+and the only caller of `recordUsage`.
+
+Three properties, each chosen against something already recorded in this codebase and each asserted:
+
+- **A blocked request costs nothing.** `enforceLimit` is route middleware, so a school at its cap never
+  reaches the driver. Proved: after the fourth request is refused, the counter is still 3.
+- **A failed generation is not charged.** The increment runs *after* the commit. Proved by forcing a
+  provider failure **through the seam itself** — pointing `config.ai.driver` at a name no adapter answers
+  to — then showing the counter unmoved, the bank still at `analyzed` so the teacher can retry, no
+  half-written questions, and a unit charged only when the retry succeeds.
+- **The increment is awaited and unswallowed.** `syncHeadcount` may swallow because headcount is counted
+  live and `usage_records` is only a mirror; `ai_limit` is the opposite — `checkLimit` reads that row, so
+  a dropped increment is a school generating free for the rest of the period.
+
+### The driver seam, and what it does and does not prove
+
+`src/ai/` is a flat driver switch in `mailService.js`'s shape, with each adapter **lazily required** —
+because `@anthropic-ai/sdk` and `pdf-parse` are both declared in `package.json`, neither was required
+anywhere in `src/`, and an offline suite must not depend on a PDF parser to test code that never calls
+one. Asserted directly: under `AI_DRIVER=mock`, neither package is in `require.cache`.
+
+`env.js` validates that an API key exists when the driver is `anthropic` but does **not** validate the
+driver name against a known set — an unrecognised value boots silently. So the facade refuses it at first
+use, which is where `mailService.js:137` puts the same check for `MAIL_DRIVER`.
+
+**The `anthropic` adapter has never been executed.** It is written against the contract; no request has
+ever left the process. Its own header says so before anything else, so the file cannot be mistaken for a
+working integration. **Checklist row 5.2 stays open**, and what is verified is stated exactly: the seam,
+the unknown-driver refusal, and the contract-method check — not the round trip, the prompt, the response
+parse, or PDF extraction.
+
+### Where "Select Difficulty" sits, and a disagreement resolved rather than ignored
+
+SRS:1140 and SRS:1160 both place *"Select Difficulty"* **after** *"Generate Answers"*. But
+`question_banks.requested_difficulty` carries the comment *"'Select Difficulty' requested for
+generation"* — an input to generation, before it. Both are honoured: the generation accepts an optional
+difficulty hint, which is what the column says it is for, and the separate `/difficulty` transition is
+SRS:1160's step, applying the teacher's choice to what came back and advancing to preview.
+
+### Approval names both directions, and silence decides nothing
+
+A body that only said "approve" and let silence mean rejection would turn an unreviewed question into an
+irreversible `rejected` — §21 names one verb and gives no way back. So `approve` and `reject` are both
+explicit, a question in neither list stays `pending_review`, and the suite asserts exactly that.
+
+**`question_bank.manage` is granted to four roles and mounted nowhere.** It would guard editing or
+deleting a bank by hand, and §21 says twice that nothing beyond its workflow is documented. Recorded so
+the unused key reads as a decision.
+
+### Verification — `scripts/verify-ai.js`, 169 checks, 0 fail
+
+**Sixteen** deliberate regressions, every one caught. Six went unnoticed on the first pass and all six
+were weaknesses in the suite rather than in the module — written up in §5a, including one that is
+verbatim a lesson recorded three sessions earlier.
+
+---
+
+## 2z. Phase 3.U — Reports, SRS §22 ✅ FR-REPORT-001 complete; FR-REPORT-002 delivered in Excel
+
+Two requirements, **no table of its own**, seven endpoints at `/api/v1/reports` (index 39; `/api/v1` is
+now 40 layers). §22 is the first section in this project that §29 gives no table to — a report is a read
+across tables other modules own — so this is the **first read-only module** in the application, and the
+first that can answer with something other than JSON.
+
+| §22 report | Route | Permissions | Modules |
+|---|---|---|---|
+| Student | `GET /students` | `reports.view` + `students.view` | reports + students |
+| Attendance | `GET /attendance` | `reports.view` + `attendance.view` | reports + attendance |
+| Fee | `GET /fees` | `reports.view` + `fees.view` | reports + fees |
+| Expense | `GET /expenses` | `reports.view` + `finance.view` | reports + finance |
+| Exam | `GET /exams` | `reports.view` + `exams.view` | reports + exams |
+| Teacher | `GET /teachers` | `reports.view` + `teachers.view` | reports + teachers |
+| Subscription | `GET /subscriptions` | `reports.subscription.view` | **none** |
+
+### The rule that shaped everything: never become a second source of truth
+
+Two of the seven already existed as computations, and both are **delegated to** rather than
+reimplemented. The Attendance Report calls `attendanceService.report()`; the Expense Report calls
+`financeService.report()`. That inherits §16's `(present + late) / marked` percentage — including its
+`null`-for-nothing-marked convention — and §18's refusal of a window holding more than one currency,
+instead of re-deciding either.
+
+The delegation goes further than the call: both routes **validate against the owning module's own
+schema**, extended only with `format`. So the paired endpoints cannot drift apart in what they will
+accept, let alone in what they answer.
+
+And the suite asserts the strongest available form of it: §22's payloads are compared **field for field**
+against `/attendance/students/report` and `/finance/report`. If §22 ever starts computing its own
+attendance figure, that assertion is what breaks — not a plausibility check.
+
+The Exam Report is the third case of the same principle. §19 persists `percentage`, `grade_name`,
+`outcome` and `position` when an exam is generated, and `position` only for students who sat every
+counted paper. This report aggregates those stored columns and recomputes nothing, because a re-derived
+rank would describe a different population from the result cards already published to parents.
+
+### Two permissions per report, which is a narrowing and a deliberate one
+
+`reports.view` is granted to seven roles including **Teacher and Librarian**, while `finance.view`
+reaches neither and `fees.view` reaches neither. `reports.view` alone would therefore let a Librarian
+read the school's expense ledger through §22 that §18 refuses them directly — the report becoming a way
+around the permission on the data it reports.
+
+Each route requires **both** keys, so a caller sees a report exactly when they could already have read
+the rows behind it. That is consistent with FR-REPORT-001, which names its five actors for the reports
+collectively rather than for each of the seven. The catalogue over-grant — Organization Admin and
+Librarian hold `reports.view` while FR-REPORT-001 names neither — is recorded, not corrected, because
+§29/§35 fix the catalogue.
+
+### The only entitlement-aware router with no router-level guard
+
+Fifteen module routers reference `requireModule()` or `requireActiveSubscription()`; fourteen mount one
+at router level and this is the exception. `reports.subscription.view` is declared with **`module: null`**
+and granted only to Super Admin and Organization Admin — the two scopes with no single school — and a
+module gate resolves one school or refuses. An organization-wide report is structurally unreachable
+through one.
+
+The six school reports carry their gates per route instead, naming **both** modules:
+`requireModule(MODULES.REPORTS, MODULES.X)` — you bought reporting, and you bought the thing reported on.
+
+*(An earlier draft of this section and its assertion claimed `/reports` was the only module router
+without a router-level guard. That is false — nineteen others have none either, because they are not
+entitlement-aware at all — and the assertion refuted it on its first run.)*
+
+### FR-REPORT-002: Excel is built, PDF is Phase 5.4, Print is a client concern
+
+§22 names PDF, Excel and Print. **Excel is delivered.** `exceljs` had been in `package.json` since it
+was written and required by nothing; `workbook.xlsx.writeBuffer()` returns a Buffer, so an export needs
+no file on disk, no seventh upload profile, no storage accounting and none of the file-serving
+infrastructure the other deferred requirements wait on. What it did need was a **non-JSON response**,
+which this application had never produced — `ApiResponse` emits only `res.status().json()` — and that is
+a Content-Type and a Buffer, not a renderer. The suite proves it is a real workbook by its zip magic
+(`504b0304`) and by reading the cells back through exceljs and matching them to the JSON.
+
+**PDF is deferred to Phase 5.4.** `pdfkit` is installed and equally unused, but it draws primitives: a
+report PDF needs a table engine, column widths, headers and pagination written from nothing. That is a
+different size of job from handing exceljs an array of rows.
+
+**Print is not a server format.** §22 says only *"User prints the report."* There is no view engine
+anywhere in this application, so `REPORT_FORMATS`'s own comment — *"`print` returns a print-ready
+payload/HTML"* — promises a shape nothing here can produce. The JSON report is what a client prints.
+
+Both unsupported formats are **refused with 422**, not silently answered with JSON. A caller who asks
+for a PDF is told no rather than handed something else.
+
+`REPORT_TYPES` and `REPORT_FORMATS` have existed in `constants.js` with **zero consumers**; §22 is the
+first. `REPORT_FORMATS` carries a fourth value, `json`, that §22 does not name — read here as the
+*un-exported* form, the report itself, which keeps the frozen constant honest without pretending the SRS
+named a fourth format.
+
+### Verification — `scripts/verify-reports.js`, 98 checks, 0 fail
+
+**Twenty-three** deliberate regressions, every one caught. Three of them found that the fixture could not
+provoke a guard at all — the over-payment, the second currency and the exam nobody sat were added
+because of them — and one ended in a measurement that changed the code's comment rather than its
+behaviour. Both are in §5a.
+
+---
+
+## 2aa. Phase 3.V — Notifications, SRS §23 ✅ FR-NOTIF-001 complete
+
+One requirement, nine notification types, five routes at `/api/v1/notifications` (index 40; `/api/v1`
+is now 41 layers) — and **no route that sends anything**. That is the section, and the reason is in
+FR-NOTIF-001's own header: its **Actor / Role is `System`**.
+
+### The architecture was settled by §29, not chosen
+
+The obvious build is a `notify()` call inside `homework.create()`, `exams.publishResults()`,
+`attendance.markStudents()` and four others. It was rejected because the schema had already answered
+the question. §29 gave five tables a marker column, and every comment on them describes a job:
+
+| Column | §29's own comment |
+|---|---|
+| `homework.notified_at` | *"Set once the Homework notification has been dispatched (SRS §23)."* |
+| `exams.announced_at` | *"Set when the Exam Announcement notification has been dispatched (SRS §23)."* |
+| `student_attendance.alert_sent_at` | *"Set once the low-attendance alert has fired, so it is not sent twice (SRS §23)."* |
+| `student_fees.reminder_sent_at` | *"Marker used by the fee/subscription reminder **cron**."* |
+| `subscriptions.expiry_notified_at` | *"Marker used by the expiry-notice **cron** so a school is warned exactly once per cycle."* |
+
+Two earlier sections read them the same way and wrote it into their own validation: `homework` and
+`exams` both refuse their marker with the message *"stamped by the §23 notification **job**"*. A
+marker column answers *"have I already sent this?"* — a question only something that runs repeatedly
+over old rows ever needs to ask. A call inside `create()` knows the answer without a column.
+
+So §23 is **eight dispatch sweeps with no route**, in the shape `subscriptions.runLifecycleSweep()`,
+`invoices.markOverdue()` and the coupon expiry pass already have. Three consequences:
+
+1. **The actor stays `System`.** A notification raised inside `homework.create()` is really the
+   teacher acting.
+2. **Dispatch is reachable from no URL.** `src/jobs/` is Phase 5, as it is for the other three.
+3. **Not one line of the seven owning modules changed.** §23 reads their tables and stamps their
+   markers. The 4,613 assertions standing over those modules describe the same code after this
+   section as before it — which is why the loop below moved only by this section's own additions.
+
+The four types §29 gave no marker — Result Published, Fee Paid, Payment Received, Payment Failed —
+are held idempotent by the `notifications` table itself: is there already a row of this type against
+this `(reference_type, reference_id)`? §29 put an index on exactly that pair. One grouped query per
+sweep, never one per candidate row.
+
+### Core, ungated, unmetered — measured, not assumed
+
+`MODULES.NOTIFICATIONS` **does not exist**. §11's twenty module keys have no notification key, both
+permissions are declared `module: null`, and none of §11.2's eight limits counts a notification. So
+this is the first module since §14 that mounts **no** `requireModule()` and **no** `enforceLimit()`
+— not by choice, like `/reports`, but because there is nothing to name. The count of
+entitlement-aware routers therefore stays at fifteen, and `verify-app.js`'s existing assertion of
+that number is what proves this router is not one of them.
+
+There is also **no SMS**. `NOTIFICATION_CHANNELS` holds `in_app` and `email` and its own comment
+records why: §35 marks *"Additional notification channels"* unspecified. (An earlier note in §7
+predicted a `LIMITS.SMS_LIMIT` to meter it. There is no such key; the prediction was wrong and the
+whole question is moot.)
+
+### Two channels that are two different things
+
+- an **`in_app`** row *is* the delivery. Persisting it is what the recipient reads, so it is born
+  `sent`, and it is the row `read_at` belongs to. This is the inbox, and what `GET /` returns.
+- an **`email`** row is a *delivery attempt* through `mailService`. Born `pending`, it becomes `sent`
+  or `failed` with the transport's own words in `error_message`, and it is the only row
+  `POST /:id/retry` can act on.
+
+That is why `status`, `sent_at` and `error_message` are per-row rather than per-event: they describe
+a channel's fate, not an event's. A failing transport never loses the notification — the failure is
+recorded **on the row** and not thrown, because the in-app copy has already been received and
+FR-NOTIF-001's outcome is already met.
+
+### The one module that must not call `tenantWhere()`
+
+`notifications.school_id` and `organization_id` are **both nullable** — §29's comment says *"Null
+school_id = a platform notification addressed to the Super Admin"* — and `tenantWhere()` writes an
+equality, which no platform row would match. Every read is scoped by `user_id = req.user.id`, which
+is strictly narrower than any tenant filter. `parent_students`, traversed by the audience resolvers,
+is separately one of the tables `tenantWhere()` is unsafe on for want of an `organization_id`; it is
+queried only by explicit `student_id`.
+
+### `notifications.send` guards a retry, and the reasoning is on the record
+
+`notifications.view` is granted to **all eleven roles** — the first key in the catalogue that is —
+and it matches FR-NOTIF-001's *"school, parent, student, teacher, or Super Admin as applicable"*
+exactly. `notifications.send` reaches Super Admin, Principal and School Admin, and §23 gives it **no
+human actor at all**: nothing in the section is sent by a person. That is this section's catalogue
+mismatch, in the same direction as `question_bank.manage` in §21.
+
+It guards the retry rather than nothing, on a narrow reading: FR-NOTIF-001's outcome is that the
+relevant users *receive* the notification, and a row at `failed` is one where that has not happened.
+§29 would not have given the table a `failed` status and an `error_message` column if the state were
+meant to be terminal. The retry **composes nothing** — same recipient, same title, same message, all
+chosen by the engine — so the actor of the *content* is still `System`. A caller cannot author a
+notification through this router, only ask that one already authored be tried again.
+
+### Verification — `scripts/verify-notifications.js`, 98 checks, 0 fail
+
+**Forty-three** deliberate regressions, every one caught. Three missed on the first pass and each
+taught something different; all three are in §5a.
+
+---
+
+## 2ab. Phase 5 — the scheduler, SRS §25 / §26 / §27 ✅ cron jobs and database backup
+
+`src/jobs/` did not exist. `package.json` had declared its three entry points since it was written —
+`cron`, `worker` and `db:backup` — `node-cron` had been a dependency and a consumer of nothing, and
+`config/env.js` had carried `BACKUP_DIR`, `BACKUP_RETENTION_DAYS`, `MYSQLDUMP_PATH` and `ENABLE_CRON`
+unused. The layout, the library and the settings were all already decided; what was missing was the
+file.
+
+**Four sweeps were waiting on it**, each deliberately routeless because each has `System` for an
+actor: `subscriptions.runLifecycleSweep()` (§13), `invoices.markOverdue()` (§13.1),
+`coupons.expireLapsed()` (§13.2) and `notifications.runNotificationSweep()` (§23). Every one was
+already verified in its own suite. What had never been verified is that anything *calls* them.
+
+### Order is a dependency, and it is proved end to end
+
+`notification-dispatch` must run after `subscription-lifecycle`: §23's Subscription Expiry pass
+notifies subscriptions in state `expiring`, and that state is written by the lifecycle sweep. The
+suite does not assert this by comparing positions in an array — that is the `indexOf` trap §5a has
+caught twice. It plants a subscription as **`active`**, makes one ordered run, and requires the
+notification to exist afterwards. That can only pass if the first task ran before the second in the
+same pass, and a deliberate regression reversing `ORDER` fails six assertions.
+
+### Building the caller found a defect in §23 that neither module's suite could see
+
+`runLifecycleSweep()`'s expiring pass **stamped `expiry_notified_at`** when it moved a subscription
+to `expiring`, with a comment saying it did so *"so the §25 notification cron warns a school once per
+cycle"*. But §23's sweep selects `state = 'expiring' AND expiry_notified_at IS NULL`, so it could
+**never see a subscription the lifecycle sweep had just marked** — that notification had never fired
+for any subscription reaching `expiring` the normal way.
+
+Neither suite could catch it alone. §23's fixture planted `expiring` + `expiry_notified_at: null`
+directly, a combination the real system does not produce; `verify-subscriptions.js` asserts the
+column is forbidden on create and nothing about the stamp. Only running both sweeps in one ordered
+pass exposes it — which is what this section is.
+
+§29 settles who owns the column: *"Marker used by the expiry-notice **cron** so a school is warned
+exactly once per cycle."* It belongs to the cron that sends the notice. The stamp is removed from the
+lifecycle sweep, and "once per cycle" holds better than before, because `renew()` already clears the
+column — *"the reasons the previous period ended no longer apply to the new one"* — so each new cycle
+re-arms exactly one notice.
+
+### The backup, and a bug that reported success while doing nothing
+
+`mysqldump` rather than anything written here: a restorable dump of 64 tables with foreign keys means
+dependency ordering, escaping and DDL, and getting any of it wrong produces a file that looks like a
+backup and is not.
+
+Its first version had a promise that **never settled**. Piping the child's stdout into the write
+stream ends that stream by itself, so its `close` had usually already fired before a listener was
+attached inside the child's own `close`. The result: a complete 222 KB dump on disk, no error, no
+report, and Node exiting **0** with an empty event loop. Both completions are now tracked
+independently and the promise settles when both have happened.
+
+That bug's *class* is now survivable as well as fixed. `runOrdered()` bounds every task at ten
+minutes, because a task that never settles holds its name in `running` for the life of the process —
+so one hung sweep silently stops all future runs of itself.
+
+### What is still open, and the queue was already answered
+
+`src/config/queue.js` already implements an in-process FIFO with retry and backoff, and still has no
+consumer. Its own header states the constraint and the answer: §29 forbids a jobs table, so
+*"durability across restarts is provided by the cron reconciliation tasks, which re-derive any missed
+work from application state"*. **This section is those tasks** — which is exactly why the five sweeps
+are idempotent and marker-driven. `src/jobs/handlers/` and `src/jobs/worker.js` remain open, and the
+eight `JOB_NAMES` remain their unconsumed vocabulary.
+
+### Verification — `scripts/verify-jobs.js`, 42 checks, 0 fail
+
+**Fifteen** deliberate regressions. Two missed and one hung the harness; all three are in §5a.
+
+---
+
+## 2ac. Phase 5.4 — PDF rendering ✅ the engine, and §22's PDF half
+
+`pdfkit` had been a dependency since `package.json` was written and required by nothing, and two
+modules carried comments saying exactly that. `reports.service.js` also recorded *why* it stayed
+unused: *"it draws primitives: a report PDF needs a table engine, column widths, headers and
+pagination written from nothing."* That engine is `src/utils/pdf.js`, and it is deliberately one
+shape — a titled table with repeating headers, wrapped cells and numbered pages, returning a
+**Buffer**.
+
+### The Buffer is the whole reason this could ship now
+
+§22 established the pattern and it is worth restating, because it is what unblocked this: an export
+needs **no file on disk** — no upload profile, no storage accounting, and none of the file-serving
+infrastructure this application still does not have. There is no `res.download`, no `res.sendFile`,
+no `express.static` and no streamed response anywhere in it. `exceljs` returned a Buffer and the
+controller set a Content-Type; a PDF does exactly the same.
+
+### All seven reports gained PDF at once, and they cannot disagree with Excel
+
+`toPdf()` is fed by **`toRows()`** — the identical flattening `toExcel()` uses. Two exporters walking
+a report separately is how the same figure comes out differently in two files, so they share the walk
+and differ only in what they hand it to. The suite asserts the strongest form of that: every key
+`toRows()` produces must appear in the rendered PDF text.
+
+`print` is still refused with 422. §22 says only *"User prints the report"*, and there is no view
+engine anywhere here to produce what that would mean.
+
+### Two rendering bugs, one of them invisible in the bytes
+
+The footer is drawn below the text area, and `doc.text()` **adds a page** when its y passes the
+bottom margin — so every document came out with an extra page carrying nothing but the footer, and a
+five-row table reported two pages. The file was perfectly valid PDF; it was just wrong. Zeroing
+`page.margins.bottom` for the duration is the documented fix.
+
+Row height is **measured** from the wrapped text rather than assumed, because a long value in a
+narrow column is exactly what makes a fixed height overlap the row beneath, and reports contain free
+text.
+
+### Reading a PDF back — `pdf-parse` cannot do it
+
+`pdf-parse` is a declared dependency, presumably for §21's extraction, and it **fails on an untouched
+pdfkit document** with *"Illegal character: 41"* — measured, so the fault is the parser's and not the
+renderer's. The suites therefore inflate the content streams with `zlib` and decode the hex operands
+of pdfkit's `TJ` operators, which proves the page carries the text rather than merely being a
+well-formed empty document.
+
+### FR-EXAM-005 — the result card, and the shape a report did not need
+
+A result card is not a flat key-value table. It is an identity block (school, exam, student, roll), a
+**subject table**, and totals a reader looks at afterwards — so `renderTable()` gained optional
+`details` and `summary` blocks, drawn as label/value pairs above and below the table. That is the
+"second shape" the engine was deliberately narrow about, and it is the one §20.5's documents will
+want too.
+
+Three decisions worth recording:
+
+- **§19.3 names PDF and Print, and no Excel.** §22 names Excel; this section does not. `RESULT_FORMATS`
+  is therefore `json` and `pdf` only, and asking for a spreadsheet is refused with 422 rather than
+  invented because a neighbouring section has one.
+- **`results.result_card_path` is still null and still not written.** The Buffer is streamed, exactly
+  as §22 does, so no storage story, upload profile or file-serving route is needed. Persisting a card
+  is a separate decision from rendering one, and nothing has made it.
+- **An absence is not a zero.** §19 stores `null` for an absent paper, and the card prints `absent`.
+  Printing `0` would report a mark the student never received.
+
+The PDF is rendered from the payload `resultCard()` already returns, so the printed card and the one
+on screen cannot disagree — and the suite asserts that by taking the subject names out of the JSON
+and requiring them on the page, rather than restating them as literals.
+
+### FR-DOC-001 — seven documents, three shapes
+
+§20.5's seven are not one layout. `renderDocument()` composes four optional blocks and each was added
+because a real document needed it:
+
+| Shape | Documents |
+|---|---|
+| label/value only | Student ID Card, Teacher ID Card |
+| label/value + a table | Admission Form (guardians), Fee Receipt, Result Card |
+| **prose** | Character Certificate, Leaving Certificate |
+
+**The certificates state facts and characterise nothing.** A Character Certificate reading *"bears a
+good moral character"* would be this system asserting something on the school's behalf that **no
+column records** — nothing in §29 stores conduct and §20.5 fixes no wording. So the text says what is
+on file, and every certificate ends in a signature block: it is a prepared form, not a judgement the
+software invented. The suite asserts the absence of those phrases, so the decision cannot quietly
+change. The Leaving Certificate is different in kind, because §15.1 gives leaving its own columns.
+
+**Rendered from `generation_payload`, not the live record.** That is what storing the snapshot was
+for: a certificate reissued a year later must say what it said when it was issued. Asserted by
+renaming the student afterwards and requiring the reissued PDF to still carry the old name.
+
+**One rule, one owner.** Two documents print a result card — FR-EXAM-005's export and §20.5's Result
+Card — and both read §19's `subject_breakdown`. A private copy of the absence rule in each would have
+been a second source of truth for something that matters: §19 stores `null` for an absent paper, and
+printing `0` reports a mark the student never received on a document a parent keeps. `subjectRows()`
+is exported from `exams.service.js` and shared. The deliberate regression that found this is in §5a.
+
+### Verification — `verify-pdf.js` (20), `verify-reports.js` (98 → 106), `verify-exams.js` (206 → 219) and `verify-documents.js` (120 → 133)
+
+**Twenty-nine** deliberate regressions across Phase 5.4. Four missed against the reports suite alone
+— the student report fits on one page and all four guards are about the *second* — which is what
+`verify-pdf.js` exists for. Two missed on the result card, both to substring traps. One missed on the
+documents suite and produced the shared `subjectRows()`. All in §5a.
+
+---
+
+## 2ad. Phase 5 — the queue's handlers and worker, SRS §25 ✅ registered, wired and bounded
+
+`src/config/queue.js` has existed since August — a real in-process FIFO with bounded concurrency,
+three retries and exponential backoff — and had **no consumer at all**: nothing called `enqueue()`,
+nothing called `registerHandler()`, and `JOB_NAMES`' eight names had no meaning anywhere.
+
+### Four handlers, and four refusals that are not an oversight
+
+A handler must be able to **finish**. A job whose result nobody can collect has not been processed in
+any sense a requirement would recognise.
+
+| Job | Registered | Why |
+|---|---|---|
+| `send_email` | ✅ | `mailService.send()` takes a plain message |
+| `send_notification` | ✅ | `notify()` takes a plain event — it has no request context by design |
+| `sync_usage` | ✅ | `syncAllHeadcounts()` reconciles §11.2's limits; genuinely periodic |
+| `database_backup` | ✅ | the §26 task, which returns the path it wrote |
+| `generate_report` | ❌ | renders a **Buffer with nowhere to go** |
+| `generate_document` | ❌ | the same |
+| `ai_generate_questions` | ❌ | §21 is a request-driven stage machine with no fire-and-forget step |
+| `recalculate_results` | ❌ | `exams.recalculate()` refuses to run outside the caller transaction it belongs to |
+
+The queue already fails loudly for an unregistered name, so the four are refused visibly. Two of them
+are blocked on the **same missing file-serving route** that `homework.attachment_path`,
+`documents.file_path` and `results.result_card_path` all wait on — pinned by an assertion, so that
+when that route exists, the suite is what says these can be registered.
+
+### The first real caller, and it fixes something
+
+§7's password-reset and verification mails were `await mailService.send(...)` **in the request path**.
+That is exactly what §25 means by work to hand off — and it was also a defect: a failing SMTP server
+made the throw propagate and **failed the reset request**. Both are now enqueued. The token is
+persisted before the hand-off, the response never depended on the send (it returns the same body for
+an unknown address, deliberately), and `enqueue()` never throws. A failure now costs three retries
+with backoff instead of a user's password reset.
+
+### What a memory queue cannot be, said rather than faked
+
+`queue.js`'s header describes handlers running *"either in-process (development) or by the dedicated
+worker (`npm run worker`, PM2 process in production)"*. **The second half is not achievable as
+things stand.** The queue is an instance in one process's memory; a separate worker process gets its
+own, empty, and can never see a job the API enqueued. Making it possible needs somewhere durable to
+put a pending job, and §29 fixes the schema at 64 tables while §35 forbids a 65th — the same wall
+`cron.js` documents.
+
+`queue.js` had already resolved the tension for the work that matters: *"durability across restarts
+is provided by the cron reconciliation tasks"*, which §2ab built. So `worker.js` is the thing that
+**is** achievable and useful — an operator running one job now, from a shell, with the exit code
+reporting that job's outcome. It says all of this in its header rather than starting, finding an
+empty queue, and idling for ever looking healthy.
+
+### Verification — `verify-jobs.js` (42 → 55) and `verify-auth-module.js` (231 → 235)
+
+Seven deliberate regressions, all caught on the first pass.
+
+---
+
+## 2ae. Phase 5 — serving a stored file ✅ the capability this application never had
+
+There was no `res.download`, no `res.sendFile`, no `express.static` and no streamed response anywhere
+in the application; four modules carried comments saying exactly that. `src/utils/fileResponse.js` is
+that capability, and it is deliberately narrow: given a path **taken from a row the caller was already
+allowed to read**, it streams the bytes back.
+
+### The SRS never says "download", and the split is stated rather than blurred
+
+Zero occurrences, against ten of "upload". Every file clause is a *store* verb with no matching *read*
+verb, so this is not a requirement anyone wrote down. The honest division, which the file's own header
+carries:
+
+- **One clause mandates it.** FR-BILL-004 — *"Super Admin reviews the submitted transaction ID **and
+  screenshot**."* Reading the stored file is the literal precondition of a decision the SRS demands.
+- **The rest is engineering necessity, labelled as such.** FR-HW-001's *"Homework is available to the
+  relevant class/students"* and FR-ASG-001's *"Teacher reviews the submission"* do not say the file is
+  opened. Storing a file nobody can retrieve is indefensible engineering — but it is not the SRS
+  speaking, and the difference is worth keeping straight.
+
+### Authorization is inherited, not restated — and that is why there is no `/files/:id`
+
+The route never takes a path from a request. A caller names a **record**; the owning module loads it
+through its own finder — which has already applied `requirePermission`, the router's tenant guard and
+the module's self-scoping — and only then is the stored path handed to `sendStoredFile`. Every rule
+that governs the record governs its file, with nothing to keep in step.
+
+A generic file endpoint would need an authorization rule of its own, and **§29's fixed 109-permission
+catalogue contains no file permission to build one from**. So there are three sub-resources instead:
+`GET /payments/:id/screenshot`, `GET /homework/:id/attachment`,
+`GET /assignments/submissions/:id/attachment`.
+
+### A fourth route was written and removed
+
+`GET /assignments/:id/attachment` looked obvious and is impossible: the SUBMISSION upload profile is
+wired to `POST /:id/submissions` alone and the write stamps `record_type: SUBMISSION`, so a teacher's
+assignment row can never hold an `attachment_path`. It would have 404'd for ever while looking like a
+feature. Found by an adversarial review of this design, not by the build.
+
+### What it refuses, including things that "cannot happen"
+
+Stored paths are written by `upload.js`, which generates random hex names under `school-<id>/<profile>/`
+and lets nothing of the caller's choosing near the filesystem. None of the refusals should ever fire.
+They exist because **Known Issues #26 was exactly this assumption failing** — six columns accepted a
+caller-supplied path because nothing revalidated what was stored. A path read back out of a row is
+input, whatever wrote it.
+
+Refused and asserted: null bytes, absolute paths, Windows drive-relative forms, lexical `..`, and the
+`uploads-evil` sibling-prefix bug (`ROOT + sep`, not a bare `startsWith`). Refused and **not**
+asserted, said so in the code: **symlinks** — `realpath` re-checks containment, but creating a symlink
+on this Windows machine needs privileges the process lacks (`EPERM`), so no fixture can build the
+attack.
+
+### Two things the review found that the build had not
+
+- **`payments.present()` leaked the stored path.** Every other module with a file suppresses it and
+  returns a boolean — `homework` returns `has_attachment` — and payments spread the row whole, so the
+  on-disk layout went out with every payment response. Now `has_screenshot`.
+- **A claim in the header described a threat model this design excludes.** It said percent-encoded
+  traversal was handled "once Express has decoded it"; the value comes from a database column and
+  nothing decodes it. Reworded rather than left as unearned coverage.
+
+### Verification — `verify-homework.js` (98 → 109)
+
+The assertion that matters is the **bytes**: not that a 200 came back, but that what came back is the
+file that went in. A route returning an empty body, the wrong file, or a JSON error with a 200 would
+satisfy anything weaker.
+
+---
+
+## 2af. SRS §28 — the OpenAPI document ✅ FR-APIDOC-001, the last SRS requirement with no code
+
+§28 asks for the API to be documented via Swagger / OpenAPI and fixes exactly what each endpoint must
+state: **Endpoint, Method, Authentication, Parameters, Request Body, Response, Error Response.**
+`swagger-jsdoc` and `swagger-ui-express` had been dependencies since `package.json` was written, and
+nothing in `src/` required either one.
+
+### Generated from the mounted application, not annotated by hand
+
+`swagger-jsdoc` wants those seven fields as JSDoc comments above each route. That is 252 endpoints
+times seven fields — a second copy of the routing table, maintained by hand, related to the first only
+by somebody remembering. §28's expected outcome is "complete, **accurate**" documentation, and a
+hand-written annotation is accurate the day it is written and quietly wrong after the first change
+nobody mirrored.
+
+So six of the seven fields are read off the mounted Express stack, where the code already states them
+in the form that enforces them:
+
+| §28 field | Source |
+|---|---|
+| Endpoint, Method | the Express route |
+| Authentication | position relative to the `authenticate` layer, plus the guard's own permission, role, module and limit keys |
+| Parameters | `validate()`'s `params`/`query` schemas plus the path placeholders |
+| Request Body | `validate()`'s `body` schema |
+| Error Response | the guards actually mounted, plus the envelope `errorHandler` guarantees |
+
+Middleware factories return closures, and a closure's arguments are unreachable from outside, so five
+factories now hang their arguments on the function they return (`src/utils/routeMeta.js`). The
+property is non-enumerable and frozen: documentation must never be something behaviour can trip over.
+
+### The seventh field is the one that cannot be generated, and it says so
+
+A controller's success payload is built by hand and nothing validates responses on the way out, so
+there is no machine-readable source for the shape of `data`. The document describes the **envelope**
+`ApiResponse` guarantees and states, in the document itself, that `data` is not described and why.
+Writing 252 payload schemas by hand would reintroduce exactly the drift this design avoids, in the
+one place nothing would catch it. **An honest `data: {}` beats 252 confident fictions.** Closing it
+properly means response schemas the application validates against — a change to how controllers
+return data, not to how they are documented.
+
+### Three defects that no schema validator would have caught
+
+Every one produced a document that was internally consistent, resolved every `$ref` and rendered
+perfectly in Swagger UI — while being wrong about the API it described.
+
+- **Every path carried the API prefix, and so did the server URL.** OpenAPI resolves a request as
+  server + path, so every generated client would have called `/api/v1/api/v1/students`. Found by
+  opening the rendered UI and reading it, not by any assertion.
+- **Three refusals share status 403** — `FORBIDDEN`, `MODULE_NOT_SUBSCRIBED`, `PLAN_LIMIT_EXCEEDED` —
+  and OpenAPI keys responses by status. Writing them in sequence silently kept only the last, so a
+  route guarded by both a permission and a limit documented the limit and **lost the permission**.
+  They are composed into one response listing every cause that applies to that route.
+- **`requireModule()` is mounted with `router.use()` in eighteen routers**, which makes it a *sibling*
+  of the routes it guards rather than a member of their stacks. Reading only `route.stack` documented
+  **78 paths** as reachable without the module their plan must include. The walker now accumulates
+  router-level guards and copies them down.
+
+### Verification — `scripts/verify-openapi.js` (101) and `verify-app.js` (202 → 203)
+
+Every other suite verifies behaviour. This one verifies a *description of* behaviour, which fails
+differently, so the assertions are mostly of the form "the document agrees with the application":
+every mounted route is documented and nothing is documented that is not mounted; 401 appears exactly
+below the authentication boundary; 404 exactly where a path parameter can miss. Part 3 drives real
+HTTP, because `app.js` keeps helmet's CSP on specifically for this UI — `script-src 'self'` blocks
+inline scripts outright, so a 200 on the shell proves nothing about whether the page runs. All six
+assets are fetched and asserted.
+
+**Seventeen deliberate regressions, all caught.** Three initially aborted the suite instead of failing
+by name — they change the *shape* of `doc.paths`, so a direct lookup threw before the assertion that
+names the defect could print. Guarded with a safe accessor: §5a's rule that a crash is a detection but
+a poor one, applied for the fourth time this session. Fifteen consecutive runs, 101 every time.
+
+**Mounting `/docs` broke `verify-app.js` — 42 failures, and correctly.** That suite pins the *absolute
+index* of all 41 layers in the API router, because a feature router mounted above the authentication
+boundary still answers requests and still passes its own tests; it simply serves every school's data
+to anyone who asks. Its own comment says "this number moving is the reminder." The indices were
+shifted and `/docs` asserted explicitly at index 1 — then, because a mechanical shift can leave
+assertions vacuous, two further regressions confirmed they still catch a router on the wrong side of
+the boundary: lifting `/users` above it fails 12 checks, pushing `/docs` below it fails 8.
+
+---
+
+## 2ag. Phase 7 — FR-DEPLOY-001, the deployment configuration ✅ the last SRS requirement with nothing written
+
+`deploy/` did not exist. It now holds six artifacts totalling 5,312 lines: the nginx site, the PM2
+ecosystem, the MySQL production configuration, a production environment template, a logrotate
+configuration and a monitoring runbook. `scripts/verify-deploy.js` is the 35th suite, 52 assertions.
+
+### What cannot be verified here, said before anything else
+
+`nginx`, `pm2`, `mysql`, `mysqldump` and `logrotate` are **all absent from this machine** — only
+`node` and `openssl` are present. So **not one of these files was validated by the tool that will
+consume it**. There is no `nginx -t` here, no `pm2 start`, no `logrotate -d`. That is a real
+limitation, it is stated at the top of every artifact and in the suite's header, and it is not
+worked around because it cannot be.
+
+What the suite does instead is check the thing that actually goes wrong with deployment
+configuration: whether each file **agrees with the application it deploys**. A config can be
+flawless nginx and still proxy to the wrong port, cap bodies below what the app accepts, or serve a
+directory the app's authorization depends on never being served. Syntax validation catches none of
+that. This is §28's principle applied again — derive from the running system, do not restate it.
+
+### The one file that can be executed, and what that immediately caught
+
+`ecosystem.config.js` is JavaScript, so `require()`-ing it is genuine execution. It earned its place
+at once: the file threw at module scope on every machine that is not the production host, because a
+guard asserting `/var/log/msms` exists fired on Windows, where that path can never exist. The guard
+is right on the target and is kept — a missing log directory would otherwise become a PM2 restart
+loop — but it is now scoped to POSIX hosts, because **a file that throws at module scope can be
+verified by nobody**: not this suite, not a linter, not an operator reading it before a deploy.
+
+### Three findings the work turned up, none of which was the work
+
+- **The backup user cannot run the backup.** `databaseBackup.js` dumps with `--single-transaction
+  --routines --triggers`, and on MySQL 8.0.21+ that needs the **global** `PROCESS` privilege, which
+  cannot be granted database-scoped. A user granted `ON msms.*` — which is what a careful operator
+  would write — fails the backup this same configuration schedules.
+- **`sync_usage` is registered, unreachable, and broken at its first line.** Recorded as Known
+  Issues #27, with the measured error rather than a reading of the code.
+- **`docs/ARCHITECTURE.md` §9 described a `deploy/` that did not exist**, and described it wrongly.
+  Corrected, with the provenance separated by mtime: "API **cluster**" contradicted
+  `rateLimit.js`'s single-process note **four hours after that note was written**, while "queue
+  worker" and nginx serving "static uploads" became wrong only nine days later, when `worker.js` and
+  `fileResponse.js` established both facts. The third mattered most — serving uploads statically
+  bypasses the permission check, the tenancy check and `no-store` alike, leaving 32-hex path
+  obscurity in place of authorization.
+
+### The regression pass, and why it ran twice
+
+Twenty-one deliberate regressions. The first pass caught **13**, and the eight misses split evenly
+into two kinds worth telling apart.
+
+**Four were real weaknesses in the assertions**, each a familiar shape:
+
+- `Math.max(...caps) >= MAX_UPLOAD_MB` stayed green when **one** of five upload caps was lowered.
+  Checking the largest is not checking each.
+- `location /api/v1/homework\b` matched `/api/v1/homework-disabled`, because `-` is a non-word
+  character. The word-boundary trap, for the third time in this project.
+- Asserting `server_tokens off` **exists** stayed green when a second, inner `server_tokens on` was
+  added — and the inner context is the one that wins.
+- "Both health endpoints appear somewhere" stayed green when one probe of five was misspelled. The
+  assertion now also requires that **no** health URL is named that the app does not serve.
+
+**Four were errors in the regression harness itself**, and they share one cause: the harness replaced
+the *first textual occurrence*, and in a codebase this heavily commented the first occurrence is
+usually **a comment**. `instances: 1,` first appears in prose warning against clustering;
+`NODE_ENV=production` first appears in a summary; the logrotate path first appears in an example.
+Every one of those injections landed inside a comment, `uncommented()` stripped it exactly as
+designed, and the suite correctly reported no change. **A regression that edits documentation and
+concludes the test is weak has tested nothing.**
+
+Re-anchored on real configuration lines and re-run: **21 of 21 caught.**
+
+### What is honestly still open
+
+FR-DEPLOY-001 is Completed as configuration; it has never been **run**. Rows 7.1–7.6, 7.10 and 7.11
+are Completed on that basis and the checklist says so in those words. 7.13 — the final SRS re-read —
+stays Pending, and cannot start while Phase 4 is at 0 of 10.
+
+Two of the eleven revision agents died on a session limit mid-flight (`revise:env`, `confirm:logrotate`).
+The env template had already been written and was checked for truncation before being accepted; the
+logrotate confirmation never ran, so its fixes carry one fewer independent reading than the other five.
+
+---
+
+## 2ah. Phase 4 — the frontend foundation, and the one endpoint the design was missing
+
+`frontend/` did not exist. It now builds: Next.js 16.3.4 App Router, React 19.2.8, Tailwind 4.3.3,
+TypeScript 5.9.3, with `npm run build` and `tsc --noEmit` both clean. Three files are the whole of
+it, and they are the three every one of §33's screens will sit on: `apiClient.ts`, `auth.tsx`,
+`entitlements.tsx`, plus the two auth pages that exercise them.
+
+Nothing here was designed in this session. `docs/ARCHITECTURE.md` §8 had already fixed the route
+groups, the providers and the token strategy; the work was building to it and finding out where it
+was wrong.
+
+### Scaffolded by hand, because `create-next-app` cannot run here
+
+It hung with no output. Next 16 prompts about Turbopack, stdin is closed in this environment, and a
+prompt nobody can answer is indistinguishable from a slow download. Killing it left a partial
+`node_modules/next/dist` that npm then could not remove — `ENOTEMPTY` — so the directory had to be
+cleared before a clean install would run. Writing the six config files directly is both more
+reliable and more in keeping with the rest of this project, where every file explains itself.
+
+One version pin was wrong and npm caught it: `@types/react-dom` does not follow React's version
+numbers, and `19.2.8` does not exist. The tooling devDependencies are caret ranges now; the runtime
+trio stays pinned.
+
+### The gap in the recorded design: §30 Rule 1 had no endpoint to be satisfied by
+
+§8 describes an `EntitlementProvider` that *"fetches the school's entitlement snapshot"*, and §30 Rule
+1 requires module gating to be database-driven with no plan name in the logic. **No route returned
+that snapshot for the current caller.** `entitlementService.getSnapshot()` computes exactly the right
+thing — `modules`, `features`, `limits`, `subscription.isUsable`, cached per school — but it was
+reachable only from middleware. `/subscriptions/catalogue` returns the §12 vocabulary, not this
+school's entitlements; `/schools/{id}/usage` is Super-Admin-shaped and wants an id a school user
+should not have to supply. Row 4.10 was unbuildable.
+
+It rides on `GET /auth/me` now, and that placement is the argument rather than a convenience:
+
+- **No new route, so no new permission.** §29/§35 fix the catalogue at 109 entries and there is no
+  entry for this. `/auth/me` is already authenticated and this is the caller's own school.
+- **No second round trip.** The navigation cannot render until permissions *and* modules are both
+  known; two calls mean a flash of the wrong menu or a spinner over the whole shell.
+- **They expire together.** A refresh re-reads permissions from the database, and entitlements
+  arriving in the same response cannot drift out of step with them.
+
+`null` for a platform or organization caller, deliberately — not `{}`, which a client would read as
+"every module is off", hiding the platform surface from the only role that can use it.
+
+**Twelve assertions cover it, and they are split because neither suite can do both halves.**
+`verify-entitlement.js` owns the computation: it is the only suite with plans, modules and an expired
+subscription to compute from, but its app is synthetic and does not mount `/auth/me`.
+`verify-auth-module.js` owns the wire: it drives the real chain over HTTP, but its fixture is a
+platform user, so the populated branch is unreachable from it. Each half is asserted where it can be,
+and the file says so rather than implying wider coverage.
+
+### Three bugs that only running it could find
+
+Every one of them survived writing, reading and a passing typecheck.
+
+1. **`GET /csrf-token` returns `data.token`, not `data.csrfToken`.** Caught by reading
+   `system.routes.js` rather than assuming the property was named after the middleware. Every
+   mutating call would have failed its double-submit check with a 403 naming CSRF that looked like a
+   cookie problem.
+2. **The refresh call sent no CSRF header.** `refreshAccessToken()` bypasses `request()` — it must,
+   since a 401 from the refresh cannot itself trigger a refresh — and so it also bypassed the CSRF
+   logic. The browser network log showed `POST /auth/refresh → 403`. Every expiring session would
+   have been logged out instead of renewed, and only after the access token's lifetime had elapsed,
+   which is long enough after login that it would not look related to this code at all.
+3. **The `must_change_password` redirect was unreachable.** It read `profile.user.must_change_password`
+   *after* loading the profile — but `enforcePasswordChange` refuses `GET /auth/me` for exactly those
+   users, so the load threw first. The log showed `POST /auth/login → 200` then `GET /auth/me → 403`,
+   and the form reported *"You must change your password before continuing"* as though the
+   credentials had been rejected. They had not. The seeded Super Admin ships with the flag set, so
+   this was the state of the **first login on any new deployment**. `login()` returns a discriminated
+   union now, so a caller cannot forget the second outcome: there is no profile to read in it.
+
+### `verify-frontend.js` — the 36th suite, and why it lives in `backend/scripts/`
+
+Because what it verifies is a claim about the **backend**: that every path the client calls exists,
+with that method, on the application actually mounted. A test inside `frontend/` could only check the
+frontend against its own idea of the API, which is the thing most likely to be wrong.
+
+It compares against the **generated OpenAPI document**, so it cannot go stale — rename a route in
+Express and the suite fails the same day, naming the frontend file still calling the old path. It
+also asserts §30 Rule 1 directly (no plan code or name compared against a literal, and the gating
+helpers exist to be used instead), that every module key the client gates on is one the backend
+defines, and that the access token is never written to browser storage.
+
+Twenty assertions, six deliberate regressions, all six caught.
+
+**And it failed on a file that was correct.** The `localStorage` check matched `apiClient.ts`'s own
+comment — *"in memory, never in `localStorage`"*. Third time in one session that a substring search
+could not tell a rule from the warning against breaking it, after the same trap in the §27 monitoring
+runbook and in a Known Issues note. The fix is always to narrow the search, never to delete the
+sentence: naming a hazard in prose is exactly what should be encouraged.
+
+### What is not verified
+
+The post-change landing. Completing that flow means changing the seeded Super Admin's password,
+which would leave the environment inconsistent with `.env` if anything failed mid-flow — the same
+destructive-cleanup hazard that broke `verify-addons` earlier this session. The redirect to
+`/change-password` is proven in a browser; what happens after the change is not.
+
+Thirty-one screens of §33 remain, plus the four role dashboards.
+
+---
+
+## 2ai. Phase 4 — the shell and the rest of §7's auth pages ✅ rows 4.1 and 4.2
+
+Eight routes build and prerender. Rows **4.1** and **4.2** are Completed; `verify-frontend.js` grew
+from 19 assertions to 32, and eleven more deliberate regressions were run against them, all caught.
+
+### Row 4.2 — the five auth flows, and the drift that produced a components file
+
+`forgot-password`, `reset-password` and `verify-email` join the two that already existed. Three
+decisions in them are worth keeping:
+
+- **Forgot-password says one thing on every resolved outcome.** `auth.service.js` answers 200 whether
+  or not the address is on file, and its header calls this *"the endpoint an attacker would point a
+  list of addresses at"*. A UI that showed a different message, or left the form ready to resubmit,
+  would hand back for free what the API refused to say. The form is replaced by the notice.
+- **The single-use token is never rendered into a field.** It is a credential; an input holding it
+  would be autofilled, copied and screenshotted like any other value. Both pages read it from the
+  query string and send it without displaying it, and the suite now refuses a `Field` with `id="token"`.
+- **Verify-email submits on load rather than showing a button.** The user already acted by clicking
+  the link. The token survives mail scanners because the endpoint is a **POST** and this is a client
+  component — neither a link preview nor a security scanner executes JavaScript. The effect is
+  guarded with a ref, because Strict Mode's double-invoke would present an already-consumed token
+  and report failure on a verification that had just succeeded.
+
+**`components/form.tsx` was extracted at the fourth page, and the reason was measurable rather than
+aesthetic.** Two of the auth pages wired `aria-describedby` on their inputs and two did not —
+`grep -c` said 2 and 0 — so a screen reader announced the validation message on some screens and not
+others. Nobody catches that in review. Every input now comes from one primitive, and the suite
+asserts that **no auth page declares a raw `<input>` at all**: "every page uses `Field`" would have
+been too weak, since a page can use the primitive for one input and a raw element for the next, which
+is exactly how the first drift happened.
+
+### Row 4.1 — the shell, and a sidebar that is a table rather than markup
+
+`lib/nav.ts` holds the navigation as data: each row names the permission the screen needs and, for a
+school screen, the module key **the matching router actually mounts**. Those keys were read out of
+the routers, not guessed — a nav gating on a module the API does not check hides a working screen,
+and one gating on nothing shows a screen that 403s the moment it loads.
+
+Two rows are irregular on purpose. **Documents** spans four modules (§20.5's seven types), and its
+router mounts `requireActiveSubscription()` rather than `requireModule()` for that reason — so it
+carries `anyModule` and appears when any of the four is subscribed. **Classes, Sections and
+Subjects** carry no module because their routers mount none; gating them would invent a subscription
+rule the SRS does not have.
+
+**The gap this closed in the suite.** The existing module-key check read `hasModule('literal')` call
+sites — and `nav.ts` names its keys as object *properties*, so every key in the sidebar could have
+been invented while the suite stayed green. Both catalogues are now checked directly: the 109
+permissions and §11's 20 modules, plus §33's counts (sixteen Super Admin screens, seventeen School)
+asserted against the table itself, and the rule that **no Super Admin screen carries a module gate** —
+a platform role administers plans, so gating it on a subscription would let a lapsed one lock out the
+account that fixes subscriptions.
+
+### Measured in a browser, at both ends of the responsive commitment
+
+Signed in as the Super Admin: **sixteen links across five sections**, exactly §33's list, with
+`aria-current="page"` on the one open screen.
+
+| viewport | sidebar | toggle | links reachable | horizontal scroll |
+|---|---|---|---|---|
+| 1100 px | visible | hidden | 16 | — |
+| **360 px** | `display:none` | named "Open navigation", `aria-expanded` flips | 16 after opening | **none** — `scrollWidth` 360 against a 360 px viewport |
+
+`display:none` rather than a zero width is deliberate: a collapsed-by-width sidebar stays in the
+accessibility tree, so a screen reader would read a menu the user had closed.
+
+**The one mutation this needed was reverted and proved reverted.** Rendering an authenticated shell
+meant getting past `must_change_password`, which the seeded Super Admin ships with set. Changing the
+seeded *password* would have been the destructive-cleanup hazard that broke `verify-addons` earlier
+this session, so the single boolean was toggled off instead, the shell measured, the flag set back,
+and `verify-seed` re-run green to prove the seed state was intact.
+
+### What is still not verified
+
+The seventeen School nav items are asserted by the suite but have never been **rendered** — reaching
+them needs a school-scoped account, and none is seeded. The two dashboards are placeholders that say
+so rather than showing invented figures; `GET /platform/dashboard` already serves FR-SADMIN-001's
+eleven metrics and is not wired.
+
+Thirty-one of §33's thirty-three screens remain, plus the four role dashboards.
+
+---
+
+## 2aj. Phase 4 — nine Super Admin screens, and what reviewing them found in my own code
+
+Eleven of §33's sixteen Super Admin screens now exist. Two were written by hand — the dashboard
+placeholder and **Schools**, the exemplar — and nine were generated by a workflow following it:
+Organizations, Principals, Users, Plans, Add-ons, Subscriptions, Invoices, Payments and Coupons.
+Twenty-seven agents: nine to build, eighteen to review through two lenses each.
+
+The screens themselves came out well. What matters more is that the review found **four defects in
+the shared layer I had written**, each one affecting all nine at once, and none of which the build,
+the typecheck, or nine browser sessions had caught.
+
+### The pagination envelope, and why nothing caught it
+
+`ApiResponse.paginated` nests the page fields — `{ meta: { pagination: { … } } }`
+(`ApiResponse.js:45-55`). `PageMeta` declared them flat. Every field arrived `undefined`.
+
+The reviewers traced the whole cascade, which is worse than it first looks: `meta.totalPages <= 1` is
+`undefined <= 1`, which is **false**, so the early return never fires and the control renders anyway;
+both buttons enable because both comparisons are false; and Next calls `onPage(undefined + 1)` →
+`setPage(NaN)` → `JSON.stringify` turns it to `null` → `buildUrl` drops it — pinning the list to page
+one for ever.
+
+**Why the browser could not find it.** Every collection in this environment holds at most one page,
+and `<Pagination>` returns null on a single page. The component that would have displayed the mistake
+never rendered. Nine screens were opened against the live API and all nine looked correct. This is
+the "fixture cannot reach the branch" failure again, and it is the sixth time it has appeared here.
+
+The fix is one line in `requestPage`, and the client now uses the server's own `hasNextPage` /
+`hasPreviousPage` rather than arithmetic over `page` and `totalPages` — the server knows about a row
+inserted since this page was fetched, and the arithmetic does not.
+
+### The refusal branch that could not be reached
+
+`useCollection` splits failures into an **error**, where retrying is the remedy, and a **refusal**,
+where it is not and the screen should explain. The split matches `error.code` against a set — and I
+wrote that set from memory. It listed `FORBIDDEN`, which is `ApiError.forbidden()`'s *default*.
+The permission guard does not use the default: `authorize.js:135` raises `INSUFFICIENT_PERMISSION`.
+
+So the single likeliest refusal on any dashboard — a role without the permission — fell through to the
+error branch and rendered a red banner with a "Try again" button that could never succeed.
+
+Then the assertion written to stop it recurring **found four more**: `INSUFFICIENT_ROLE`,
+`FEATURE_NOT_SUBSCRIBED`, `SCHOOL_CONTEXT_REQUIRED` and `MULTIPLE_SCHOOL_CONTEXT`. All ten codes now
+have their own sentence, because each has a different remedy and one shared "access denied" would
+send a principal with a lapsed subscription hunting for a permissions problem they do not have.
+
+### Two smaller ones
+
+- **`StatusBadge` toned four words out of about twenty.** Of `INVOICE_STATUS`'s seven, only
+  `cancelled` matched — so `overdue` looked exactly like `paid` in the column an administrator scans
+  first. The tone map now covers the whole vocabulary from `constants.js`, grouped by what the reader
+  should *do* rather than by which table the word came from.
+- **A comment stated a false fact about a guard.** It claimed `POST /principals` is gated by
+  `users.manage` alone, so the button "appears exactly when the destination would accept the caller".
+  That route carries `requirePlatformScope()` **first** (`principals.routes.js:52-56`), so an
+  organization-scoped administrator holding `users.manage` would see the button and be refused.
+
+### A backend bug found by rendering a screen
+
+`GET /coupons` returned **500 on every call**. `coupons.service.js:155` included the creating user
+with `attributes: ['id', 'full_name', 'email']`, and `users` has no `full_name` — it has `name`.
+`GET /coupons/:id/usages` carried the same mistake at `:230`.
+
+It survived because the coverage was shaped like the writing rather than the reading: `verify-billing`
+created coupons and never listed them, and `verify-app`'s route table proves only that the route is
+*mounted*. A POST returning 201 says nothing about the SELECT that lists what it created. The suite
+now reads both lists, using the non-throwing caller so a reintroduced bug fails **by name** rather
+than aborting the run — the first version used `expectOk`, which threw, and §5a's rule is that a
+crash is a detection but a poor one.
+
+### The seven links that answered 404
+
+Every list screen carries a permission-gated "Add …" button pointing at a `/new` route, and none of
+those routes exists — the create forms are the next increment. Seven dead links, inherited from the
+exemplar and copied faithfully.
+
+Deleting the buttons was the obvious fix and the wrong one: they are the only rendered evidence that
+`can()` gates anything, and they would have to be restored screen by screen later. A single
+`not-found.tsx` in the route group covers every unmatched address under it instead, and says what is
+actually true — the screen is not built yet, rather than "this page could not be found".
+
+### What the suite gained
+
+`verify-frontend.js` went from 32 assertions to 46. The three that matter most compare the two sides
+at their sources rather than restating one of them:
+
+- the client's `PageMeta` against the fields `ApiResponse.paginated` emits, **and** that the client
+  unwraps `meta.pagination` rather than reading `meta` — the types agreed with the bug perfectly, so
+  the shape alone is not enough;
+- the client's explained-refusal set against every `code:` raised in `authorize.js` and
+  `entitlement.js`;
+- no screen may name a column the API strips as secret, or reach for `payments.screenshot_path`.
+
+**Eleven deliberate regressions were run against the new assertions, and the first pass caught three
+of six.** All three misses were assertions that *could not fail*: two tested for an identifier that
+appears in its own import line, and the third used the regex `canAny?` — which is `can` + `An` + an
+optional `y`, so it matched neither `can(` nor `canAny(` and was collecting an empty list. Fixed and
+re-run: 6 of 6.
+
+### What is still open
+
+Forty-one minor findings remain, and they cluster: fourteen are comment inaccuracies, seven were the
+uncapped search box (fixed globally in `useCollection` — `q` is truncated to the 120 characters
+`validate.js:157` accepts, because a 422 with a "Try again" button is a worse failure than searching
+the first 120 characters of a paste), and the rest are formatting and locale details.
+
+Five of §33's sixteen Super Admin screens are unbuilt: Reports, Settings, and the three plan
+sub-screens whose §33-versus-API mismatch is recorded in the checklist. All seventeen School screens
+are unbuilt, and none of the School surface has ever been rendered — that needs a school-scoped
+account, and none is seeded.
+
+---
+
+## 2ak. Phase 4 — the School surface ✅ row 4.4, and an ORDER BY bug under the whole application
+
+All seventeen of §33's School screens exist. Eleven were generated by a workflow following the
+Schools exemplar; six were written by hand because they are not single lists. Rows **4.1, 4.2, 4.3**
+(twelve of sixteen) and **4.4** now stand at Completed or In Progress with the evidence in the
+checklist.
+
+### The six that are not lists
+
+§33 names a screen; the API sometimes models it as several collections, or as part of something else.
+
+- **Library** is `/library/books` + `/library/transactions`; **Finance** is `/finance/incomes` +
+  `/finance/expenses`; **Fees** is `structures` → `ledger` → `payments`, tabbed in that order because
+  it is the module's own causality — a structure produces a ledger row, a ledger row receives
+  payments. They share `components/tabs.tsx`, which keeps the tab **in the URL**: a reload holds it,
+  Back steps between tabs, and a link can point at one. Component state gives none of that and looks
+  identical until somebody reloads.
+- **Sections** has no collection at all — `GET /classes/{id}/sections` needs a class. Unlike Features
+  on the platform side, this one has a real vocabulary to pick from, so a class picker is the honest
+  answer rather than a recorded mismatch.
+- **Documents** is the one router with no `requireModule()`: §20.5's seven types span four modules, so
+  the check happens per type inside the service. Its `file_path` is deleted by `present()` and
+  returned as `has_file`.
+
+### The defect that was under everything
+
+**`getSort` emitted a single-column `ORDER BY`.** SQL guarantees no ordering between rows that compare
+equal, so on any list whose sort column has ties, MySQL may return them differently between two
+queries: a row appears on page one *and* page two, or on neither, with nothing logged and no error
+anywhere. `classes` defaults to `numeric_order ASC`, and a school with two Year 3 sections has ties
+by construction.
+
+Found by an adversarial review of the §33 Classes screen. **The screen was correct.** The bug was in
+`utils/pagination.js`, under every paginated endpoint in the application at once.
+
+Fixed with a primary-key tiebreaker appended to every order, its direction following the primary sort
+so "newest first" stays newest-first within a tie. Safe on all sixty-four models — checked, not
+assumed: every one has an `id` primary key and none renames it. Skipped when the sort is already on
+`id`, which would otherwise emit `ORDER BY id, id`.
+
+**Why it survived this long: `getSort` had no direct coverage anywhere.** Three suites name it in a
+comment and not one of them called it. It has eight assertions in `verify-validate.js` now, covering
+the default, a requested column, a caller-supplied fallback, the already-sorting-by-id case, a
+dotted association sort, and the allow-list guard — which is asserted precisely because changing a
+function's return shape is when a guard gets dropped by accident. Removing the tiebreaker produces
+six named failures.
+
+### `StatusBadge` covered twenty words of fifty
+
+The agent building the Students screen noticed that of `STUDENT_STATUS`'s six values only two were
+toned, and **correctly declined to widen a component shared by every §33 list from inside one page**.
+That was the right call and it made the fix mine.
+
+All fifty words from all twenty-six vocabularies are toned now, grouped by what the reader should
+*do* rather than by which table the word came from — `overdue` on an invoice, `past_due` on a
+subscription and `late` on an attendance record all mean the same thing, and nobody should learn
+three colours for one idea.
+
+Asserted **in both directions**: every backend word must have a tone, and no toned word may be one
+the backend never emits. So a status added to the schema fails the suite rather than shipping as
+unstyled grey, and a misspelling in the map cannot hide behind a word that is merely missing.
+
+**And the assertion had a gap of its own.** `pass` and `fail` were untoned, because `RESULT_OUTCOME`
+does not end in `_STATUS` and the check scanned only that suffix. `RESULT_OUTCOME` is now named
+explicitly rather than the pattern widened: of the forty other flat vocabularies in `constants.js`,
+almost none is a status — `WEEKDAYS` and `MODULES` render as plain text, and demanding a colour for
+`monday` would be a rule with nothing behind it.
+
+### Comments that were true when written
+
+Four of the eight major findings were screens asserting that `StatusBadge` lacks tones it now has.
+Every one of them was **accurate when the agent wrote it** and falsified by the widening. Three were
+corrected; the other three turned out to be still true on inspection, including a well-reasoned note
+that `relation` is free text rather than an ENUM, so the tone map rightly has no opinion about it.
+
+Two more majors were mine: the Classes screen cited **§17, which is Fee Management** — Classes is
+§14.3 — and that came from the brief I wrote. The Subjects agent got §14.4 right anyway, by reading
+the SRS instead of trusting what I handed it.
+
+### Two limitations recorded rather than resolved
+
+- **`GET /students` returns no class or section.** There is no Sequelize `include` in the module at
+  all, so `class_id` arrives as a bare integer and the screen cannot show placement — the most useful
+  thing about a student list. The agent declined to render the raw id, which was right. Adding the
+  includes changes the API's payload rather than fixing a defect, and §15.1 does not specify list
+  columns.
+- **Three of `STUDENT_STATUS`'s six values are never written.** `students.service.js:29-38` says so in
+  its own words. The filter was narrowed to the three reachable ones, because an administrator who had
+  just promoted a cohort could otherwise filter "Promoted", see an empty table, and conclude the
+  cohort had been lost.
+
+### The pattern across three review rounds
+
+Twenty-seven agents on the platform screens, thirty-three on the School screens, and in both rounds
+**every defect that mattered was in code I had written, not in the generated screens**: the
+pagination envelope, the explained-refusal set, the status tone map, and the `ORDER BY`. The
+generated work keeps being sound; the shared layer beneath it keeps not being. That is worth knowing
+before the next fan-out — the leverage is in reviewing the foundation, not the leaves.
+
+---
+
+## 2al. Phase 4 — the three role surfaces, and three screens I had written off too early
+
+Rows **4.5**, **4.6** and **4.7** are Completed, and row **4.3** stands at fifteen of sixteen. Thirty-
+eight routes build; `verify-frontend.js` is at fifty assertions and green.
+
+### What the API said each role should get
+
+Scouting first changed all three screens, and in each case what the API exposed was narrower than
+what the phrase "role dashboard" suggests.
+
+- **Teacher.** `GET /teachers/dashboard` returns which subjects and classes are *mine* — the one
+  question no list screen answers, because every list is school-wide. §5's teacher work (attendance,
+  marks, homework, timetable) is already those School screens, with permissions a teacher holds. So
+  the dashboard orients and links into them rather than duplicating them: **a second attendance
+  screen gated differently is how two versions of one workflow start.** The shortcuts are filtered by
+  the same permission-and-module pair as the sidebar, so a link never leads to a refusal.
+- **Parent.** §5 grants exactly one thing — an account, links to children, and "access to a Parent
+  Dashboard". No parent-facing list screen is named anywhere in the SRS and none exists in the API.
+  One nav entry **is the requirement**, not a shortfall.
+- **Student.** The smallest surface in the product, for three reasons all recorded elsewhere rather
+  than decided here: §33's MVP list names no student screen; three of the four self-service
+  permissions in §29's fixed catalogue — `students.self.view`, `attendance.self.view`,
+  `fees.self.view` — are mounted **nowhere**, each router recording in its own header that the SRS
+  section describes no self-service view; and `results.self.view` is the one that *is* mounted,
+  because §19.3 does describe a student seeing their result.
+
+Both the parent and student screens say in a line what they do not show. A student hunting for their
+fees should learn it there rather than concluding the page is broken.
+
+### Three screens I had recorded as unbuildable, and was wrong about
+
+The checklist said Modules, Features and Limits could not be built because they are `PUT`
+sub-resources of a plan with no collection behind them. That was true about the *write* path and
+wrong about the read: `GET /plans/{id}` attaches `modules`, `features`, `limits` and `prices` through
+`DETAIL_INCLUDE`. So all three are plan-scoped views — pick the plan, exactly as Sections picks a
+class.
+
+**And the Features objection dissolved on inspection.** I had recorded that no feature vocabulary
+exists anywhere, which is true — and concluded the screen could not be built, which did not follow.
+`plan_features` carries its own `name` and `module_key` per row: a feature is self-describing. What
+the missing vocabulary actually costs is narrower than "no screen" — it means Features cannot show
+what a plan is **missing**, because *missing* is undefined without a list to be missing from. The
+screen says that rather than rendering an empty state that looks like a failed fetch.
+
+The original note is kept in the checklist rather than rewritten, because the reasoning that produced
+it is the same reasoning that corrected it.
+
+Each screen states where it stops:
+
+- **Modules** renders all twenty §11 keys against the plan's rows, so an absent module is visible as
+  absent — and distinguishes **three** states, not two. No row at all means "never configured", which
+  `PUT /plans/{id}/modules` treats differently from a row saying `is_enabled: false`.
+- **Limits** renders `unlimited` as the word. A null `limit_value` shown as `0` says nothing is
+  allowed; an em-dash says nothing is known. Both are wrong in the same direction. Overage gets its
+  own column because "hard limit" and "billed, no price set" are different facts.
+- **Features** types `value` as `unknown` and stringifies it. The column is schemaless JSON — a
+  boolean toggle on one plan, a number on another — and inventing a shape would read as a contract.
+
+All three are **read-only on purpose**: `PUT /plans/{id}/modules` replaces the whole set, so an editor
+is a form that sends every module at once, and a toggle that silently dropped the rest would be worse
+than showing the state honestly.
+
+### The sixteenth screen is not missing frontend work
+
+**Settings has no endpoint.** `/platform` exposes only `/platform/dashboard`, `/school-settings` is
+school-scoped (§16), and `/meta` is the public API descriptor. Row 4.3 stays In Progress because the
+screen §33 names does not exist — but what remains is a decision about the API, not work in this
+phase, and building against an invented endpoint would be inventing a requirement.
+
+### Two things the work turned up in my own code
+
+- **`STUDENT_NOT_LINKED` is raised by a service, not a guard.** `exams.service.js` refuses
+  `GET /exams/my-results?student_id=` for a student not linked to the caller. It is a refusal by every
+  test that matters — retrying cannot help — but `verify-frontend.js` scans only `authorize.js` and
+  `entitlement.js` for codes, so it would never have required this one. Added, with a note in the code
+  that **that assertion's silence is not evidence of completeness**: any service may raise its own.
+- **My nav assertion fired correctly and was wrong.** It counted `href: '/school` across the whole
+  file, and `TEACHER_NAV` deliberately points into four School screens — so it read 21 for a School
+  nav that still has exactly §33's seventeen. Each count is now scoped to its own nav block.
+
+---
+
+## 3. What is currently in progress
+
+**Nothing is mid-edit.** Every file on disk is complete, syntactically valid, and passes its
+verification script. **5,162 checks green, 0 failing, 0 skipped, across thirty-eight scripts**, every
+script exit 0, measured as one **serial** loop in **session 26** against live MariaDB (Known Issues #25 —
+a parallel run reports false failures). Per-script assertions, in the order the loop runs them:
+
+    169, 188, 205, 196, 82, 84, 237, 220, 52, 133, 272, 54
+    219, 174, 163, 51, 109, 57, 161, 262, 100, 104, 116, 20
+    16, 175, 313, 106, 168, 28, 22, 89, 136, 208, 87, 115, 236, 35  =  5,162
+
+Teardown after that loop was confirmed clean: every fixture table 0, `users` 1, `activity_logs` 1,
+`audit_logs` 0, seed 11 roles / 109 permissions / 353 grants / 7 add-ons, and zero files **and zero
+directories** left in `storage/uploads` — the three upload-writing suites now remove their fixture
+schools' upload trees, not only the individual files they recorded.
+
+*(Both this paragraph's provenance and its per-script array had drifted — it credited session 20 for a
+figure four sessions newer and listed 24 stale numbers for a 28-script loop. Rewritten from measurement
+in session 22. There is no git history here, so which session let it drift is **unknown**.)*
+
+**SRS §14 through §20 are closed in full.** Phases 3.A, 3.B, 3.C and 3.E are complete and verified (§2,
+§2b, §2c). Of Phase 3.D: auth (§2d), the four §9 platform modules (§2e), users/roles (§2f), plans (§2g),
+add-ons (§2h), subscriptions (§2i), §13 billing, §14 school setup (§2j), the four §15 people modules
+(§2k–§2n), §16 attendance (§2o), §17 fees (§2p), §18 finance (§2q), §19 exams (§2r) and the whole of §20
+— timetable (§2s), homework (§2t), assignments (§2u), library (§2v) and documents (§2w).
+
+They owe nothing further except the leftovers named in §7 and §5: the two billing items (Known Issues
+#18 and #19), the project-wide `DATEONLY` coercion (Known Issues #20), and **Known Issues #26**, which
+has to be closed before any route serves a file.
+
+*(A lettering note, because the two documents disagree and it has caused confusion once already: this
+file uses the build order — 3.A schema, 3.B models, 3.C middlewares, 3.D feature modules, 3.E app
+wiring. `docs/IMPLEMENTATION_CHECKLIST.md` uses the SRS requirement order — its 3.B is FR-AUTH, its
+3.C FR-TENANT, its 3.D FR-SADMIN. "Phase 3.D" here means a feature module; there it means the Super
+Admin requirements.)*
+
+**Known Issues #26 is closed** (§2x), **SRS §21 is closed** (§2y), **SRS §22 is closed on
+FR-REPORT-001 with FR-REPORT-002 delivered in Excel only** (§2z), and **SRS §23 is closed** (§2aa).
+**All seventy-nine `FR-` requirements tracked by the checklist are now Completed** — FR-EXAM-005,
+the result card PDF, was the last one open, and it closed in §2ac. **The SRS defines ninety, not
+seventy-nine**: eleven cross-cutting requirements from §§24–28 were never named in the checklist and
+were added to it in session 26. Ten of those eleven were already implemented; the eleventh,
+FR-APIDOC-001, **had no implementation at all** and was built in §2af the same session. Every SRS section of the backend is implemented,
+`src/jobs/` has a caller for the four routeless sweeps (§2ab), and FR-BKP-001's database backup and
+retention ship with it.
+
+That is the *functional* surface, and it is worth being precise about what it does not mean. The
+checklist is **137 of 168 rows (81.5%)**, because it also counts the frontend (0 of 10), deployment
+(2 of 13) and the rest of Phase 5. What remains of the **backend** is no longer requirement work:
+a **file-serving route** — now the biggest single unblock left, with three things waiting on it —
+5.2's Anthropic adapter (written, never executed), and the last of Known Issues #25's scoped
+teardowns. The queue's handlers and worker shipped in §2ad. The brief is at the end of §7.
+
+
+## 4. What remains
+
+Phases are ordered by dependency. Nothing below has been started unless stated.
+
+### Phase 3.D — Feature modules (36 built; no SRS section of the backend remains)
+
+`src/modules/` holds **33** directories, counted off disk rather than remembered:
+
+`addons`, `assignments`, `attendance`, `auth`, `classes`, `coupons`, `documents`, `exams`, `fees`,
+`finance`, `homework`, `invoices`, `library`, `organizations`, `parents`, `payments`, `plans`,
+`platform`, `principals`, `quotations`, `roles`, `schools`, `sessions`, `settings`, `staff`,
+`students`, `subjects`, `subscriptions`, `system`, `taxes`, `teachers`, `timetable`, `users`.
+
+Each has its own record in §2: `auth` (§2d), `system` (§2c), the §9 platform surface (§2e), accounts and
+access (§2f), plans (§2g), add-ons (§2h), subscriptions (§2i), the five billing modules (session 15),
+the four §14 school-setup modules (§2j), the four §15 people modules (§2k–§2n), attendance (§2o), fees
+(§2p), finance (§2q), exams (§2r), timetable (§2s), homework (§2t), assignments (§2u), library (§2v) and
+documents (§2w).
+
+**SRS §14 through §22 are closed in full**, and the module list above has since grown `ai` (§2y) and
+`reports` (§2z) and `notifications` (§2aa) — thirty-six directories. **No SRS section of the backend
+remains.** What is left is cross-cutting Phase 5 work: 5.4 (PDF rendering), which five completed
+requirements wait on, 5.2 (the Anthropic adapter), and the `src/jobs/` scheduler that four routeless
+sweeps now wait on. Known Issues #26, which had to be closed before any route serves a file, was
+closed in session 23 (§2x).
+
+*This paragraph had drifted badly and was rewritten from `ls src/modules/` in session 22: it claimed
+"29 of ~40 done" and listed exams, finance, timetable, homework, assignments, library and documents as
+"still absent" — all seven built, verified and already recorded in §2 — while naming "exams" and
+"finance" twice in one sentence. There is no git history here, so which session let it drift is
+**unknown** and is not guessed.*
+
+**Every module router must be created with `createRouter()` from `src/utils/createRouter.js`,
+not `express.Router()`.** That factory installs the `router.param()` tenant guards, which
+Express 4 does not inherit into nested routers — it is the mechanism that makes route-parameter
+isolation structural instead of something each module has to remember. See §5a defect 1.
+
+Mount each one at the marked line in `buildApiRouter()` (`src/app.js`), **after index 5** — that is,
+below `enforceTenant`. `src/modules/auth/` is the worked example of the file layout
+(`<name>.routes.js` + `<name>.controller.js` + `<name>.service.js` + `<name>.validation.js`);
+`src/modules/system/` is the two-file minimum for a module with no domain logic.
+
+**What each new module owes, beyond its own endpoints.** None of this is optional and none of it is
+enforced by a test that does not exist yet, so it is listed here rather than left to be remembered:
+
+| A module that writes… | must call |
+|---|---|
+| `subscriptions`, `subscription_addons`, `subscription_overrides` | `entitlementService.invalidateSchool` |
+| `plan_modules`, `plan_features`, `plan_limits`, or a plan's own fields | `entitlementService.invalidatePlan` |
+| `roles`, `role_permissions` | `permissionService.invalidateRole` |
+| `schools`, `organizations` | `tenantService.invalidateSchool` / `invalidateOrganization` |
+
+Also: `enforceLimit` checks a limit but does **not** record consumption — the handler calls
+`usageService.recordUsage` or `syncHeadcount` after the write succeeds. A handler that fails *after*
+an upload succeeded must call `cleanupUploads(req)`, or the file is orphaned on disk. Every write route
+gets `validate()`; every response goes through `ApiResponse.*`; AI routes get `aiLimiter`. A module that
+creates users calls `authService.sendVerificationEmail` (§9.3, §15) and reuses the `email` /
+`newPassword` rules exported from `auth.validation.js` rather than writing its own.
+
+**Already settled by the auth module:** the two paths named in
+`enforcePasswordChange({ allow: [...] })` are `/auth/change-password` and `/auth/logout`, both mounted
+and verified end to end against the real bootstrap account. If either path is ever moved, that
+allow-list must change in the same commit or the Super Admin is locked out of clearing its own flag.
+
+### Phase 3.F — Optional demo seeders
+`src/database/seeders/demo/` — does not exist. The CLI commands `seed:demo` / `seed:demo:undo` are
+wired and currently warn *"No demo seeders found"* and no-op, which is correct behaviour, not a bug.
+Optional, and likely to stay that way: §35 forbids inventing data, and the SRS names no concrete plans,
+classes or students to seed. This is row **3.S** in `docs/IMPLEMENTATION_CHECKLIST.md` — see the
+lettering note in §3.
+
+### Phase 4 — Frontend
+`frontend/` does not exist. Next.js (App Router) + Tailwind: auth pages, 16 Super Admin
+screens (§33), 17 School screens, teacher/parent/student portals, `AuthProvider`,
+`EntitlementProvider`, `apiClient`.
+
+### Phase 5 — Integrations
+`src/payments/` (plugin registry + 5 providers), `src/ai/` (pipeline), `src/jobs/` (worker +
+cron + `tasks/databaseBackup.js`), `src/docs/` (Swagger). None exist. `npm run worker`,
+`npm run cron` and `npm run db:backup` currently fail.
+
+### Phase 6 — Tests
+`tests/` does not exist, including `tests/setup.js` which `package.json`'s jest config
+already points at, and the `msms_test` database has not been created. `npm test` currently fails.
+Planned coverage: school-isolation 403, `school_id` URL tampering, SQLi/XSS/CSRF, file-upload
+security, rate limiting, JWT security, role/permission enforcement, subscription lifecycle +
+proration, limit enforcement + overage, exam calculation + position, timetable conflict, fee partial
+payment, pagination.
+
+**Plus one item that is not in the SRS but is owed by how this project has been built:** the thirteen
+`scripts/verify-*.js` files hold 2,157 real assertions that jest cannot see, so `npm test` reports
+nothing while the project is in fact heavily covered. They should be folded into the jest suite —
+`docs/IMPLEMENTATION_CHECKLIST.md` row 6.17. Until then, "the tests" means the thirteen scripts, and the
+`Tested` statuses in the checklist rest on them.
+
+Session 12 raised the priority of this item. A suite that only runs when someone remembers to run it is
+how `verify-addons.js` sat broken and unnoticed between sessions 11 and 12 — it was never green, and
+nothing announced that. A jest suite in CI would have failed loudly on the session-11 commit. Until the
+fold-in happens, the thirteen-script loop in §1 is the only thing standing between a broken suite and a log
+entry that claims it passes, so **run it at the start of a session, not only at the end.**
+
+### Phase 7 — Deployment, docs, final review
+~~`deploy/` does not exist~~ — **it does now** (§2ag): the Nginx site, the PM2 ecosystem, the MySQL
+production config, the production env template, logrotate and the monitoring runbook, verified by
+`scripts/verify-deploy.js`. Backup was never going to be a script here; it is
+`src/jobs/tasks/databaseBackup.js`. Phase 7 stands at 12 of 13, and the remaining row is 7.13.
+`docs/VERIFICATION.md` does not exist — it is 7.13's output and must not be linked to
+before it is written. `docs/IMPLEMENTATION_CHECKLIST.md` **was rewritten with honest statuses in
+session 7** and no longer needs regenerating; it needs keeping accurate. Two smaller gaps in the same
+phase: there is no ESLint configuration, so `npm run lint` fails, and the project is still not a git
+repository (`git init` has never been run — every "unchanged file" claim in this log rests on reading
+the file, not on a diff).
+
+---
+
+## 5a. Defects found and fixed in sessions 3–13
+
+Recorded because most of these were silent failures — code that ran, returned no error, and
+protected nothing. None would have been caught by reading the files.
+
+### Defect 1 — route parameters were never tenant-checked (security, critical)
+
+`enforceTenant` was mounted with `api.use(...)` and walked `req.params`, `req.query` and
+`req.body`. But a middleware installed with `router.use()` runs **before any route layer has
+matched**, and Express only populates `req.params` at dispatch. So `req.params` was always `{}`
+there and the `params` walk checked nothing.
+
+Consequence: `GET /api/v1/schools/<other-school>/students` as Principal A returned **200**. That
+is precisely the case FR-TENANT-003 singles out ("including when the school_id is supplied in a
+URL") and the scenario the SRS names as its critical test. Query-string and body attempts were
+correctly refused the whole time, which is what made the gap easy to miss.
+
+Fixed with two mechanisms, because each covers what the other cannot:
+
+1. `collectFromPath()` in `enforceTenant.js` reads the URL itself — a numeric segment following
+   `schools`, `organizations` or `orgs` is a tenant reference. Works from the global mount with no
+   knowledge of how the route was declared, so it cannot be forgotten. Non-numeric segments are
+   skipped deliberately so `/schools/export` keeps working.
+2. `installTenantParamGuards()` registers `router.param()` handlers, which fire at dispatch when
+   `req.params` does exist. This catches URL shapes the path scan cannot place. Express 4 does not
+   inherit `param()` callbacks into nested routers, so it is applied by `createRouter()` —
+   `src/utils/createRouter.js`, now the only sanctioned way to build a module router.
+
+### Defect 2 — `asyncHandler` silently swallowed the param value
+
+`asyncHandler` was fixed at `(req, res, next)`. Express calls a `router.param()` callback with
+`(req, res, next, value, name)`, so the wrapped guard received `value === undefined`, treated it
+as "no tenant named", and called `next()`. The guard ran on every request and let every request
+through. Fixed by forwarding all arguments (`...args`, with `next` still at index 2). Error
+middleware is deliberately still not wrapped: Express identifies it by `fn.length === 4` and a
+rest-parameter wrapper reports 0. Re-ran `verify-error-handler.js` (52/52) and
+`verify-validate.js` (23/23) afterwards to confirm no regression.
+
+### Design reversal — the `X-School-Id` header was abandoned
+
+An earlier session planned an `X-School-Id` request header so the Super Admin could "browse as" a
+school. SRS §9 lists the Super Admin's school capabilities as Create / Edit / View / Activate /
+Suspend / Delete-Archive, Assign or Change Principal, and View School Usage — none of which
+requires acting *as* a school user. Adding the header would have invented a requirement (against
+§34) and, worse, put a client-controlled value into tenant resolution, which is the one thing
+`resolveTenant` exists to prevent. Dropped. Super Admin cross-tenant reads work through
+`req.tenant.isPlatform` instead, which is verified.
+
+### Session 4 — one wart, found by inspection rather than by test
+
+`entitlement.js` passed `{ code: 'SUBSCRIPTION_INACTIVE', state, schoolId }` as
+`ApiError.subscriptionInactive`'s second argument. That argument is the `details` payload, and
+`ApiError` already sets the code itself — so the code would have appeared twice in the response,
+once correctly at `error.code` and once redundantly inside `error.details`. Not a security or
+behavioural defect, but it would have shipped an inconsistent error envelope. Removed before the
+verification script was written, which is why the suite's `details.state` assertions pass cleanly.
+
+**No defects were found by `verify-entitlement.js`** — it passed 249/249 on its first run. Recorded
+plainly because the two previous suites each exposed a real defect on their first run, and the
+absence of one here is a fact about this run, not a claim that the code is beyond testing.
+
+### Defect 3 — the database silently accepted invalid ENUM values (data integrity, critical)
+
+Found by `verify-middlewares.js` on its first run. The suite deliberately wrote an `audit_logs` row
+with `event: 'sabotage'` — a value outside the column's four members — and expected the write to be
+refused. It was not: the row was written, and the count went from 4 to 5.
+
+Two causes, both needed for the gap to exist:
+
+1. **XAMPP's MariaDB was running without `STRICT_TRANS_TABLES`.** Probed directly — the session
+   `sql_mode` was `IGNORE_SPACE,NO_ZERO_IN_DATE,NO_ZERO_DATE,NO_ENGINE_SUBSTITUTION`. Without
+   strict mode the server *coerces* rather than refuses: an invalid ENUM is stored as the empty
+   string `''`, an over-long string is truncated, an out-of-range number is clamped — each with a
+   warning nothing reads and no error the application can catch.
+2. **Sequelize v6 does not validate ENUM membership.** It enforces `allowNull` and any explicit
+   `validate` rule, but a value that is simply not one of an `ENUM(...)`'s members is passed
+   straight through to the server. Confirmed against `src/models/other.js:604`, where the column
+   really is declared as an ENUM, and `columns.js:68`, where `enumOf` really builds
+   `DataTypes.ENUM(...)`.
+
+This was **not a middleware bug**. It affected every ENUM column in all 64 tables. The
+consequential case is `subscriptions.state`: a bug writing a bad value there would have stored
+`''`, which matches none of the ten §12 lifecycle states, so `assertSubscriptionUsable` would have
+locked a paying school out with nothing anywhere to explain why.
+
+Fixed at the connection rather than per column, in `src/config/database.js` — one `afterConnect`
+hook covers all 64 tables and also closes the truncation and clamping cases:
+
+```js
+hooks: { afterConnect: (connection) => /* SET SESSION sql_mode = SESSION_SQL_MODE */ }
+```
+
+`afterConnect` rather than a one-off query because the pool opens connections on demand, and a mode
+set once on connection #1 would leave the rest of the pool permissive. The mechanism was confirmed
+by reading `node_modules/sequelize/lib/hooks.js` and `connection-manager.js` before being relied
+on. The mode is MySQL 8's own default set **minus `ONLY_FULL_GROUP_BY`**, which changes which
+*queries* are legal rather than which data is; and `STRICT_TRANS_TABLES` rather than
+`STRICT_ALL_TABLES`, matching MySQL's default.
+
+Verified afterwards: the session mode reads back as
+`STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION`,
+and a bad value now raises `SequelizeDatabaseError — Data truncated for column … at row 1` with 0
+rows written. Confirmed on two different tables and columns: `audit_logs.event` (the original
+failure) and `activity_logs.action`. Because this is a global change, **all five pre-existing suites
+were re-run under it** — 0 FAIL, 430 assertions — to confirm nothing latent surfaced.
+
+**One corrupted row was left behind by the investigation and has been removed.** The probe that
+demonstrated the defect wrote an `activity_logs` row with `action: ''` and every other column null,
+which survived in the development database until this revision's teardown check found it. It was
+verified to be unrecreatable under the new mode, then deleted; `activity_logs` is back to 0. Recorded
+rather than quietly cleaned up, because a row whose `action` matches none of the §26 enumeration is
+exactly the corruption the fix exists to prevent — its presence was the defect's own footprint.
+
+### Defect 4 — a file exactly on the plan ceiling was refused (correctness)
+
+Also found by `verify-middlewares.js` on its first run: a 1 MB file against a plan allowing 1 MB
+came back **403** instead of 200, and the cascade from the missing success path then produced a
+`TypeError` on `limitCheck`.
+
+Root cause read directly out of `node_modules/busboy/lib/types/multipart.js:476` —
+`if (fileSize === fileSizeLimit)` emits `limit` and marks the file truncated. So multer's ceiling is
+**exclusive**: a limit of N accepts at most N−1 bytes. But the plan's allowance is **inclusive** —
+SRS §11.2's "1 MB" means a 1 MB file is allowed, and `usageService.checkPerRequestLimit` agrees,
+comparing `projected <= allowance`. The two layers disagreed at exactly the boundary, so the answer
+depended on which one happened to see the request first.
+
+Fixed with `multerByteLimit()` in `upload.js`, which returns `maxBytes + 1`. Applied only at the
+multer call site: `req.upload.maxBytes` still means "the largest file this request may carry", so
+handlers, tests and the `maxBytes <= 0` deny-before-reading check all keep reading the true
+allowance.
+
+### Session 5 — one gap found by inspection, and four wrong expectations
+
+**Found by inspection while designing its test:** a multipart request has no `req.body` when the
+app-level `sanitizeRequest` runs, because multer parses text fields per route much later. So the one
+body shape that also writes a file to disk was the one shape reaching the database having passed
+through no sanitising at all. Closed by `sanitizeParsedBody`, mounted inside the
+`uploadSingle`/`uploadArray` chains rather than left for each route to remember. `sanitizeContainers`
+now *accumulates* onto `req.sanitized` instead of assigning it, so the second pass cannot discard
+what the first found.
+
+**Four of the first run's failures were wrong test expectations, not code defects.** Recorded so
+they are not mistaken for fixes:
+
+- The multipart chain already lowercases the MIME type and strips its parameters, so
+  `IMAGE/PNG; charset=utf-8` arrives as `image/png`. `fileFilter`'s own normalisation is defence in
+  depth, not the only pass.
+- Two files on a single-file field yields `UPLOAD_LIMIT_FILE_COUNT`, not
+  `UPLOAD_LIMIT_UNEXPECTED_FILE` — the count limit is hit before the second field name is examined.
+  (A genuinely undeclared field *does* yield `UPLOAD_LIMIT_UNEXPECTED_FILE`; that case is tested
+  separately.)
+- `enforceTenant`'s violation `location` for a URL segment is `'path'`, not `'params'`.
+- My own test bug: `body: { __proto__: {...} }` sets the object's prototype rather than creating an
+  own property, so `JSON.stringify` never emitted the key under test. Fixed by adding a `raw` option
+  to the suite's `call()` helper that sends a body string verbatim, plus an assertion that
+  `{}.polluted` is still `undefined` afterwards.
+
+### Defect 5 — a middleware factory was mounted uncalled, and every authenticated request hung
+
+**Found by running my own new code, in Phase 3.E.** `enforcePasswordChange` in
+`src/middlewares/authenticate.js:207` is a *factory*: it takes `{allow}` and returns the actual
+middleware, `passwordChangeGate`. `src/app.js` mounted it uncalled:
+
+```js
+api.use(authenticate, enforcePasswordChange, resolveTenant, enforceTenant);   // wrong
+```
+
+Express then called the factory as a middleware, so `options` was bound to `req`, `allow` became
+`req.allow || []`, and the factory **returned a function instead of calling `next()`**. The request
+never completed and never errored: no exception, no log line, no response. The first authenticated
+request simply hung until the client timed out.
+
+This is worth recording in full because of how thoroughly it hides:
+
+- It starts cleanly. `createApp()` succeeds and every public route works, because the factory sits
+  behind `authenticate` and an unauthenticated caller is refused before reaching it.
+- It survives a name check. The layer's `.name` is `enforcePasswordChange`, which is exactly what a
+  reader — or a test asserting on names — expects to see.
+- It survives an arity check too, but only by accident: `asyncHandler` wraps the other three in
+  `wrappedAsyncHandler(...args)`, whose `length` is 0, so arity cannot discriminate here at all.
+
+Fixed by calling it, with its exception list stated at the mount site as its own docblock asks:
+
+```js
+api.use(
+  authenticate,
+  enforcePasswordChange({ allow: ['/auth/change-password', '/auth/logout'] }),
+  resolveTenant,
+  enforceTenant
+);
+```
+
+The lasting fix is in the verification, which now identifies chain layers by **function identity**
+rather than by name — `api[1].handle === authenticate` — and asserts specifically that
+`api[2].handle === enforcePasswordChange` is **false**, i.e. that what is mounted is the factory's
+product and not the factory. That assertion exists only because this happened.
+
+### Session 6 — one defect in new code, and four wrong expectations
+
+Defect 5 above was the only code defect. Four of the first run's failures were wrong expectations of
+mine, recorded so they are not mistaken for fixes:
+
+- `notFoundHandler`'s message is `No route matches GET /nope`, not Express's `Cannot GET /nope`.
+- A request with no `Authorization` header yields code `TOKEN_MISSING`, not `UNAUTHENTICATED`.
+- `Vary` is `Origin, Accept-Encoding` — `cors` contributes the first, `compression` the second. I had
+  expected only `Accept-Encoding`.
+- express-rate-limit's draft-7 `RateLimit-Policy` is `1000;w=900`, with no `limit=` prefix; the
+  `limit=` form is in the `RateLimit` header. Asserted against `config.rateLimit` now rather than a
+  literal, so a configuration change does not silently invalidate the check.
+
+### Defect 6 — the bootstrap account could not reset its own password (correctness, blocking)
+
+**Found by running the auth suite, in Phase 3.D.** `Joi.string().email()` defaults to
+`tlds: { allow: true }`, which validates the top-level domain against an embedded list of *registered*
+TLDs. The seeded Super Admin is `superadmin@msms.local`, and `.local` is not a registered TLD — nor are
+`.internal`, `.corp`, `.lan` or `.test`, all of which are exactly what an internal deployment uses.
+
+So `/auth/forgot-password` and `/auth/login` rejected the only account that exists with a 422, and the
+bootstrap account had no way to recover a password. A school running the system on an internal domain
+would have hit the same wall for every one of its users.
+
+Fixed by passing `{ tlds: { allow: false } }` on both email rules in `auth.validation.js` — the
+syntactic check (local part, `@`, domain, no spaces) is kept; the registry check is dropped. The
+registry check is the wrong tool anyway: it rejects valid internal addresses and still accepts
+`nobody@example.com`, so it never established that an address was reachable. Reachability is what
+`sendVerificationEmail` is for.
+
+### Defect 7 — the access token carried 3 KB of permissions nothing reads (correctness / performance)
+
+**Found by asserting on the token's payload rather than on its behaviour.** `login` was embedding the
+role's full permission list in the JWT: 3,093 characters for a Super Admin against 379 for the same
+token without it, roughly eight times the size, sent on every request for fifteen minutes.
+
+Two problems, and the second is the serious one:
+
+1. Every request to every endpoint carried it, including the ones that never look at a permission.
+2. **Nothing read it.** `permissionService` re-reads grants from the database (through its own cache)
+   on every check, precisely so that revoking a permission takes effect immediately. A token minted
+   before the revocation would have carried the old list forever — and if any code had ever trusted the
+   token's copy, revocation would have been silently ineffective for up to fifteen minutes.
+
+Fixed by removing the list. The payload now carries only what the tenant chain actually reads, and the
+suite pins its shape with 4 checks so it cannot grow back by accident.
+
+### Defect 8 — the three most security-relevant events were recorded with no actor (audit, high)
+
+**Found by a failing assertion, `FAIL successful sign-ins are recorded -> false`.** This was a real
+production defect, not a wrong expectation.
+
+`requestFields()` in `activityLog.js` derives the actor from `req.user` and `req.tenant`. Both are
+populated by `authenticate` and `resolveTenant` — which sit *below* the authentication boundary. The
+five §7 public routes sit above it. So a successful sign-in, a password reset from an emailed link and
+an email confirmation each wrote an `activity_logs` row with `user_id`, `user_email`, `role_slug`,
+`school_id` and `organization_id` all `NULL`: the three columns an administrator filters on when asking
+what happened to an account, blank on the three events they would ask about.
+
+The rows existed, the endpoints worked, and the tables were being written — which is why nothing looked
+wrong. It was only visible from a query that asked *whose* sign-in it was.
+
+Fixed with an explicit `actor` mechanism rather than by moving the routes (they cannot move — a public
+route below `authenticate` is unreachable):
+
+- `attributionFrom(actor)` in `activityLog.js:223` overlays only the fields actually supplied, so
+  passing an actor on an authenticated route cannot blank out what `requestFields` already derived.
+- `activityActor(user)` in `auth.service.js` builds one from the row the handler has just proven the
+  caller owns.
+- `logActivity({ actor })` accepts a function, because on a sign-in the identity is unknown until the
+  handler has run.
+
+`login_failed` deliberately supplies **no** actor: the service refuses without revealing whether the
+identifier matched anything, so attaching a `user_id` there would turn the audit trail into a record of
+which guessed addresses exist.
+
+### Session 7 — three defects in new code, and four wrong expectations
+
+Defects 6, 7 and 8 above were all found by running the new suite, none by reading the files. Four of
+the run's other failures were wrong expectations of mine, recorded so they are not mistaken for fixes:
+
+- A 73-character ASCII password fires **both** `string.max` and the custom `password.bytes` rule, not
+  one of them, because `abortEarly: false` collects every failure. The expectation of a single message
+  was wrong; the rule was right.
+- Two `password_changed_at` assertions raced the wall-clock second boundary and failed intermittently.
+  Fixed with a `sleepPastSecondBoundary()` helper in the suite — **not** by loosening the strict `<` in
+  `tokenPredatesPasswordChange`, which is deliberate (see §5's accepted limitations).
+- Six `verify-app.js` assertions addressed chain layers by index. Mounting the two auth routers grew
+  `/api/v1` from five layers to seven, so the indices moved. The checks were re-pinned and the suite
+  now also asserts the layer *count*, so the next module that shifts them fails loudly instead of
+  silently checking the wrong layer.
+- Two mail assertions compared against absolute counts, which passed in isolation and failed in a full
+  run because earlier cases had already sent mail. Rewritten as deltas against a captured baseline.
+
+### Corrections made to the documentation, sessions 6–7
+
+**Known Issues #3 in the session-5 revision was wrong.** It stated the core seed data had been
+reverted by a `seed:undo`. Running `npm run db:seed` returned `created=0` for all five seeders,
+which proves the data was present all along. The row counts were re-confirmed directly: 11 roles,
+109 permissions, 353 grants, 1 user, 7 add-ons. That issue has been removed rather than left to
+mislead the next session.
+
+**`docs/IMPLEMENTATION_CHECKLIST.md` was a wholesale false record, and was rewritten in session 7.**
+Every row across Phases 1–7 was marked `Completed` or `Tested`, including 37 SRS requirement IDs
+marked complete against modules that do not exist. It had been written as a plan and was then read as
+a record. The rewrite (320 → 441 lines) defines each legend word so a row cannot be read generously —
+`Completed` now means code exists **and** an executable check covers it **and** that check passes
+today; `Tested` means covered by a passing check but not yet reachable in the running application;
+`Implemented` means code with no check on it — and every status was re-derived from the file system or
+from a check that was re-run first. Known Issue #1 is closed by this.
+
+**Two errors in my own freshly-written checklist, caught by verifying instead of trusting memory.**
+Both are recorded because they show the failure mode is not confined to the old file: I wrote
+"`.env.example` documents 70 keys" when `grep -c "^[A-Z_][A-Z0-9_]*="` returns **73**, and I named the
+upload surfaces as `student_photo` and `document` when `UPLOAD_PROFILES` actually holds **six**:
+`ai_source`, `payment_proof`, `person_photo`, `homework`, `submission`, `student_document`. Both were
+corrected in the checklist, and the second is corrected in §5 Known Issue #14 of this file, which had
+repeated the same wrong count ("the five upload surfaces").
+
+### Session 8 — one dead code path in shipped code, and three wrong expectations
+
+**Defect 9 — a validation message was unreachable dead code (correctness, low).**
+`organizations.validation.js` overrode Joi's message for `website` keyed on `'string.uri'`. Joi never
+raises that type once a `scheme` list is supplied to `.uri()` — it raises `'string.uriCustomScheme'`
+instead, for *both* a wrong scheme (`javascript:alert(1)`) and no scheme at all (`acme.example`). So
+the override never fired and every caller received Joi's default text, which names an
+`"http|https pattern"` — a regex-flavoured phrase for a field a form should be telling the user needs
+`https://` in front of it. Found by probing the schema with `node -e` rather than by reading it: the
+code looks correct, and only the empirical error type reveals it is not.
+
+Fixed by re-keying the override to `'string.uriCustomScheme'`, with a comment recording why, so the
+next reader does not "correct" it back. `verify-platform-modules.js` now asserts the message text a
+caller actually receives, which is what would have caught this. Nothing else in the codebase overrides
+a `string.uri` message — checked before assuming this was the only instance.
+
+**Three wrong expectations of my own, all corrected in the verification script rather than in the code:**
+
+- I asserted every usage row would read `used: 0` for a fresh school. `admin_limit` correctly reported
+  **2**: it is a headcount limit and `HEADCOUNT_SOURCES` counts active users in `SCHOOL_ADMIN_ROLES`
+  from `users` on every read, and the run had just created two Principals. The assertion was rewritten
+  to state that — which is a stronger check, because it proves the figure is recomputed rather than
+  served from the `usage_records` mirror nothing had written to.
+- I asserted `tracked: false` on every row for a school with no subscription. It is `false` only for
+  the five non-headcount keys; the four headcount limits are always computable from their source table
+  and so are always tracked. Rewritten to assert both halves separately, plus that all nine resolve to
+  `allowed: 0, unlimited: false` — an unsubscribed school is permitted nothing rather than treated as
+  unlimited, which is the property that actually matters.
+- I asserted a Principal-creation activity row's `metadata` held exactly the three fields the route
+  declares. It holds four: `activityLog.js:265` stamps `durationMs` into every row's metadata before
+  merging the declared ones. Rewritten as two checks instead of one — the exact key set including
+  `durationMs`, and separately that no key matches `/password|token|hash|secret/i`. The second is the
+  one that carries the security meaning, and folding it into a key-set comparison had hidden that.
+
+**A count in this file went stale without the script that produces it being touched.** §1's table and
+§2c both read `verify-app.js` = 118, which was correct at the end of session 7. Mounting the four §9
+routers this session added five assertions to it — it asserts the router's layer *count* as well as its
+order, so a mount in `src/app.js` changes its total. The figure is 123, `verify-app.js` is unedited, and
+the pre-existing eight scripts now total 1,046 rather than 1,041. Corrected in both places, with the
+mechanism recorded under §1's table and as a maintenance rule in §8, because this will recur on every
+module group Phase 3.D adds.
+
+### Session 9 — no defect in shipped code, one dishonest assertion of my own, and four wrong expectations
+
+Session 9 wrote `scripts/verify-users-roles.js` against the users/roles modules session 8 had left
+unverified. **Every failure was in my assertions, not in the implementation**, and each was traced to
+root cause in the source before being changed, so nothing was weakened to make a run pass. Four rounds:
+5 failures and an abort, then 4, then 1, then clean.
+
+**The find that matters — an assertion that passed for the wrong reason.** I had written
+
+```js
+check('a suspension does not clear the refresh token hash', suspendedRow.refresh_token_hash !== null, true);
+```
+
+and it passed. It was checking nothing. The `User` model carries a `defaultScope` that excludes
+`password_hash`, `refresh_token_hash`, `password_reset_token_hash` and
+`email_verification_token_hash` (`src/models/core.js:236-249`), so a plain `findByPk` returns the
+column as `undefined` — and `undefined !== null` is true regardless of what the database holds. The
+same root cause made a *neighbouring* assertion fail outright (`Boolean(token_hash && expires_at)`
+came back false), which is the only reason I looked. Both now read through
+`db.User.scope('withSecrets')`, and a third assertion was added stating the scope's own property: all
+four secret columns are absent from a default-scoped `.get()`. That is the stronger check, because
+`publicUser`'s field allow-list is the *second* line of defence against leaking a hash, not the first,
+and nothing had asserted the first. Left alone, the original would have gone on reporting a verified
+property that was never checked once — exactly what directive §5 forbids.
+
+**Four wrong expectations, all corrected in the script:**
+
+- **`raw: true` on an `audit_logs` read threw** `TypeError: Cannot use 'in' operator to search for
+  'password_hash' in {...}`, aborting the run. `new_values` / `old_values` / `metadata` are JSON
+  columns, which MariaDB stores as **LONGTEXT**; a raw read hands back the serialised string and
+  `'x' in <string>` throws rather than answering false. Read as model instances instead, matching
+  `verify-platform-modules.js`, with the reason recorded in a comment.
+- I expected an override audit row's `new_values` to carry three keys including `id`.
+  `recordAudit`'s `diff()` records **only fields that changed**, and `id` never does — so the row
+  carries the two override columns and nothing else. Expectation and label corrected.
+- I expected override activity metadata to hold exactly the three declared counts. `activityLog.js`
+  stamps `durationMs` into every row. Rewritten as "the three counts are present" plus "no value
+  contains a dot", so the assertion is about what is *absent* — the same shape session 8 arrived at for
+  the Principal-creation row.
+- I asserted no activity row is written for a read, and it failed. Turning the boolean into a *list*
+  named the culprit: `access_denied /api/v1/users?school_id=369`. `activityLog.js` records a tenant
+  violation **unconditionally**, without the route declaring anything — its own header says so. My
+  assertion was wrong about the property, so it became two: no *successful* read writes a row, and the
+  cross-tenant one **does**. The second is now a positive assertion of SRS §31's isolation test case.
+
+**One design error caught before running, not after.** My part-4 draft claimed
+`users.service.list()` refuses a widening `organization_id` for a school-scoped caller. It does not:
+`tenantWhere` returns on the first pinned column, so a school-scoped caller has no `organization_id`
+in the built WHERE and the filter is **ANDed onto `school_id`** rather than compared against a pinned
+value. The result is empty either way — which is why one assertion could have looked green while
+describing the wrong mechanism. Replaced with three honest assertions, including an
+organization-scoped caller, for whom `organization_id` *is* what got pinned and the refusal does fire.
+
+**Two corrections made alongside the users/roles module code, recorded here because §5a never got
+them.** Both were fixes to code written in the same work, not to older shipped code:
+
+- **A mis-citation repeated across four files, seven passages.** `services/permissionService.js`,
+  `config/permissions.js`, `middlewares/authorize.js` and `database/seeders/03-role-permissions.js`
+  each cited a §33 "Roles & Permissions" screen as the basis for role-permission management. **§33
+  lists no such screen** — its Super Admin list ends at Settings, and a grep of the source for
+  `roles &`, `role management`, `manage roles`, `role builder`, `assign role` and `custom role`
+  returns nothing. All seven now cite §29 and FR-AUTH-009, which is what the capability actually rests
+  on. The code was correct; the justification was invented, and under §35 an invented justification is
+  the thing that lets an invented requirement in next.
+- **A Joi message rendered with doubled quotes.** `{#label}` is substituted *already quoted*, so
+  wrapping it in literal quotes produced `""extra_permissions[0]"" must be…` in the response body.
+  Corrected in `users.validation.js` and `roles.validation.js`, both with a comment, and the
+  un-quoted text is now pinned by an assertion so a "helpful" re-quoting fails the run.
+
+**A count in this file was stale again, by the mechanism session 8 recorded.** §1's table read
+`verify-app.js` = 123 / total 1,359 when the true figures were **127 / 1,363** — session 8 wrote its
+table *before* mounting the users and roles routers, and those two mounts added four layer-count
+assertions. Re-run and re-counted per section rather than carried forward. The staleness is now
+recorded in §1 alongside the figure, since this is the second consecutive session it has happened.
+
+**And one documentation error introduced *while writing this section*, caught by measuring.** I
+rewrote §8's counting rule to say a `grep -c "^PASS"` sweep *over*counts by 1, on the reasoning that
+`verify-seed.js`'s `PASS (22)` header would be counted on top of its 22 sub-bullets. It is the other
+way round: the sub-bullets begin with `+`, not `PASS`, so the grep sees **one** line for that script
+and the ten-script total comes to **1,578** — an undercount of 21, which is what §8 had said correctly
+before I touched it. Found by running the sweep and reading the actual output rather than trusting my
+recollection of the format. Corrected in §1, §8 and the checklist, and §8 now says to measure this
+rather than reason about it. The lesson is the same one as step 71's, applied to prose instead of an
+assertion: a figure that is not measured is a guess, whichever document it lands in.
+
+### Session 10 — no defect in shipped code, one draft expectation corrected, eight stale figures found
+
+`scripts/verify-plans.js` passed **175 / 175 on its first run**, so the plans module shipped with no
+defect found. Two things are still worth recording.
+
+**A wrong expectation in my own draft, caught by reading the code instead of running it.** I had written
+`check('the prices copied', copy.prices.length, 1)` for the duplicate endpoint, reasoning that a
+duplicate would carry one active price. `plans.service.duplicate()` copies the source's **whole** price
+table via `COPY_FIELDS.prices`, and by that point in the run the source holds two rows — one active, one
+retired by the retirement rule. The tempting fix was to make `duplicate()` copy only active prices so the
+assertion would pass. That would have been changing shipped behaviour to suit a test: copying every price
+is the honest reading of "duplicate", the retired row is part of the plan's price history, and **no SRS
+text governs it either way**. Asserted the real shape instead — 2 prices, 1 of them active, and no copied
+price id appearing among the source's ids, which is the property that actually matters.
+
+**Eight line counts in §6 were stale, found by re-measuring the whole tree rather than the changed
+files.** §6 opens with "Line counts are actual", and for eight rows it was not: `constants.js` 834→935,
+`permissions.js` 423→429, `tokens.js` 127→139, `authorize.js` 205→206, `principals.service.js` 301→281,
+`principals.validation.js` 95→98, `permissionService.js` 204→222, `app.js` 278→318, and
+`verify-app.js` 719→762. Some drifted several sessions ago. §2g's own file table was wrong the same way
+on its first draft — it claimed `src/app.js` `+18` when the mount is 19 lines (the require at line 76
+plus an 18-line block), and quoted a `verify-app.js` line delta I could not verify at all, so that cell
+now states the measured total and the assertion delta instead. This is the third consecutive session in
+which a figure in this file turned out to be carried forward rather than measured; §8 now says to
+re-measure §6 wholesale, not just the rows a session touched.
+
+---
+
+### Sessions 11 and 12 — a verification suite that had never passed, and one assertion that passed for the wrong reason
+
+This entry covers two sessions because the first one did not write its own. **Session 11 built the whole
+`addons/` module, mounted it, and extended `scripts/verify-app.js` — then ended without updating this
+log and without `scripts/verify-addons.js` ever passing.** Session 12 opened on a file that said
+`addons/` did not exist, next to 2,280 lines on disk that said otherwise.
+
+**No defect was found in the shipped module.** All five defects were in the verification script, which is
+a materially different situation from the last three sessions: there the suite passed on first run and
+the corrections were to draft expectations. Here the suite **aborted on a `TypeError` at check 76 of
+169** and had therefore never once run to completion. What follows is what it was hiding.
+
+**Defect 9 — the list response shape was wrong in six places, and the first one crashed the run
+(verification, blocking).** `ApiResponse.paginated()` puts the row array at `data` itself and the counts
+under `meta.pagination`; the script read `dataOf(res).rows`, which is `undefined`, and
+`undefined.some(...)` threw. Corrected at all six sites, plus one seventh reading
+`dataOf(res).pagination.total` that had to become `res.body.meta.pagination.total`. The established
+idiom was already visible in `verify-plans.js:971` and `verify-platform-modules.js:769`.
+
+**Defect 10 — `messagesOf()` read a path that does not exist, making three assertions unfalsifiable
+(verification, high).** The helper returned `(res.body.error.details.errors || [])`, but `validate.js`
+builds a **flat array** of `{field, location, message, type}` and `ApiError.validation` puts it straight
+on `error.details`. So `details.errors` was always `undefined`, `messagesOf()` always returned `[]`, and
+three assertions of the form `messagesOf(res).some(m => m.includes('…'))` could only ever be `false`.
+They were failing loudly, which is the good case — but had the draft written `.every()` instead of
+`.some()`, all three would have **passed vacuously on an empty array** and the module's error messages
+would have been recorded as verified without a single one being read.
+
+**Defect 11 — a JSON column read under `raw: true`, and an assertion that passed by substring match
+(verification, high — this is the one worth remembering).** The audit query used `raw: true`.
+`old_values`, `new_values` and `changed_fields` are `json()` columns; MariaDB stores them as LONGTEXT and
+**Sequelize parses them in the model layer only**, so under `raw: true` all three arrive as strings.
+Two assertions failed honestly (`old_values.units_per_quantity` → `undefined`). The third **passed for
+the wrong reason**:
+
+```js
+(row.changed_fields || []).includes('units_per_quantity')   // row.changed_fields is a STRING
+```
+
+`String.prototype.includes` exists, so this was a substring match on raw JSON text. It would have
+reported success for a `changed_fields` of `["units_per_quantity_typo"]`, and it would have reported
+success even if the column held one long unparsed blob naming every field in the table. Fixed by dropping
+`raw: true` so the model getters apply — which fixed both honest failures and removed the false positive
+in one change.
+
+Verified empirically rather than reasoned about: a throwaway `audit_logs` row was created, read back both
+ways, and destroyed. `raw: true` → `typeof old_values === 'string'`; model instance → `'object'`, with
+`old_values.units_per_quantity === 1`. **`verify-users-roles.js:1500` already carries a comment warning
+about exactly this** ("Read as model instances, not `raw: true`"), so session 11 regressed on a trap
+session 9 had already found and documented. The other four suites that touch audit JSON
+(`verify-plans.js`, `verify-users-roles.js`, `verify-platform-modules.js`, `verify-auth-module.js`,
+`verify-middlewares.js`) were each checked in session 12 and are all clean — none uses `raw: true` for a
+JSON read, so the false positive was confined to the new script.
+
+**Defect 12 — three expectations asserted a BIGINT as a string (verification).** The draft expected
+`units_per_quantity` to be `'1'` / `'50'` / `'1000'`. It is a **number** at every layer — confirmed
+through `toJSON()`, the raw model attribute and a raw SQL query, all three. The tempting fix was to
+stringify it in `present()` so the assertions would pass; that would have changed a contract the
+entitlement arithmetic reads, to suit a test, for no requirement — the same trap session 10 recorded
+under the duplicate-prices expectation. Asserted the real type instead.
+
+**A wrong claim of my own, caught before it shipped in this log.** The first draft of §2h stated that
+`scopeFor()` confines a school to add-ons and *"their unrestricted, active prices"*. It does not:
+`detailInclude()` filters prices by `is_active` alone, so a school sees a price restricted to a plan it is
+not on. Caught by reading both functions instead of inferring the behaviour from the passing suite, which
+never asserted it. The sentence was corrected and the real gap recorded as Known Issues #17 — the suite
+being green is not evidence for a claim the suite does not make.
+
+**A figure in §1 was stale for a worse reason than usual.** The table read 129 for `verify-app.js` and
+1,776 in total; the true figures were 131 and — with a passing addons suite — 1,947. The previous three
+sessions each found stale figures carried forward rather than measured. This time the number was not
+merely stale: **1,776 was unreachable**, because it counted eleven suites while twelve existed and the
+twelfth could not pass. §1's row was re-derived from a fresh `grep -c "^PASS"` sweep (1,926 lines, +21 for
+`verify-seed.js`'s summary line = 1,947), and every one of the twelve was re-run to exit 0 afterwards, in
+one loop, twice.
+
+**Three more line counts in §6 were stale, and four sentences with them.** §8's new rule to re-measure §6
+wholesale was then applied: a sweep of all 111 `| path | N |` rows against the files found three wrong —
+`seeders/03-role-permissions.js` 139→**141**, `app.js` 318→**338**, `verify-app.js` 762→**775**. Only two
+of the three are session 11's, and the difference was established from file mtimes rather than assumed
+(there is no git history — Known Issues #12): `app.js` (15:20) and `verify-app.js` (15:21) sit in the same
+batch as the add-on module (15:14) and `verify-addons.js` (16:18), so both moved for the `/addons` mount.
+`03-role-permissions.js` (01:20) belongs with `src/config/permissions.js` (01:19), fourteen hours earlier
+— the batch that added the `addons.view` / `addons.manage` keys to the catalogue. **That row had been
+stale since before session 11 and every session since has carried it forward.** My first draft of this
+paragraph blamed all three on session 11, which was a guess dressed as a finding; the mtimes were checked
+only because the seeder contains no `addons` reference to explain the two lines.
+Two apparent mismatches were
+artefacts of the sweep, not real: both `index.js` rows (`middlewares/` 141, `models/` 699) matched, and
+`docs/SRS-extracted.md` is 1,698 as claimed — my counter over-counted a file with no trailing newline.
+Correcting the `app.js` row surfaced three further stale claims in the same cell and elsewhere, none of
+which a line-count sweep would have found: §6 said `/api/v1` has "fourteen" layers and `verify-app.js`
+runs "129 checks", and §2e's heading said 129 too. `api.length` is asserted as **15** at
+`scripts/verify-app.js:190` and the suite emits **131** `PASS` lines — both re-measured here rather than
+inferred from the `/addons` mount index. §5a's own title still read "sessions 3–10" while containing this
+entry. The lesson is narrower than §8's existing rule and worth stating separately: **a stale count is
+usually attached to a stale sentence**, so a row corrected by measurement still has to be re-read. One
+correction in this entry is to the entry itself: the add-on price paragraph above pointed at "Known
+Issues #12", which is the git-repository row, rather than at #17.
+
+§2g's `src/app.js` 318 and `verify-app.js` 762 were deliberately **left alone**. Those two tables record
+what a session added, so 318 was the true total when session 10 ended and 338 is the true total now; §2h
+immediately below carries the newer pair. Rewriting a per-session delta table to the current figure would
+attribute session 11's mount to session 10 and destroy the only record of when each line arrived.
+
+**What this says about the process, and the changes made to it.** Three of these five defects were
+invisible to inspection and one was invisible to the suite *itself* — a green line that proved nothing.
+The pattern across sessions 9, 11 and 12 is now clear enough to act on: a script written alongside the
+module it tests is written by someone who already believes the module works, and the assertions most
+likely to be wrong are the ones that look most obviously right. Two rules follow from the defects:
+**re-run the whole loop at the *start* of a session, before trusting anything this file claims**, and
+**never assert against a `raw: true` row that holds a JSON column.**
+
+Three more follow from the *documentation* mistakes above, which is the less comfortable half of this
+entry — every one of them was mine, made in this session, in a file whose whole purpose is to be
+trusted: **a stale count is usually attached to a stale sentence**, **attribute a stale figure only from
+evidence** (mtimes, since there is no git history), and **a passing suite is not evidence for a claim the
+suite does not make.** All five are in §8. Writing the first two there also exposed that §8's own
+counting bullet still said eleven scripts / 1,755 / 1,776, and that §5a had claimed two rules were
+"added to §8" when none of them had been — a claim about the log, in the log, that the log falsified.
+
+### Session 13 — no defect in shipped code, and one fixture that manufactured seven false defects
+
+`scripts/verify-subscriptions.js` was written against a module built in the same session, so the
+sessions 9/11/12 pattern applied in full and the loop was re-run at the start before anything in this
+file was trusted. **Nine assertions failed on the first complete run. All nine were in the suite.** The
+final state is 208 checks, 0 fail, green on two consecutive runs, and the module was not changed to make
+any of them pass.
+
+**Defect 13 — a fixture helper that fired and forgot, and turned one 422 into seven false entitlement
+defects (verification, blocking — the most valuable finding of the session).** `makePlan()` configured
+each fixture plan's limits with `PUT /plans/:id/limits` sending a single key, `student_limit`. But
+`plans.validation.setLimits` requires **all eight** `LIMIT_LIST` keys, exactly once each, so the call
+returned **422 for all four fixture plans**. The helper did not check the status. Every plan-base
+assertion in the run therefore read `{value: 0, baseValue: 0, source: 'default'}` from
+`entitlementService`'s `emptyLimits()` — and reported it as an entitlement engine that was ignoring the
+plan. Seven of the nine failures were this one bug, and every one of them looked like a defect in
+shipped code.
+
+Fixed by sending all eight keys **and throwing on a non-200 for both the limits and the modules calls**.
+The comment left in the helper records why. The general rule, now in §8: **a fixture that does not assert
+its own success can manufacture a false defect report**, and the failures it produces will point at the
+code under test rather than at itself. Nothing in the output distinguished them — the assertion messages
+were about entitlement, the stack traces were in the entitlement service, and the plan rows existed with
+the right names. The only reason it was caught rather than reported as a defect was reading the 422 body,
+which required going back to a response the helper had discarded.
+
+**Defect 14 — the headline add-on purchase was unpriced, and the suite would have recorded that as
+correct (verification, medium).** The first draft purchased an add-on without naming an
+`addon_price_id`, expecting the service to pick an applicable price the way `selectPrice()` does for
+plans. It does not: `purchaseAddon()` applies a price only when one is named, so the row stored
+`unit_amount: 0` and `addon_price_id: null`. The draft's expectation of `'0.00'` had made this *pass*.
+**The service was deliberately not changed** — the fallback is what keeps the seven §11.3 add-ons
+purchasable against the shipped seed data, where `addon_prices` is empty. Instead the headline purchase
+now names a price and asserts a real amount, and the unpriced path is asserted **deliberately** on a
+second purchase, with the zero and the null recorded as the expected result. The open question it raises
+is §13's, and it is now Known Issues #18 rather than a silently-passing line.
+
+**Defect 15 — two more `raw: true` serialisation expectations (verification, low).** Session 12's rule
+covered JSON columns; this session found the same class of mistake on a **TINYINT**. `is_recurring` came
+back as `0` where the expectation said `false`, and `unit_amount` as a number where a draft expected
+`'0.00'`. Both fixed by reading model instances instead of raw rows, with `Boolean(...)` and
+`money.toNumber(...)`. The §8 rule is widened from "JSON columns" to: **under `raw: true` MariaDB returns
+JSON as strings and booleans as 0/1 — read a model instance when the assertion is about a value's
+type.**
+
+**Three wrong expectations of my own,** each corrected against the value actually in the source rather
+than guessed at a second time: `SORTABLE`'s contents *and order*; the `super_admin` grant list, which
+holds `subscriptions.overrides.manage` and not a `subscriptions.view_all` I had invented; and an audit
+filter written as `startsWith('subscription')`, which pulled `subscription_plans` into the audited-table
+set — those rows belong to `verify-plans.js`'s subject, not this one. Narrowed to an explicit
+`OWNED_TABLES` list of three.
+
+**One doc-block claim of my own that was not assertable, removed before the suite was called finished.**
+Part 5's header claimed the deferred downgrade proves `tenantService.invalidateSchool()` is skipped while
+the entitlement snapshot refreshes anyway. It does not: a cache refresh with no state change is
+unobservable from outside. Rewritten to the claim part 5 does make — that a deferred downgrade writes
+`scheduled_plan_id` and nothing else, and the school still resolves to Pro at 650 students with
+`getSchool()` still reporting `active`. This is the session-12 rule (*a passing suite is not evidence for
+a claim the suite does not make*) applied to a suite I was writing rather than one I inherited, which is
+the only place it can be applied cheaply.
+
+**Two tooling stumbles, recorded because both cost time twice.** An inline `node -e` was routed through
+Node 24's `evalTypeScript` parse path and failed on valid JavaScript; and a throwaway script written to
+`/tmp/` could not `require('./src/app')`. Both were solved the same way — write the throwaway inside
+`backend/scripts/`, run it, delete it.
+
+**One scoping correction to this file.** §7's next-task block listed `quotations` among the "tables in
+scope" for the subscriptions module. It is not: `Quotation` is defined at `src/models/billing.js:430` and
+belongs to Phase 3.H with invoices and payments. §1's own table had it under billing correctly, so the
+two halves of this file disagreed. Corrected in §7.
+
+**Five more stale figures in this file, found by sweeping rather than by editing.** Session 12's own
+lesson — *a stale count is usually attached to a stale sentence* — was applied deliberately at the end of
+session 13: after updating the sections the session had touched, the whole file was grepped for the
+superseded totals instead of assuming the edits had caught them. Five live passages still read
+twelve-scripts / 1,947: the **header block** (lines 6–20, which also described the project without
+mentioning subscriptions at all, four sections after §2i had been written), the jest paragraph in the
+Phase-6 list, §8's grep-counting rule, the "twelve-script loop" sentence, and §7's phase-completion rule.
+The per-session history in §5a and §7 was **left alone** — those record what a session measured at the
+time, and rewriting one would attribute a later measurement to an earlier session.
+
+**And one outright error surfaced by the same sweep, wrong for three sessions.** §7's phase-completion
+rule read *"Phase 3.E before them: 131/131"*. 131 was `verify-app.js`'s total; 3.E's suite is
+`verify-plans.js` at 175, which the same sentence already named two clauses earlier. Rewritten to name
+the suite rather than a phase letter, and re-measured to 133. A stale *number* is visible to a grep; a
+stale *label* attached to a correct number is not, which is why it survived the three previous
+re-measurements of that figure. Also corrected in `docs/IMPLEMENTATION_CHECKLIST.md`: `api.length` is
+asserted at `scripts/verify-app.js:191`, not the `:190` the previous revision cited — adding
+`/subscriptions` to the doc-block above the assertion moved the line, so a **line citation is as
+perishable as a count** and belongs in the same sweep.
+
+### Session 16 — five defects in unrecorded shipped code, found by audit rather than by a failing check
+
+Session 16 opened on a fifteen-script loop (the §8 rule) and found a suite that had never been recorded:
+`scripts/verify-school-setup.js`, 111 assertions, **passing**. Everything below was found by *reading*
+the 2,116 lines it covered, not by a red check — which is the whole point of §8's "a passing suite is
+not evidence for a claim the suite does not make". All five are fixed, and each fix is now asserted.
+
+**Defect 16 — `tenantWhere()` on two tables that have no `organization_id` column (correctness, 500).**
+`class_subjects` and `teacher_subjects` are the only tables the Phase 3.I modules touch that carry
+`school_id` **without** `organization_id` (`src/models/academic.js`). `tenantWhere()` is model-agnostic:
+when a caller has an organization but no school in scope it writes `organization_id` into the WHERE
+clause. Four queries in `subjects.service.js` did that. Proven against the live database rather than
+argued: `db.ClassSubject.findAll({ where: { subject_id: 1, organization_id: 5 } })` →
+`SequelizeDatabaseError: Unknown column 'ClassSubject.organization_id' in 'where clause'`. Fixed with
+`childScope(subject, where)`, which scopes by the already-resolved parent's `school_id` — not a weaker
+check, because the parent reached the function through `findSubject()`, which is itself
+`tenantWhere`-confined against a table that *does* carry both columns.
+
+*Why 111 green assertions never saw it:* the branch is unreachable through the seeded grants. Only
+`super_admin`, `principal`, `school_admin`, `teacher` and `receptionist` hold any `subjects.*` key, and
+none of them resolves to an organization-without-school tenant. But role grants are database-driven and
+editable through `PUT /roles/:id/permissions` (§2f), so the branch is **one grant away** from being
+live. It is now asserted against the service directly, for exactly that reason.
+
+**Defect 17 — `DELETE /subjects/:id` had no referential guard (data loss, latent).** `destroy()` was
+find → snapshot → `row.destroy()`. `Subject` uses `modelOptions`, not `softDeleteOptions`, so that is a
+hard SQL DELETE, and `class_subjects.subject_id`, `teacher_subjects.subject_id` and
+`exam_subjects.subject_id` are all `ON DELETE CASCADE` — with `marks.exam_subject_id` cascading in turn.
+Deleting a subject would therefore delete every mark ever recorded against it, below the application,
+with a 204 and a single `subjects` audit row. Confirmed against the live schema's own
+`information_schema.REFERENTIAL_CONSTRAINTS`, not from the model declarations alone.
+
+Two honest qualifications. The exams module does not exist, so `exam_subjects` and `marks` are
+unwritable today — **the marks half is latent, not live**; the reachable loss is the two assignment
+tables, which this module audits explicitly when they go through `unassignClass` / `unassignTeacher`.
+And SRS §14.4 names no subject deletion at all. The route was kept rather than removed (removing a
+shipped endpoint is not a bug fix) and guarded: `SUBJECT_IN_USE`, 409, naming the blocking tables.
+
+**Defect 18 — `DELETE /classes/:id` and `DELETE .../sections/:id` guarded only `students` (data loss).**
+The student guard was correct but incomplete: `students.class_id` is `ON DELETE SET NULL`, so those rows
+merely detach. Eight tables cascade off `classes` and six off `sections` — including `sections`
+themselves, `class_subjects`, `teacher_subjects`, `exams`, `fee_structures`, `timetables`, `homework`
+and `assignments` — and those are removed outright. **The module's own bar settles it:** if a class may
+not be deleted while rows would only be *detached*, it certainly may not be while rows would be
+*destroyed*. Now `CLASS_IN_USE` / `SECTION_IN_USE`, 409, naming what blocks.
+
+This one was demonstrated rather than argued. Adding the guard turned the suite red at
+`DELETE /classes/:id`, because the run's own fixture class still carried a `class_subjects` row and a
+`teacher_subjects` row — **the old code had been silently cascading them away on every run**, and 111
+green assertions recorded it as a 204.
+
+**Defect 19 — check-then-insert on a key MySQL cannot enforce (correctness, race).** `assignClass` and
+`assignTeacher` looked the duplicate up, then inserted. `class_subjects_unique` is
+`(class_id, section_id, subject_id)` and `teacher_subjects_unique` is
+`(teacher_id, subject_id, class_id, section_id)`, but **MySQL treats NULL as distinct inside a UNIQUE
+index**, so two concurrent *whole-class* assignments (`section_id` NULL) both pass the lookup and both
+insert — the index rejects neither. The pre-existing `nullKey()`/`Op.is` handling made the lookup
+correct; it did not make the pair atomic. Both are now one transaction with `lock: t.LOCK.UPDATE`.
+Separately, `rethrow()` labelled *every* unique violation `SUBJECT_CODE_TAKEN`, so a genuine
+section-specific assignment collision — where the index *does* enforce — reported a duplicate subject
+code. It now takes a `kind`.
+
+**One wrong expectation of my own, corrected before it was believed.** The first draft of the audit
+assertions expected a `school_settings` row with `event: 'update'`. It failed: `settings.update()` is an
+upsert and the suite PATCHed once, so the only row was an `event: 'create'`. The fix was not to weaken
+the assertion but to add the second PATCH — which revealed that the `row.set()/save()` branch of that
+function, and its update audit, had **never been executed by any run**. Read the real rows before
+asserting against them (§8); this is the same class as sessions 5, 6 and 9.
+
+**Defect 20 — a `DATEONLY` column stored the previous day on any server west of UTC (data corruption).**
+`validate()` runs Joi with `convert: true`, so `Joi.date().iso()` produces a `Date` at **UTC** midnight;
+Sequelize's `DATEONLY._stringify` then formats that instant with `moment(date).format('YYYY-MM-DD')`,
+which is **local**. `sessions.service.js` wrote that `Date` straight into `academic_sessions.start_date`.
+Fixed by routing both date columns through `dates.toDateOnly()`.
+
+*This one is worth reading for how the diagnosis went wrong first.* The initial write-up of Known Issues
+#20 called it project-wide and named billing as affected, on the strength of `invoices.validation.js` and
+`subscriptions.validation.js` using the same `Joi.date().iso()`. Checking the **service** layer rather
+than stopping at the validation layer showed the opposite: `invoices.service.js:559-565` and
+`quotations.service.js:275,326` already normalise through `dates.toDateOnly()`, so billing was never
+wrong. Of 28 `DATEONLY` columns only three belong to a module that exists, and only one module bypassed
+the helper the project already had. **A shared symptom at one layer is not a shared defect** — the same
+error as inferring a property from a green suite, one layer down.
+
+The assertion is the interesting part. At this machine's UTC+5 the correct and the buggy path agree, so
+checking the stored value would have passed either way. Node applies a runtime `process.env.TZ` change
+immediately, so the suite flips to `America/New_York` for exactly one request, restores it in a
+`finally`, and asserts both the response and the column itself via `DATE_FORMAT`. Regressing the fix
+turns all three red with the predicted values (`2029-03-31`, `2030-03-30`); that was confirmed, not
+assumed.
+
+### Session 16, second half — five defects in the teachers module I had just written
+
+The Phase 3.J module was audited the same way the inherited Phase 3.I code was, on the principle that
+code being new and mine is not evidence it is right. It was green at 67/67 when the audit started.
+
+**Defect 21 — `teacher_limit` was bypassable through `PATCH` (entitlement, high).** `enforceLimit` is
+a *route* guard and it was mounted on `POST /` only. But `teacher_limit` counts `is_active: true`, not
+rows — so a school at its ceiling could deactivate a teacher, create a replacement into the freed
+allowance, then flip the first one back through `PATCH` and sit at limit + 1 with no guard having run.
+**Proven before it was fixed**, by writing the assertion first and watching it fail: the PATCH returned
+200 and `usage_records` recorded 3 used against an allowance of 2. Fixed in
+`teachers.service.update()` — when `is_active` transitions to true, `usageService.assertWithinLimit`
+raises the same `PLAN_LIMIT_EXCEEDED` the create path raises. The lesson generalises to every headcount
+limit §15 is about to add: **the ceiling belongs wherever the counted flag is set, not only where a row
+is created.**
+
+**Defect 22 — the entitlement guard and the record were resolved from different schools (isolation,
+high).** `requireModule` resolves *which* school to gate on from the request — for a caller with no
+school of their own that is `?school_id` — while `tenantWhere()` scopes an organization-level caller by
+`organization_id`, across every school in the organization. An organization admin whose organization
+holds school X (Teachers module on) and school Y (off) could name `?school_id=X` to satisfy the guard
+and then read a teacher of Y by id. Fixed by naming the school in the where clause on the by-id paths,
+so the record and the guard agree by construction. A school-scoped caller is unaffected
+(`resolveSchool()` refuses a foreign id first) and a platform caller is unaffected (the guard returns
+early for them, so there is no gated school to disagree with).
+
+**Defect 23 — nothing enforced one teacher per account (correctness, medium).** `teachers.user_id`
+carries a plain index, not a unique one, and FR-TEACHER-002's dashboard resolves the teacher *by*
+`user_id`. A second teacher row linked to the same account would make the dashboard answer with
+whichever row the optimiser returned first — a silent wrong-record read, not an error. Refused in
+`loadUserInSchool()` with `TEACHER_USER_TAKEN`, allowing a row to keep its own link on re-save.
+
+**Defect 24 — a schema wider than its column, which turns a valid-looking body into a 500
+(correctness, medium).** `specialization` was validated at 180 characters against a `STRING(160)`
+column, so a 161-character value passed validation and then hit MariaDB under `STRICT_TRANS_TABLES`,
+raising a `SequelizeDatabaseError` that `rethrow()` does not translate. Every width is now taken from
+the model rather than chosen: `specialization` 160, `qualification` 255, `designation` 120,
+`employee_id` 60, and `salary` bounded by `DECIMAL(14,2)`. **Worth a habit for §15**: read the column
+widths off the model when writing the schema — five of the eleven string fields here would have been
+wrong if they had been guessed.
+
+**Defect 25 — a confidently wrong sentence in my own documentation (documentation, and the one worth
+reading).** The module header, the route header, this file and the suite header all said that
+`enforceLimit` "records nothing, so a module that only mounts the guard enforces against a count that
+never moves". For a **headcount** limit that is false: `getUsage()` routes `MEASUREMENT.HEADCOUNT` to
+`countHeadcount()` (`usageService.js:276-277`) and counts live from the `teachers` table — it never
+reads `usage_records`. `syncHeadcount` maintains a *reporting* mirror. The sentence would have been
+right for a periodic limit such as `api_limit`, which is why it read plausibly. Corrected in all four
+places. This is the §8 rule biting on my own output within a single session: the claim was written
+from a reasonable model of how the code *should* work, and reading `usageService.js` was all it took to
+show it does not.
+
+Two findings were recorded rather than fixed. The limit check and the insert are **not atomic** — two
+concurrent creates can both pass a ceiling — but that is a property of `enforceLimit` everywhere, not
+of this module, and closing it here alone would be inconsistent; it is Known Issues #21. And the suite
+still creates no `teacher_subjects`, `classes` or `sections` rows, so the dashboard's counts are only
+ever asserted against empty collections; §15's later modules will supply the fixtures that close it.
+
+### Session 16, third part — five defects in the students module I had just written
+
+Same discipline as the teachers module: audited on the principle that new-and-mine is not evidence of
+correct. It was green at 95/95 when the audit started. Two of the five I found by reading before the
+audit returned; the audit found the other three independently.
+
+**Defect 26 — the student-id allocator wedged permanently past ten thousand (correctness, high).**
+`allocateStudentId` took the maximum with `ORDER BY student_id DESC LIMIT 1`. That is a **string**
+sort, and it is wrong twice over — measured, not reasoned about:
+
+- `'…-9999'` sorts **above** `'…-10000'` (digit by digit, `'9' > '1'`). So the first time a school
+  passed ten thousand admissions in a year, the read kept returning `…-9999`, the allocator kept
+  proposing `…-10000`, and **every subsequent auto-allocated admission failed** with
+  `STUDENT_ID_TAKEN` — a permanent wedge, not a one-off collision.
+- `'A'` is ASCII 65 and `'9'` is 57, so a caller-supplied `'…-ABCD'` — which the schema accepts
+  deliberately — sorted above every generated id, parsed to `NaN`, and reset the sequence to 1,
+  colliding with `…-0001` on an id the caller never supplied.
+
+Fixed by filtering to `/^\d+$/` and taking the maximum numerically in JS. Confirmed load-bearing:
+restoring the DESC sort makes the suite crash on `STUDENT_ID_TAKEN` at exactly the predicted step.
+
+**Defect 27 — promotion was impossible for any student who had a section (correctness, high).**
+`resolvePlacement` inherited the student's *current* `section_id` when the body omitted it, then
+validated that value against the **destination** class. `sections.class_id` is NOT NULL and a section
+belongs to exactly one class, so the check could never pass: `POST /students/:id/promote {class_id}`
+— the body the promote schema declares as sufficient — failed 422 `section_id must name a section of
+this class`, naming a field the caller never sent and could not remove. FR-STUDENT-002's headline
+operation was unusable for the ordinary data shape §15.1's "Section Assignment" produces.
+
+*The suite could not see it:* its one successful promotion always named a destination section, and its
+two `class_id`-only promotions were expected to fail for other reasons. Fixed by not inheriting a
+section across a change of class. Confirmed load-bearing by regression.
+
+**Defect 28 — promotion carried the old class's roll number into the new one (data integrity,
+medium).** `allocateRollNumber` ran on admission only, so a promoted student kept the number issued
+for the class they were leaving. `people.js` documents `roll_number` as "unique within
+class+section+session"; the index backing it is **not** unique. Promoting a cohort from 1A into 2B
+therefore reproduced every number already in 2B, silently, with attendance and mark sheets keyed on a
+value that now addressed two children. Roll numbers are now re-allocated for the destination inside a
+transaction.
+
+**Defect 29 — two cross-tenant foreign keys written straight from the body (isolation, high).**
+`resolvePlacement`'s own docstring said "the class, section and session must all belong to the school
+— none of which the body may be trusted for", and `admission_session_id` — a *second* FK to
+`academic_sessions` — was never checked. Neither was `user_id`. A school could pin its student to
+another tenant's admission session, which `Student.belongsTo(AcademicSession, { as: 'admissionSession' })`
+would then eager-load into its own responses, and bind the record to another tenant's login. Both are
+now checked, `user_id` with the one-profile-per-account rule the teachers module already carries
+(§5a defect 23).
+
+**Defect 30 — the schema named a student-ID prefix and I had not read it (documentation → behaviour,
+medium).** The module header claimed "the SRS names no format, so one is chosen here" and hardcoded
+`S-`. `src/models/core.js:145` carries the comment *"Unique per organization; also used as the
+student-ID prefix"* on `schools.code`. The SRS does not specify a format but **the project's own
+schema does**, and the consequence was real: the unique index is `(school_id, student_id)`, so two
+schools in one organization both issued `S-2025-0001`, which an organization admin listing across
+schools would see side by side. Now `<school code>-<year>-<sequence>`.
+
+**And two suite defects worth more than the code ones**, both of the class §8 keeps recording:
+
+- **Seven assertions were passing for the wrong reason.** `run(schemas.update, { [field]: 'x' })`
+  asserted that each lifecycle column is refused on patch — but `schemas.update` ends in `.min(1)`
+  and `stripUnknown` empties the object, so the refusal was *"must have at least 1 key"* and would
+  have passed identically if `lifecycleOwned` were deleted from the schema entirely. Each now
+  co-submits a legitimate `first_name`, so only `forbidden()` can produce the refusal, and an HTTP
+  `PATCH {first_name, status}` case was added.
+- **Four negative tests were masked by the plan ceiling.** See §2l.
+
+One finding was recorded rather than fixed: the admission ceiling is check-then-insert, so two
+concurrent admissions can both pass at `used = limit - 1`. That is Known Issues #21 — a property of
+`enforceLimit` everywhere since session 4, not of this module.
+
+### Session 16, fourth part — one defect in the parents module, and three assertions that proved nothing
+
+Audited on the same terms as its two siblings. One real defect, one documentation claim of mine that
+the code did not honour, and — more usefully — three assertions that were passing without testing what
+their labels said.
+
+**Defect 31 — deactivating a parent revoked nothing (authorization, medium).** `parents.routes.js`
+stated the offboarding story outright: "A parent who leaves is deactivated through `PATCH`
+(`is_active: false`)". `update()` wrote that flag to the `parents` row and stopped there. This is the
+one people module that **owns** the `users` row — it created it — so leaving `users.status` at
+`active` meant a "deactivated" parent kept signing in and kept reading every linked child through the
+dashboard: `student_id`, `roll_number`, class, section and status. `is_active` was read in exactly one
+place in the whole codebase, the optional list filter.
+
+The sentence was copied from `teachers/`, where it is true — that module's `user_id` is nullable and
+it never creates an account, so it has none to revoke. Copying the words without the precondition is
+what made it false here. Fixed: the profile flag and `users.status` now move together in one
+transaction, the account change is audited as its own `users` row, `create()` honours
+`is_active: false` at creation, and `dashboard()` refuses an inactive profile as defence in depth.
+
+**Three assertions that could not fail**, which is the part worth carrying forward:
+
+- **The "no orphan account" proof.** Three negative creates, all of which failed at or before the
+  *first* statement inside the transaction — so `{ transaction: t }` on the parent insert and the child
+  loop was never exercised, and deleting it left the suite green. Now a duplicate `student_id` in
+  `children` drives a failure at the *third* write, with both tables counted afterwards.
+- **The "no route carries an entitlement limit" check** read `Object.values(LIMITS)` — a fact about
+  `config/constants.js` that no routing change can falsify — under a label making a claim about the
+  router. It could not catch the one edit it existed to catch. It now walks `parentRoutes.stack`, and
+  the constants fact is asserted separately under its own honest label.
+- **`PATCH /parents/:id` was never sent.** One of four write routes, with the service, the
+  `contact_email` remap, the empty-body refusal and the update audit all unverified at runtime.
+
+And one duplication removed: `USER_AUDIT_FIELDS` was a local copy of `usersService.AUDIT_FIELDS` that
+had **already** lost `phone`, `locale` and `must_change_password` — two of them columns this module
+sets at creation, so the audit row could not show that the account was made with a password it must
+replace. `principals/` re-exports the shared list precisely so the two cannot drift; this module now
+does the same.
+
+### Session 16, fifth part — a clean module, and four assertions that could not fail
+
+The staff module was audited on the same terms as its three siblings. **It is the first of the four
+with no defect in the code**: every one of the five fixes `teachers/` needed (§5a 21–25) is carried,
+and the audit confirmed none was reintroduced. Writing the smallest module last, against a list of the
+mistakes the first one made, worked.
+
+The suite was the problem, and in a way worth recording because three of the four are shapes that had
+already been recorded once:
+
+- **`list()`'s tenant scoping was unfalsifiable.** `check(rows.every(r => r.school_id === schoolA.id))`
+  was the only assertion covering it — and no staff row was ever created outside school A, so the array
+  it iterated could not contain a counter-example whatever the WHERE clause said. Deleting
+  `tenantWhere` from `list()` left all 74 assertions green while `GET /staff` returned every school's
+  staff to every caller. Fixed by creating a row at school D and asserting **both** directions;
+  regressing the scoping now fails three checks.
+- **The category assertion compared a constant to itself.** It read
+  `Object.values(STAFF_CATEGORIES)` against `db.Staff.rawAttributes.category.values` — but the column
+  is declared `enumOf(STAFF_CATEGORIES, …)`, so the model's enum is *derived from* that constant and
+  the two sides were equal by construction. Its label claimed the *validation schema* takes its list
+  from the model; the check never touched the schema. It now reads the schema's own `allow` list back
+  through `describe()`. This is the third assertion this session whose subject was not the thing its
+  label named — after the parents module's entitlement-limit check and the students module's
+  `.min(1)` refusals.
+- **Only one of the two `DATEONLY` columns was tested.** The timezone block round-tripped
+  `joining_date` and never wrote `date_of_birth`, so dropping the latter from `DATE_ONLY_FIELDS` would
+  have reintroduced Known Issues #20 for one column with a passing timezone test sitting beside it.
+- **The organization-scoped branch was never executed.** Every non-platform fixture had both an
+  organization *and* a school, so `tenantWhere` always took the `schoolId` branch and the
+  `organization_id` branch — the shape of both §5a defect 16 and defect 22 — never ran. The §5a
+  defect 22 fix was live code with no test behind it. **All three sibling §15 suites share this blind
+  spot**; this is the first to close it, with an organization-admin fixture that names `?school_id=`.
+
+Two smaller ones: the cross-school `PATCH` assertion `teachers/` has was dropped by the copy, so only
+the read was isolation-tested; and a `check` on six sign-ins could not fail, because `signIn` already
+throws when no token comes back.
+
+**One inherited quirk recorded rather than fixed.** `enforceLimit` charges the ceiling on *row
+creation*, while the module's own rule is that the ceiling belongs where the counted flag is set —
+so `POST /staff { is_active: false }` is refused at the ceiling even though the row would add nothing
+to the headcount. It fails **closed**, so there is no bypass, only a record that cannot be entered
+until an active one is deactivated. `teachers/` has the identical shape. The fix is small —
+`enforceLimit` already accepts an `increment` function — but it belongs in both modules at once, so it
+is Known Issues #22 rather than a one-module change late in a session.
+
+### Session 17 — two defects in the fees module I had just written, and five wrong expectations
+
+The module's own suite went green before the audit, which is exactly when the audit matters. Two
+defects, both found by reading rather than by a failing check, and both proved by writing the assertion
+first and watching it fail.
+
+**Defect 32 — a double-clicked assignment charged a family twice.** `student_fees` has **no unique
+index** — only a plain lookup index on `(student_id, component, period_month)` — and §35 forbids adding
+one. `assign()` refused the same student twice *within* one request and had nothing to say about the
+same request sent twice, so two clicks on "Assign" produced two May tuitions and the ledger showed 1900
+owing. Found by asking what stops it and finding the answer was "nothing".
+
+The fix is `alreadyAssigned()`, and it is not an invention: `invoices.alreadyBilled()` already carries
+the identical guard for the identical reason, and its own header says so — *"the double-billing guard
+the fixed schema forces this module to carry"*. Matched on the schema's own triple rather than on
+`fee_structure_id`, because that triple is what the index says identifies a fee: two different
+structures both charging `monthly_fee` for May are the same double-bill. A `waived` fee does not count,
+mirroring `alreadyBilled()` ignoring a cancelled invoice. **What it does not close** is stated in the
+code: it is a check-then-insert, narrowed to the assignment's transaction, because the index that would
+close it outright cannot be added — the same residual `invoices` settles for. Proved by deliberate
+regression: with the guard disabled the second assignment returns 201 and the child carries two.
+
+**Defect 33 — `fine_paid` could exceed the payment it was a portion of.** `fee_payments.fine_paid`'s own
+column comment reads *"Portion of this payment that settled the fine"*, and nothing enforced it: a
+receipt could say 100 was taken of which 150 went to the fine. Enforcing it is reading the schema, not
+inventing a rule — the comment is the specification. Refused with 422.
+
+**One decision that was an omission until it was written down.** `fee_payments.discount_given` is
+recorded on the receipt and moves no balance. That was true before the audit and undocumented, which
+makes it indistinguishable from a bug. §17 puts the Discount on the fee *structure*, so a collector
+knocking money off at the counter would be a second discount mechanism the source does not describe —
+the inertness is right, but it now says so in the service header and is asserted in the suite.
+
+**Five wrong expectations in my own suite, all corrected to what is actually true.** None was a code
+defect; each was me asserting the codebase behaved a way it does not, which is worth recording because
+four of the five are facts a future module will need:
+
+- **A DECIMAL crosses the wire as a `number`, not a fixed-2 string.** `config/database.js:59` sets
+  `decimalNumbers: true` for the whole pool. I had written the opposite into a suite comment. This is
+  §8's recurring DECIMAL trap seen from the other side, and the assertion now pins the type.
+- **A `create()` response omits a nullable column the caller never set** — the returned instance has no
+  value for it, so the key is absent rather than `null`. "Applies school-wide" is now asserted on a
+  read-back, which is what the claim was about anyway.
+- **The missing-permission code is `INSUFFICIENT_PERMISSION`**, not `PERMISSION_DENIED`.
+- **A principal naming another school's `?school_id` is stopped by the tenant chain with
+  `CROSS_TENANT_ACCESS_DENIED` before `resolveSchool()` ever runs.** I expected the service's own
+  `CROSS_SCHOOL_ACCESS`. The truth is the stronger fact — the guard survives a service that forgot to
+  call `resolveSchool()` — so the assertion now pins it and says why.
+
+**And one assertion that would have crashed instead of failing.** The double-bill check read
+`again.body.error.details.student_ids` directly; under regression the response is a 201 with no `error`,
+so it threw a TypeError and aborted the rest of Part 3 rather than reporting a wrong value. Made
+defensive after the regression run showed it. An assertion that cannot fail cleanly tells a reader less
+than one that can.
+
+### Session 18 — a project-wide entitlement bypass, found by auditing one new module
+
+The finance module's own suite was green on its first run, which is exactly when an audit earns its
+keep. Six adversarial lenses were run over the module and its suite; the two defects that mattered were
+not in finance at all.
+
+**Defect 34 — the entitlement gate and the data scope read the same request through two different
+parsers, and disagreed. Six modules, every one of them shipped.**
+
+`requireModule` resolves which school to judge through `resolveGatedSchoolId()`, which reads the raw
+request via `collect()` — and `normalizeKey` there lowercases and strips separators, so `?schoolId=`,
+`?school-id=` and `?SCHOOL_ID=` all name a school. A module's list then reads `req.query.school_id`
+**after** `validate()` has run with `stripUnknown: true`, and every list schema declares only the
+snake_case key — so every other spelling is silently deleted before the service ever sees it.
+
+For an Organization Admin — the one non-platform caller with no school of their own — `tenantWhere()`
+then contributes only `organization_id`, and the query answers across the **whole organization** while
+the gate had approved exactly one school.
+
+Measured against the live database, `?schoolId=<A>` returned school B's rows on **all six** module-gated
+routers an Organization Admin can reach — teachers, students, staff, attendance, fees and finance —
+including rows from a school whose plan **excludes the module outright** and which answered 403
+`MODULE_NOT_SUBSCRIBED` to the canonical spelling of the very same request. That is an entitlement
+bypass, not merely a wide read: §30 Rule 1 requires the plan to decide, and here it did not.
+
+The fix is one line in `loadSnapshot()` — `if (!req.tenant.schoolId) req.tenant.schoolId = schoolId` —
+making the school the gate judged the school the request is about. `tenantWhere()` gives an explicit
+school precedence over an organization, so it narrows and can never widen; it is the same mechanism
+`resolveTenant` already documents. Fixing it centrally rather than in six services is what stops the
+next module reintroducing it. Proved by deliberate regression: reverting that line makes all six
+leak again and fails four assertions in `verify-entitlement.js`.
+
+**Defect 35 — `!req.tenant.isPlatform && named` discarded the one scope declaration a Super Admin can
+make. Six modules.** `findById`/`findEntry`/`findStructure` in `teachers`, `students`, `parents`,
+`staff`, `fees` and `finance` all excluded the platform caller from the named-school narrowing. The
+exclusion bought nothing — `named` is only truthy when the caller named a school, and `resolveSchool()`
+already handles all three scopes — so `PATCH /finance/expenses/64` with `school_id: A` edited row 64
+wherever it lived instead of answering 404. Removing `!isPlatform` from all six fixes it; the live probe
+now returns 404 where it returned another school's row.
+
+One consequence is recorded rather than hidden: `verify-fees.js`'s cross-school assignment assertion
+moved from **422 to 404**, because `findStructure()` now refuses the structure before `assign()`'s own
+check runs. 404 is the better answer — it matches how the same suite already treats a cross-school read
+and does not confirm the row exists elsewhere — and `assign()`'s 422 is kept as defence in depth that is
+no longer reachable through the API.
+
+**Defects 36–40, all in the new module and all mine.**
+
+- **36 — `foldBuckets()` excluded an unrecognised category from the total** while still giving it a
+  bucket, so the buckets would not sum to the figure printed beside them. Unreachable today (the column
+  is a NOT NULL enum closed at two values) and it stops being unreachable the moment that enum grows.
+  The total is now summed from the rows, making the invariant true by construction.
+- **37 — `moneyField` had no `.precision(2)`.** Joi accepted `10.999`, the column stored `11.00`, and
+  the create response echoed the instance still holding `10.999` — the API stating one number while
+  every later report used another, and the audit trail recording the number that was never stored.
+- **38 — no `from <= to` guard.** A transposed window matches no rows, so both totals folded to zero
+  and the report answered **200 with `net_balance: 0.00`** — a confident, precise figure that reads like
+  a school with balanced books. The project already had the answer at `middlewares/validate.js:156`
+  (`commonSchemas.dateRange`); this module had simply not used it.
+- **39 — `rethrow()` put the raw database constraint name into a client-visible 422**, disclosing
+  internal schema naming to tell the caller nothing they could act on.
+- **40 — `?q=` was accepted and silently ignored.** `listQuery()` injects it into every list schema, so
+  a caller searching for "electricity" got every row back and would reasonably conclude everything
+  matched. Four of the seven school-side modules already implement it; finance now does too.
+
+**Two sentences that were confidently wrong**, the trap this log has recorded before:
+
+- `finance.service.js` said `POST /fees/payments` *"writes a row to `fee_payments` and nothing else"*.
+  False — it also recomputes the `student_fees` row it settles, and writes two audit rows. The claim
+  that actually matters is narrower and survives: it touches neither finance table.
+- `finance.routes.js` was headed *"it matches the FR actor lists exactly"* and then conceded two
+  sentences later that `finance.view` adds Organization Admin — who therefore reads `GET /report`
+  though FR-FIN-003 names only Accountant / Principal / School Admin. The heading now states the
+  mismatch instead of contradicting itself.
+
+**Six assertions across four suites that could not fail.** The most instructive is the entitlement-limit
+check in `verify-attendance.js`, `verify-fees.js`, `verify-finance.js` and `verify-parents.js`:
+`every(h => h.handle.name !== 'limitGuard')` compared against a name **nothing in this codebase ever
+has** — `enforceLimit()` returns an `asyncHandler`-wrapped function called `wrappedAsyncHandler`, which
+is the same fact those files' own comments cite as the reason to identify `requireModule` by position.
+It now reads the router's source with comments stripped (the routers explain *why* they carry no limit,
+so a bare substring search finds the explanation and reports the opposite of the truth) and is paired
+with a positive control against `students.routes.js`, which does mount one.
+
+The other five, all in `verify-finance.js`: the suite header claimed an organization-scoped caller made
+`tenantWhere`'s second branch run, while the org admin only ever called `/report` — which never touches
+`tenantWhere` at all; `check([full.from, full.to], [null, null])` could not tell an explicit null from
+an absent key, because `JSON.stringify([undefined, undefined])` is also `"[null,null]"`; the window
+inclusivity test put every fixture row strictly inside the window, so exclusive bounds left it green;
+neither PATCH route's `finance.manage` was asserted — the exact defect class this project has already
+shipped; and the `Model.sum` trap assertion pinned the salaries bucket at 1000 when SQL guarantees no
+ordering for that aggregate, testing MariaDB rather than the module.
+
+**A note on the audit itself.** It ran as a 108-agent workflow; 85 of its verifier agents died on a
+session quota, and the harness counted a finding with zero votes as "refuted". Twenty-eight findings
+were therefore never examined by anything, and reading the list by hand is where defects 37 through 40
+and four of the six unfailable assertions came from. **A finding that no one verified is not a refuted
+finding**, and a workflow that conflates the two will quietly discard its most useful output.
+
+### Session 19 — thirteen defects in the exams module, and a wrong diagnosis corrected
+
+§19 is the largest module in the project and its audit was the largest too: six lenses produced 47 candidate
+findings, of which 31 were confirmed by three independent verifiers each and 16 were never examined because
+the run hit a session limit. Deduplicated, the confirmed set is **thirteen distinct defects**, every one of
+them mine, none found by a failing check. The suite was green at 182 assertions when the audit started.
+
+The worst three all end at the same place — a card a parent reads:
+
+**Defect 40 — a departed student could take first place.** A child who sat one paper of two and then left
+the class kept a result row scored over that one paper. `cohortOf()` filters on `status: ACTIVE`, so
+`recalculate()` never refreshed the row; `generateResults()` then ranked **every** result row for the exam,
+so a 100%-on-one-paper row out-ranked the students who sat the whole thing, inflated everyone's
+`position_out_of`, and was published. Two more routes reach the same state without ever changing `status`:
+`students.promote()` explicitly leaves it untouched while rewriting `class_id`, and `PATCH /students/:id`
+accepts `class_id`/`section_id`. So a status filter would not have fixed it. The rule that does is
+`subjects_count === papers.length` — rank and publish only those who have a mark on every paper.
+
+**Defect 41 — a published exam could be silently re-graded.** `generateResults()` had no status guard, so
+re-running it on a published exam recomputed every figure, re-ranked the cohort and regressed the status
+from `published` back to `completed`. Found independently by three of the six lenses.
+
+**Defect 42 — a percentage in a gap between bands passed.** With no matching band the outcome fell through
+to `pass`, so a student in a gap passed while a **lower**-scoring student inside the failing band failed.
+Now the outcome stays null and `generateResults()` refuses with `EXAM_SCALE_HAS_GAP`, naming the students —
+a misconfigured scale is reported rather than published.
+
+The other ten: a paper could be re-priced under marks already entered (90 out of a re-cut 50); an entry
+carrying only a `student_id` recorded neither a mark nor an absence yet satisfied the completeness rule and
+was scored as a real zero; `publishResults()` read MySQL's *changed*-row count as an existence check and
+refused an exam that plainly had results; `PATCH /exams/:id` could move an exam to another class without
+revalidating the section it kept, and could move the cohort out from under existing results; two grade bands
+could share a boundary because the overlap test was half-open while `matchBand()` is closed; `submitMarks()`
+took every guard outside its transaction with no locking read, so two papers submitted at once could lose
+one from every result; and a user who is both a student and a parent saw only the student half.
+
+**Two false claims in my own headers**, both the trap this log keeps recording: the router said an exam is
+"retired through `EXAM_STATUS.CANCELLED`" when nothing in the module sets that status, and the service said
+`result_card_path` is `forbidden()` in every schema when no schema declared it — so it was silently stripped
+rather than refused. The first is now recorded as the gap it is; the second is now true.
+
+**Six unfailable assertions in my own suite**, including one that compared a hard-coded `null` to itself, one
+whose "grade and outcome" label never checked the grade, and a `mountsLimit`-style source probe that matched
+the explanatory **comment** rather than the code — the same prose-versus-code trap as §5a session 18, hit
+again in the same session it was recorded.
+
+**And a diagnosis I got wrong and had to correct.** Mid-session `verify-plans.js` began failing about one run
+in six, and I wrote that it was "genuinely flaky" and "pre-existing". It is neither. The failing run named
+`exams`, `exam_subjects` and `grades` in a plans-only audit list — rows written by my own background audit
+agents running `verify-exams.js` against the same database at the same moment. The suites share one database
+and assert over a `max(id)` baseline, so any concurrent run contaminates them. Recorded as Known Issues #25.
+A clean serial loop returns `verify-plans` to 175/175. The lesson is the one this log already states in
+another form: a measurement taken while something else is running is not a measurement of the thing.
+### Session 21 — a locking read the timetable module should already have had
+
+**Defect 54 — `timetable.assertNoConflict()` did not take a locking read.** §20.1 shipped with the guard
+that covers the NULL-permissive unique index, and the guard was correct in what it queried and wrong in
+how it queried it: three `findOne` calls with a `transaction` and no `lock:`. That is the weaker
+`fees.alreadyAssigned()` posture, and it is the wrong precedent for this table.
+
+`subjects.service.js:112-120` had already settled the identical shape and says so outright — "MySQL treats
+NULL as distinct inside a UNIQUE index, so two concurrent 'whole class' assignments — the case where
+`section_id` is NULL — both pass the lookup and both insert. The index rejects neither. **A locking read
+serialises the pair, which is the only backstop available while the key stays nullable.**" The timetable
+module had exactly that case and copied the module that could not use the remedy instead of the one that
+could.
+
+All three queries now take `LOCK.UPDATE` and the guard refuses to run without a transaction. Taking all
+three is safe because every caller runs them in the same order, so two writers queue rather than deadlock.
+A comment in `rethrow()` that said the race "cannot be closed without the index covering the NULL case"
+was also corrected: it understated a remedy the codebase already had.
+
+The fix is asserted at the **source**, because a lock cannot be provoked from a single-threaded suite —
+two concurrent writers are the thing it defends against, and the suite issues one request at a time. The
+probe strips comments first, which is the §5a session 18 lesson applied on the first attempt rather than
+after a false pass.
+
+**And a premise I had wrong, corrected by looking.** This session opened intending to build §20.1, on a
+stale reading of my own next-task note. §20.1 was already built, verified and recorded — the module, its
+suite and steps 208-213 were all on disk. A gathering agent said so, and rather than take that on trust I
+listed the directory and read the log. The session id had changed, which is the visible sign that the
+project had moved on without this context. Establishing ground truth before planning is cheap; the loop
+run that followed matched the log to the assertion.
+
+
+
+
+### Session 22 — two defects in freshly written code, and a test that passed for the wrong reason
+
+**Defect 55 — `Assignment.belongsTo(Assignment, { as: 'assignment' })` could never be included.** MySQL
+compares table aliases **case-insensitively**, so a self-join aliased `assignment` collides with
+Sequelize's own `Assignment` alias for the base table and every query including it dies with *"Not unique
+table/alias: 'assignment'"*. The association had been declared with §20.3's model and never exercised,
+because nothing had joined a submission to its parent until now. Renamed to `parentAssignment`, which
+also matches the column it follows. Found by the first run of `verify-assignments.js` — a 500 on the
+submissions list — and re-provable by regression R13, which reverts the alias and crashes the suite.
+
+**Defect 56 — the review schema forbade the two columns the review route exists to write.** Every schema
+in the module ends with `...owned`, the shared map of columns no caller may supply, which includes
+`marks_obtained` and `feedback` because the *other* routes must not set them. In `review` that spread
+came **last** and silently overwrote both with their `forbidden()` versions, so `PATCH
+/submissions/:id/review` rejected every review it was written to accept. Fixed by lifting the two keys
+out of the map into `ownedExceptReview` rather than by reordering the object, because a later edit could
+reintroduce an ordering bug without anyone noticing the mechanism.
+
+Both were caught by Part 1 of the suite before either reached HTTP, which is the argument for schema
+assertions that check a *positive* case per route and not only the refusals.
+
+**And a test of mine that passed for the wrong reason.** Regression R15 deleted the check that a
+submitting student belongs to the assignment's class, and the suite stayed green: the fixture's
+wrong-class student had no section while the assignment had one, so the **section** guard refused the
+request with the same 403 and the same `ASSIGNMENT_NOT_FOR_STUDENT` code. The assertion was true and
+proved nothing. Rewritten against an assignment with no section, where the class check is the only guard
+left, and a sixteenth regression was added for the section check on its own.
+
+This is the third time in this project that a green assertion has turned out not to assert what its label
+said — §5a session 18's comment-matching probe and session 21's `limitGuard` name check were the others.
+The pattern is the same each time: the assertion was written from the outside, against a *symptom* two
+guards can produce. A deliberate regression is the only thing that has ever caught it.
+
+**A documentation sweep, from measurement.** §1's script table had four figures that disagreed with what
+the scripts print, and one row duplicated with the suite's *line count* in the checks column. All of §1
+was rebuilt from the session-22 serial loop rather than edited figure by figure. **Which session
+introduced each drift is unknown** — this project has no git history — and the log now says so rather
+than guessing.
+
+
+### Session 22, continued — §20.4, and the same two lessons landing twice
+
+**Defect 57 — the return schema forbade the one column the return route writes.** `returnBook` ended
+with `...transactionOwned`, the shared map of columns no caller may supply, which includes `return_date`
+because the *issue* route must not set it. The spread came last and silently overwrote it, so every
+dated return answered 422. **This is defect 56 again, in a different module, an hour later** — the
+identical mechanism, found the identical way. Fixed the identical way too: the key is lifted out of the
+map into `ownedExceptReturnDate` rather than the object being reordered, and a *positive* Part 1
+assertion now covers it, because the negative ones passed throughout.
+
+The pattern is now recorded twice, so it is a doctrine rather than an anecdote: **a schema that spreads
+a shared `forbidden()` map needs one positive assertion per route for the columns that route writes.**
+Refusal assertions cannot see this class of bug at all.
+
+**A test that proved nothing, again.** Regression L15 deleted `present()`'s suppression of
+`books.cover_path` and the suite stayed green. The assertion checked `'cover_path' in cosmos` on a
+**create** response — and a `create()` response has no key for a column the insert never named, so it
+was true either way. Rewritten to write a real path onto the row first, the way an upload would, and to
+assert against the read-back; the regression then failed three assertions.
+
+That is the same shape as §20.3's R15 and the third instance this session of an assertion that was true
+for a reason other than the one it claimed. All three were found by deliberate regression and by nothing
+else.
+
+**A fixture trap worth writing down.** `library_transactions.issue_date` defaults to *today*, so a
+fixture that names fixed calendar return dates but lets the issue date default produces returns that
+precede their own issue, which the model's `dueNotBeforeIssue` sibling check refuses. The first run died
+on it. §20.2 hit the same shape from the other direction — due dates in the past, overtaken by a
+defaulted `assigned_date`. **Any suite with dated fixtures should pin every date it depends on.**
+
+
+### Session 22, continued — §20.5, and seven assertions that proved nothing
+
+§20.5's regression pass was the most productive of the session: **seven of nineteen** deliberate
+regressions went unnoticed on the first run, and every one was a weakness in an assertion rather than in
+the module. They are worth listing, because four are distinct failure modes and three recur.
+
+1. **An assertion satisfied by absence.** The probe `indexOf(state) < indexOf(module)` was written to
+   prove the per-type gate checks subscription state first. Deleting the state call makes `indexOf`
+   return `-1`, and `-1` is less than everything, so the check went *greener* as the code got worse.
+   Now asserts presence **and** order.
+2. **An assertion unreachable through the route it tested.** The same ordering, checked behaviourally,
+   could never fail: the router's own `requireActiveSubscription()` refuses a lapsed school before the
+   service runs. Moved to a source assertion, which is what §5a session 21 established for guards that
+   cannot be provoked.
+3. **The create-response trap, for the third time.** `'file_path' in <create response>` was true whether
+   or not `present()` deleted it, because a `create()` response has no key for a column the insert never
+   named. §20.3 met this with `due_date`, §20.4 with `cover_path`, §20.5 with `file_path`. Every one was
+   found by deliberate regression and by nothing else. **The rule: assert a suppression against a row
+   that really holds the value, read back.**
+4. **Two assertions that crashed instead of failing.** Emptying the result block or the guardian list
+   made the suite throw on `payload.result.total_full_marks` and `payload.parents[0].name`, so the
+   harness saw a crash rather than the named failure. A crash is a detection but a bad one — it hides
+   which assertion was meant to catch it. Both now read defensively.
+5. **A pair of assertions that had to be one.** Dropping the teacher half of `selfScope()` makes it
+   return `null` — *no narrowing at all* — under which a teacher still sees their own ID card. "Sees own
+   card" was satisfied by the bug; only "and no student's" caught it. They are now a single assertion.
+6. **A negative test with nothing to be negative about.** The cross-school exam check used a
+   **non-existent** exam id, so the lookup found nothing whether or not it was school-scoped. Now a real
+   exam belonging to another school.
+7. **A guard covered only by a crash.** Mis-guarding the read routes with `documents.generate` made a
+   later `expectOk` throw. Now asserted directly: a Student holds `documents.view` and not
+   `documents.generate`, and can list.
+
+**And a false claim of mine, corrected in three files.** The service header, the router header and the
+suite all stated that `documents.view` / `documents.generate` are "uniquely in the catalogue" declared
+with `module: null`, and used that as evidence for the per-type gate. **59 of the 109** seeded
+permissions carry `module: null`, and `app.js` already recorded that the field is metadata nothing in
+the request path reads. The claim was removed rather than softened; `DOCUMENT_TYPE_MODULE` was always
+the real evidence.
+
+**A defect in the payload builder, found the same way.** The result-card builder named §19's columns by
+guess — `total_marks`, `obtained_marks`, `grade`, `is_pass` — and none of them exist. The real names are
+`total_full_marks`, `total_marks_obtained`, `grade_name`, `grade_point` and `outcome`. The payload was
+silently full of nulls, and an assertion that merely checked "a payload was assembled" would have
+accepted it. The suite now pins the payload's **key set**, so a guessed name shows up as an unexpected
+key and a dropped one as a missing key.
+
+
+### Session 23 — closing Known Issues #26, and three more assertions that proved nothing
+
+**The issue's own Action cell was half wrong, and the SRS is what showed it.** *"Refuse all six from the
+body and write them only from an upload"* is right about the refusal and wrong about the writer: §15.2,
+§15.3 and §15.4 name no photo, so an upload route for teachers, staff or parents would have been
+inventing a requirement. Reading `docs/SRS-extracted.md:775-806` before designing is what turned one
+uniform move into the three-way split §2x records.
+
+**A "precedent" that did not exist.** `organizations.validation.js` said `logo_path` is *"written by the
+upload middleware, never by a JSON field"* — and nothing in `src/` writes `organizations.logo_path` at
+all, there is no organization logo upload route, and no `UPLOAD_RULES` entry for one. The column is
+protected by `stripUnknown`, not by a refusal, and `verify-platform-modules.js:227` asserts the strip.
+The security conclusion held for a different mechanism than the one stated. Comment corrected; behaviour
+left alone, because §9 names no organization logo and inventing a writer there would repeat the mistake
+this session was closing.
+
+**Three more assertions that were true for the wrong reason** — the count is now twelve across four
+modules, and every one was found by deliberate regression:
+
+1. **A refusal proved by the sanitiser, not by the rule.** `logo_path: 'javascript:alert(1)'` answered
+   422 with the scheme check **deleted**, because `sanitize.js:48` strips that scheme before the schema
+   sees it. The assertion was testing XSS sanitising. Rewritten against `ftp://`, a scheme the sanitiser
+   does not touch, so only the rule under test can refuse it. The `javascript:` case is kept as a
+   separate assertion that names what actually refuses it.
+2. **A `.min(1)` update schema swallowing a forbidden-only body.** `run(schemas.update, { photo_path })`
+   is rejected for being EMPTY after strip, so it passes with the `forbidden()` deleted. Every patch
+   assertion now co-submits a legitimate field. `verify-students.js` had this lesson written above its
+   lifecycle loop already — reading the file it was in is what caught it before the regression did.
+3. **A positionally fragile audit assertion.** `audits.find(first settings update)` depended on no other
+   settings update happening first; the new #26 checks slid in ahead of it and it broke. It was fragile,
+   not wrong — now it finds the update that changed the field it names.
+
+**And a harness bug that reads exactly like an untested guard.** Four regressions reported MISSED because
+the revert swapped only the first two lines of a `Joi.any().forbidden().messages({...})` block and left
+the chain dangling — a SyntaxError, so the suite never started and produced no FAIL lines. *A crashed
+suite and an unasserted guard look identical in a regression report.* The harness now locates the block's
+real end, and prints "+ A CRASH (likely a harness bug, not an untested guard)" so the two are
+distinguishable at a glance next time.
+
+**A disk leak the regressions exposed.** `verify-students.js` collected the path the ROW held, which is
+not necessarily what multer wrote — the regression that made `setPhoto` store a constant left six real
+files behind. Teardown now removes the fixture schools' upload trees wholesale, and the same three lines
+went into `verify-homework.js` and `verify-assignments.js`, which had been leaving empty `school-<id>/`
+shells behind on every run since §20.2. 168 of them had accumulated; the loop now ends with zero files
+**and** zero directories.
+
+
+### Session 23, continued — §21, and a lesson repeated three sessions after it was written down
+
+**A defect the model itself caused, and `{ validate: false }` was the wrong fix.** `db.Question.update({
+difficulty }, { where })` raises *"An MCQ must define at least two options"*. Sequelize runs the
+model-level validate block against an instance built from **only the values passed**, so
+`mcqNeedsOptionsAndAnswer` sees no `options` and refuses a change that does not touch them. Measured
+directly rather than inferred. `{ validate: false }` makes it pass and silently disables a real
+safeguard on the one table whose purpose is well-formed MCQs, so both write paths load the rows and save
+each instance instead — bounded by the generate schema's own ceiling of 50 questions per bank.
+
+**Six of sixteen regressions went unnoticed on the first pass. Every one was the suite's fault.**
+
+1. **Two refusals proved by the wrong check.** `bodyPath` and `bodyStage` posted JSON with **no file**,
+   so the 422 they asserted came from the service's own "No file was uploaded" check — both passed with
+   the `forbidden()` deleted. Rewritten as real multipart with a file attached, so only the field under
+   test can refuse them. This is the same family as session 22's `javascript:` refusal that was really
+   the XSS sanitiser.
+2. **`indexOf(a) < indexOf(b)` satisfied by deleting `a`** — again. §5a session 22 records this exact
+   trap about a different probe, and it was written the wrong way again three sessions later in a new
+   file. `indexOf` returns `-1`, which is less than everything, so the probe went *greener* as the code
+   got worse. Presence is now asserted alongside order. **Writing a lesson down did not prevent
+   repeating it**; the deliberate regression did.
+3. **Two assertions that crashed instead of failing.** A mock that opened the file threw ENOENT inside
+   Part 1, and a bulk update made `expectOk(200)` throw in Part 3 — both aborted the run rather than
+   naming the failure. Both are now guarded.
+4. **A guard no behavioural assertion could see.** Removing `assertWellFormed` changes nothing while the
+   mock is always well-formed. Asserted at the source instead — §5a session 21's technique.
+
+**And a harness bug that reads exactly like an untested guard, for the second session running.** Four
+cases reported MISSED because the revert left a dangling chain, and four more because the *expectation
+string* named an assertion that crashed rather than the one that failed. The harness now prints
+"+ A CRASH (suspect the harness, not the guard)" so the two are distinguishable at a glance.
+
+**Two things raised rather than changed silently:** `backend/.env.example:92` ships
+`AI_DRIVER=anthropic` while `backend/.env:77` says `mock` — and `env.js` refuses to boot with the former
+unless `ANTHROPIC_API_KEY` is set, so a developer copying the example gets a boot failure. And `env.js`
+validates the API key but never the driver *name*, which is why the facade has to.
+
+
+### Session 24 — §22, and a guard that turned out to be unprovable
+
+**Three guards no fixture could provoke.** The regression pass found that clamping `outstanding`,
+deleting the multi-currency refusal and removing the empty-set branch each changed *nothing* the suite
+could see — not because the assertions were weak, but because the fixture held no over-payment, one
+currency and no empty exam. All three were added, and each now fails its own regression. This is a
+different failure mode from the ones catalogued so far: not an assertion that proves nothing, but a
+**fixture that cannot reach the branch**.
+
+**A guard that is genuinely unobservable, and is now recorded as such.** Removing the empty-set guard on
+`pass_rate` produces `passed / 0` = NaN — and NaN serialises to `null` in JSON *and* is written as an
+empty cell by exceljs. Both measured. So that guard has no observable effect and no assertion can prove
+it; the service now says so instead of implying it is load-bearing.
+
+Its sibling on `average_percentage` **is** observable, for a reason worth knowing: SQL `AVG` over zero
+rows returns NULL, and `Number(null)` is **0**, not NaN. Without it an exam nobody sat reports an average
+of 0% — a real number where there is no data. The regression was retargeted at that branch.
+
+The general lesson: *"this guard is defensive"* and *"this guard is load-bearing"* are different claims,
+and only measurement distinguishes them. An assertion that cannot fail is worse than no assertion,
+because it reads as coverage.
+
+**A false claim, refuted by its own assertion on the first run.** The router header and `verify-app.js`
+both said `/reports` is the only module router with no router-level guard. Nineteen others have none —
+§9's platform surface, §13 billing, §14 school setup — because they are not entitlement-gated at all.
+The true and more useful claim is that among the **fifteen entitlement-aware** routers, fourteen mount
+one and reports is the exception. Corrected in both places.
+
+**Two stale checklist rows, found while counting.** `FR-PARENT-001` still read **Next** and
+`FR-PARENT-002` **Pending**, though the parents module shipped in §2m with eight routes and 116
+assertions. §6's script inventory had likewise kept the pre-Known-Issues-#26 figures for the five suites
+that change touched — §1's table was updated in that session and §6's prose was not, the two halves of
+one document disagreeing. Both corrected from measurement; which session let each drift is **unknown**,
+this project having no git history.
+
+
+### Session 25 — §23, and three regressions that missed for three different reasons
+
+**A trap caught for the third time, by its own suite, on the first run.** `readAll` spread the shared
+`owned` forbidden map last, silently shadowing `type` — the only key that route exists to accept. This
+is the same defect as §20.3's `review` losing `marks_obtained` and §20.4's `returnBook` losing
+`return_date`. The fix is again to **lift** the key out into `ownedExceptType` rather than reorder,
+because reordering leaves the landmine in place for the next key. Three sightings now; the pattern is
+that a shared map and a route-specific key must never be composed by spread order.
+
+**An assertion that pinned the status code but not the guard.** `POST /:id/retry` on an in-app row was
+asserted to be `[409, 'CONFLICT']`. Deleting the channel guard left it passing — the row is at status
+`read`, so the *next* guard refuses it with an identical status and an identical code. The assertion
+proved the retry refuses an in-app row, not that it refuses it *for being in-app*. Both refusals are
+409/CONFLICT and only their wording distinguishes them, so the wording is now what is asserted. This
+is the **twenty-second** assertion across seven modules found true for a reason other than the one it
+claimed.
+
+**A fixture that could not provoke the guard — the §22 failure mode, again.** Dropping `type` from the
+`alreadyNotified()` lookup changed nothing, because no reference in the fixture ever carried two
+types. The case that provokes it is a real one worth asserting on its own merits: a payment that was
+rejected and is **later approved** must raise `payment_received` even though a `payment_failed`
+already names the same row. Added, and it now fails its own regression.
+
+**A guard that is genuinely not load-bearing, and is recorded as such rather than asserted.** Removing
+the `student_id IN (…)` filter from the parent-link query changes nothing, because
+`byStudent.get(link.student_id)` refuses to attribute a link to a student it was not asked about —
+and removing *that* changes nothing either, because the query already returned only the right links.
+The two are **defence in depth**: either alone is sufficient, so neither alone is provable. The
+regression was retargeted at the pair, which fails, and the service now says which mechanism does
+what. This is the §22 `pass_rate` lesson in a new form — *"this guard is defensive"* and *"this guard
+is load-bearing"* are different claims, and only measurement separates them.
+
+**Two predictions in the previous session's own brief were wrong, and measurement said so
+immediately.** `LIMITS.SMS_LIMIT` does not exist, so the SMS metering that brief scoped is moot; and
+`MODULES.NOTIFICATIONS` does not exist either, so the module gate it assumed had nothing to name. Both
+were written from memory of §11 rather than from `constants.js`. The brief was a plan, not a record,
+which is the only reason this cost nothing — but it is the same failure mode as a stale figure.
+
+**An intermittent failure, found only by running the suite sixteen times instead of once.** The
+first green run was followed by a second that failed one assertion — the retry's activity-trail row
+counted 0 where 1 was correct. Twelve more runs reproduced it exactly once: **one run in thirteen**.
+The cause is not in the module. `logActivity` inserts on `res.on('finish')`, deliberately, so that a
+failing logging insert cannot turn a successful save into a 500 — the middleware's own header says
+so — and the row therefore lands *after* the `fetch` the suite has already read. Counting on the next
+line races the scheduler. It is now polled with a bound, which is the pattern
+`verify-middlewares.js` already established as `activityFor()` for exactly this reason, and which
+found this diagnosis independently.
+
+Two things follow that are worth more than the fix. First, **a suite that has passed once has not
+been shown to be deterministic**, and every green figure in this document is a single run. Second,
+the same shape exists in the other suites that read `activity_logs`. **This paragraph originally
+went on to call it "far more weakly" there and recorded it "rather than chased, because nothing has
+been observed failing in them" — that was inference, and an audit later the same session refuted it.**
+Twenty of the twenty-five trail-reading suites have no wait at all, and under concurrent load five
+were observed failing. The measured picture, including the seventy serial runs that stayed green, is
+in the audit entry below.
+
+**One thing measurement made unprovable and one it made necessary.** `users.email` is **NOT NULL**, so
+no audience this module resolves can hold a recipient without an address: `notify()`'s addressless
+branch is unreachable from any sweep. It is not dead — `notify()` is exported and takes a
+caller-supplied list — so it is asserted through that contract instead, and the service says plainly
+that no sweep reaches it. Separately, `notifications.read_at` is a DATETIME with **second** precision,
+so asserting idempotency by comparing two calls milliseconds apart would have passed whether or not
+the guard existed; the row is backdated by six years instead, which the guard alone can preserve.
+
+
+### Session 25, part 2 — auditing the checklist against the code, in both directions
+
+Twenty-five agents audited `docs/IMPLEMENTATION_CHECKLIST.md` against the code it describes, every
+flagged row then adversarially re-checked by an agent told to refute it. **95 rows checked, 19
+discrepancies confirmed, and every one was the document understating or misdescribing work that
+exists** — not a single row claimed something that was not built.
+
+**Five statuses were wrong in the project's favour**, now corrected:
+
+| Row | Was | Is |
+|---|---|---|
+| 5.5 Excel export | Pending | **Completed** — shipped in §2z; row 5.4 already said so |
+| 5.1 Plugin payment gateway | Pending, *"`src/payments/` does not exist"* | **Completed** — the registry is `src/services/paymentGatewayService.js`; the note cited a path from `ARCHITECTURE.md` that predates the code by two days |
+| 6.12 Exam calculation + position test | Pending | **Tested** — `verify-exams.js`, 54 such assertions |
+| 6.13 Timetable conflict test | Pending | **Tested** — `verify-timetable.js`, 27 |
+| 6.17 | *"the **thirty** scripts"* | thirty-one |
+
+**Five assertion counts were stale**, all in the same direction and from the same cause: Known Issues
+#26 changed them, §1 and §6 of *this* file were updated, and the checklist was not — the two halves of
+one document disagreeing, which §5a already records happening once before. `verify-timetable` 112→115,
+`verify-staff` 86→89, `verify-fees` 161→163, `verify-teachers` 82→85, `verify-attendance` 79→80. Each
+verified over fourteen serial runs with a stable denominator.
+
+### The finding that matters more: the `res.on('finish')` race is project-wide, and load-sensitive
+
+§23's own suite hit an intermittent failure at one run in thirteen, diagnosed as racing `logActivity`'s
+deliberately unawaited insert. This file then said the same shape *"exists in the other eighteen suites
+that read `activity_logs` — but far more weakly"*, and recorded it **"rather than chased, because
+nothing has been observed failing in them."**
+
+That was inference, and it was wrong. The audit agents observed exactly those failures — in
+`verify-fees`, `verify-staff`, `verify-timetable`, `verify-teachers` and `verify-attendance`, always in
+the trail/audit assertion block, always rows *missing* rather than extra.
+
+But the correction has a correction. Running those same five suites **fourteen times each, serially,
+with nothing else touching the database: seventy runs, zero red.** The agents saw failures because
+twenty-five of them were hammering one MariaDB concurrently. One agent noticed this itself — *"the
+flakiness is load-sensitive; later batches came back 100% green."*
+
+So the accurate statement is narrower than either version, and worth having exactly right:
+
+- The race is **real** and source-confirmed — `activityLog.js:246` writes on `res.on('finish')` and the
+  comment at :278 says *"Not awaited. `finish` has already fired, so there is nobody left to wait."*
+- **20 of the 25 trail-reading suites have no wait at all.** The five that do —
+  `verify-auth-module`, `verify-middlewares`, `verify-platform-modules`, `verify-users-roles`, and now
+  `verify-notifications` — carry comments naming this exact hazard, so it was known and fixed
+  piecemeal rather than systematically.
+- Serially, the twenty are green: 70/70 here, and every recorded loop figure was taken serially.
+- Under concurrency they are not — **but not for this reason.** This entry originally said the
+  `res.on('finish')` race *"is the mechanism behind Known Issues #25"*. That was wrong, and a
+  five-way concurrent run measured the real one: every suite tears down with an **unbounded delete**
+  of both trail tables above its own baseline, so whichever finishes first deletes the others' rows.
+  Sampling `activity_logs` during that run showed 39 rows -> 10 -> 1 while all five suites were still
+  working, and the failing assertions read `[]` rather than a partial set. Polling cannot repair a
+  deleted row. See Known Issues #25, now corrected.
+
+**So the 4,715 figure stands as what it claims: a serial run.** What does not stand is any expectation
+that the suite is safe to parallelise, and the fix is now known and cheap — `verify-notifications.js`'s
+`settle()` poll, applied to the twenty. That is the recommended next piece of Phase 6 work, ahead of
+6.17, because a jest suite would run these concurrently by default and inherit the flakiness wholesale.
+
+
+### Session 25, part 3 — the trail-read race, fixed; and what it turned out not to be
+
+`scripts/lib/settle.js` is new — the first shared helper the suites have ever had — and twenty-one
+suites now use it. It exists because `recordActivity` is fired from `res.on('finish')` and **not
+awaited** (the middleware says so at `activityLog.js:278`), so an `activity_logs` row lands *after*
+the `fetch` that caused it. A suite reading the table on the next line races the middleware. Measured
+in §23's own suite before the fix: **one run in thirteen**, serially, with nothing else running.
+
+`settle()` polls with a bound and **returns whatever it last saw**, so a guard that genuinely never
+writes still fails its assertion a second later. That property is unit-tested five ways in the same
+session: immediate when already satisfied (0.1 ms), waits and succeeds on a late arrival, and returns
+the wrong value on timeout rather than masking it.
+
+**Only one of the two tables actually races, and that was measured rather than assumed.**
+`recordAudit()` awaits `AuditLog.create()`, and **all 122 call sites** across the modules use
+`await recordAudit(` — zero exceptions. So `audit_logs` is committed inside the request, before the
+response. The `AuditLog` wraps some suites acquired are therefore **defensive, not load-bearing**, and
+`lib/settle.js` says so rather than letting them read as coverage.
+
+**One predicate was wrong and the review caught it.** `verify-library.js` settled on *two distinct
+`entity_type`s* over an unfiltered query — a set the sign-in rows can complete as `{login, books}`
+before `library_transactions` arrives, returning exactly one assertion too early. It now names both
+types it needs. The five other `settleDistinct` sites were checked and are sound: each query already
+filters `entity_type` to precisely the set its assertions name.
+
+### And the correction that matters more than the fix
+
+This session first recorded the `res.on('finish')` race as *"the mechanism behind Known Issues #25"*.
+**That was wrong.** Applying `settle()` to all twenty suites and then running five of them
+concurrently still produced 18 red runs out of 30 — and the failing assertions read **`[]`**, not a
+partial set. A poll cannot return `[]` after two seconds unless the rows are not coming.
+
+They were not coming because another suite had **deleted** them. Every suite tears down with
+`destroy({ where: { id: { [Op.gt]: baseline } } })` on both trail tables — unbounded above its own
+baseline — so whichever finishes first wipes the others' rows. Caught directly by sampling
+`activity_logs` during a five-way run: **39 rows → 10 → 1, while all five suites were still working.**
+
+Known Issues #25 is updated with this, and with a second correction: that row claimed a run-id fix was
+impossible because *"the fixed schema has nowhere to put"* one. Both trail tables carry `request_id`,
+and `requestContext.js` already honours an inbound `X-Request-Id` — so scoped teardowns are cheap, and
+they are the real prerequisite for row 6.17.
+
+**The serial loop is unchanged at 4,715 / 0 FAIL / 0 SKIP, and every per-suite count is byte-identical
+to the run before these edits** — which is the evidence that twenty files were touched and not one
+assertion moved.
+
+
+### Session 25, part 4 — the suites are now (mostly) safe to run in parallel
+
+Known Issues #25 said the suites cannot run concurrently and that fixing it was impossible for want
+of a run id. Part 3 found the real mechanism — an unbounded teardown delete. This part fixed it, and
+the numbers are the point:
+
+| | before | after |
+|---|---|---|
+| five suites, six concurrent rounds | **18 / 30 red** | **0 / 30** |
+| eight further suites, four rounds | not measured | **1 / 32**, unreproduced in 25 more |
+| serial loop | 4,715 / 0 FAIL | **4,715 / 0 FAIL**, counts byte-identical |
+
+**The fix turned out to be smaller than the diagnosis suggested, because of something the schema was
+already doing.** `activity_logs.school_id` and `organization_id` are **ON DELETE CASCADE**, so a
+suite's own trail rows are removed anyway when it deletes its schools and organization further down
+the same teardown. The unbounded delete was therefore *redundant for its own rows and destructive to
+everyone else's*. Scoping it — `id > baseline` **and** one of school / organization / user — keeps
+the cleanup and removes the collateral damage.
+
+**The user clause is the subtle half, and it only works because of ordering.** Platform-scope rows —
+sign-ins, super-admin actions — have no school and no organization, so neither tenant clause nor the
+cascade ever reaches them. They do carry `user_id`, but both trail tables are **ON DELETE SET NULL**
+from `users`, so that column survives only until the teardown deletes its users a few lines later.
+The trail delete already ran first; adding `{ user_id: created.users }` cut the residue from
+**142 activity / 118 audit rows per loop to 32 / 25**.
+
+**One suite broke and the loop caught it immediately.** `verify-auth-module.js` has no `created`
+object at all — it tracks `fixtures` — so the generic edit threw a ReferenceError inside its
+teardown, aborting before `User.destroy` and leaving five users behind. `verify-seed.js` failed on
+*"no duplicate super admin created"* and *"1 user"* on the very next loop, which is exactly what that
+assertion is for. It is now scoped by `user_id` instead, which is the right key for a suite whose
+fixtures are deliberately platform-scope.
+
+### What is still not safe, and it is a design decision rather than a defect
+
+Two suites stay red under concurrency, both for the **original** #25 reason — pollution, not
+deletion — and both because they assert *global* database state on purpose:
+
+- `verify-plans.js:1274` — *"every plan table the run touched is audited"*, an exact set of
+  `table_name`s above its baseline. Another suite's tables appear in that window.
+- `verify-subscriptions.js:2800` — the label says it outright: *"every subscription in the database
+  belongs to this run, so the sweep counts are exact"*. It drives `runLifecycleSweep()`, which reads
+  **across tenants**, so a global count is the only honest thing it can assert.
+
+Neither can be scoped without changing what it asserts, so neither was touched. They must run
+serially, and that is now a two-suite rule rather than a whole-loop one.
+
+### What remains, and the residue is recorded rather than hidden
+
+32 activity and 25 audit rows survive each full loop: rows belonging to the **seeded** Super Admin,
+who is shared by every suite and therefore attributable to no single run, plus a handful written by
+directly-driven sweeps with no request at all. They sit below the next run's baseline where no
+assertion can see them, and the previous behaviour only reached zero by deleting other runs' rows.
+
+Measured on the residue: **142 of 142** activity rows and **112 of 118** audit rows carried a
+`request_id`. So the complete fix is the one #25 called impossible — have each suite's `call()` send
+`X-Request-Id: <suite>-<n>` (`requestContext.js:23-27` already honours it) and add
+`request_id LIKE '<suite>-%'` to the scope. That would also let the two global assertions above be
+rescoped, which is what full parallel safety needs.
+
+
+### Session 26 — the scheduler, and what building a caller exposes
+
+**A defect in §23 that only a caller could reveal.** `runLifecycleSweep()` pre-stamped
+`expiry_notified_at`, which is the exact column §23's Subscription Expiry sweep uses to decide it has
+not notified yet — so that notification could never fire for any subscription reaching `expiring`
+normally. §23's own suite passed because its fixture planted a state combination the system does not
+produce. **A module suite verifies a module; only an integration verifies an integration.** The
+general form is worth keeping: when two components share a column, the suite that owns each will
+happily agree with itself.
+
+**A promise that never settled, and a process that exited 0 anyway.** The backup task's first version
+piped `mysqldump` into a write stream and waited for that stream's `close` from inside the child's
+`close` — but piping ends the stream itself, so the listener usually never ran. The dump was complete
+on disk, nothing threw, and Node exited **0** because the event loop was empty. This is the worst
+failure shape there is: success reported, work not done. The fix tracks both completions
+independently; the *bound* — a ten-minute per-task timeout — is what makes the class survivable,
+since a hung task otherwise wedges every future tick of itself.
+
+**Three regressions did not behave, and each taught something different.**
+
+- *A regression that hangs is invisible.* Removing the backup's settle listener produced **no
+  failures at all** — the suite hung and exited 0 in silence, which is the original bug's own
+  signature. No assertion can see that. It became detectable only after `runOrdered()` gained a bound
+  and the suite passed a one-minute override, and it is now caught by name.
+- *A regression that hangs a child process takes the harness with it.* Disabling the `ENABLE_CRON`
+  gate made the test's child scheduler resident, and `execFileSync` waited the full ten minutes and
+  killed the rest of the pass. The suite now passes `timeout` to every child — load-bearing, not
+  caution.
+- *An unprovable guard, honestly recorded.* The empty-dump check cannot be provoked: `mysqldump`
+  writes a comment header before anything else, so a run that exits 0 is never zero bytes. It stays,
+  because the case it covers is a filesystem failure rather than a mysqldump one, and the code now
+  says so instead of letting it read as coverage. That is the §22 `pass_rate` precedent again.
+
+**And one claim of mine was wrong before it was ever committed to a document.** `cron.js`'s first
+header said a queue would need a table that §29 forbids, and implied none existed.
+`src/config/queue.js` has existed since August — an in-memory FIFO whose own header already stated
+the constraint *and* the resolution: the cron reconciliation tasks provide the durability. The header
+and the suite now cite it rather than restating it wrongly. Reading the neighbouring file before
+writing about it would have cost a minute.
+
+
+### Session 26, part 2 — the PDF engine, and a suite that could not reach its own guards
+
+**Four regressions missed, one cause.** The footer's pagination fix, the repeated page header, the
+page break itself and the measured row height are all guards about what happens on the **second**
+page — and §22's student report fits on the first. Deliberate regression through `verify-reports.js`
+could not provoke any of them. This is the fourth sighting of "a fixture that cannot reach the
+branch", and the answer was not a bigger report fixture: `renderTable()` is a shared utility that
+§19.3's result cards and §20.5's documents will also use, so it got its own suite and its own
+contract. All four are now detected, and so is a fifth — reattaching the settle listeners after
+`doc.end()`, the same trap the backup task shipped with in part 1 of this session.
+
+**A bug that produced a perfectly valid, perfectly wrong document.** Every PDF came out with one
+extra page containing nothing but the footer, because `doc.text()` paginates when its y passes the
+bottom margin and the footer is drawn below the text area. Nothing in the bytes is malformed; a
+structural assertion would never have seen it. Only an **exact** page count does — which is why the
+suite asserts `[1, 1]` and `[2, 4]` rather than `>= 1`.
+
+**A dependency that cannot do the one thing it is for.** `pdf-parse` is in `package.json` and fails
+with *"Illegal character: 41"* on a pdfkit document that has been through none of my code. Worth
+knowing before §21's content extraction is wired to it.
+
+**Then the result card found the substring trap twice in a row.** Asserting that the rendered text
+contains `"Amina"` passes even when the student's NAME has been dropped from the identity block —
+because the fixture's `student_id` is `VEX-Amina`. Fixed by asserting the rendered *pair*,
+`"Student: Amina"`. Then the same shape again one level deeper: `"NotPosition: 1 of 5"` **contains**
+`"Position: 1 of 5"`, so renaming the label still passed. Only a word boundary pins it. Two
+regressions, one after the other, to find what one careless `includes()` was hiding — and the lesson
+generalises: **`includes()` on a label is almost always too weak**, because a label is a prefix of
+every longer label containing it.
+
+**And a false DETECTED, which is the mirror of a false MISS.** While fixing that, a Python escaping
+slip left `verify-exams.js` syntactically broken. The regression harness duly reported the next
+regression as DETECTED — it "failed", but because the file would not parse, not because the guard was
+missing. §5a already records suspecting the harness when a MISS comes with a crash; the reverse is
+just as real, and the check is the same: a green baseline run *before* believing any verdict.
+
+**Then the documents produced the most useful MISS of the session.** Printing `0` for an absent paper
+instead of `absent` changed nothing the documents suite could see — its fixture has no absent
+student. The fix was not a bigger fixture. Two documents print a result card, FR-EXAM-005's export
+and §20.5's Result Card, and each had grown its **own copy** of §19's absence rule. That is a second
+source of truth for something that matters: §19 stores `null` for an absence, and `0` reports a mark
+the student never received, on a document a parent keeps. `subjectRows()` now lives in
+`exams.service.js` — §19 owns the rule about marks — and both renderers call it. One regression on
+the shared function is caught by `verify-exams.js`, whose fixture *does* have an absent student.
+
+The general form is worth keeping: **when a regression misses because one caller's fixture is thin,
+check first whether the rule should have been in one place to begin with.** Consolidating fixed the
+coverage as a side effect of fixing the design.
+
+**An adversarial review of a design found two things the build had not.** Five agents scouted the
+file-serving route while it was being written; most of their premises were stale within the hour,
+because the thing they were scouting shipped underneath them. Two findings survived and both were
+real: `payments.present()` was the only module with a stored file that did **not** suppress its path,
+so the on-disk layout went out with every payment response; and a route for
+`assignments.attachment_path` at the assignment level is impossible, because only submission rows can
+ever carry a file. The second is the more useful kind — a route that would have 404'd for ever while
+looking like a feature. Racing the scouts wasted most of their work; scouting *before* building would
+have cost nothing and caught both earlier.
+
+**The queue's first caller was also a bug fix, and the suite caught the timing.** §7's two mails
+were `await mailService.send(...)` in the request path, so a failing SMTP server *failed the password
+reset*. Enqueuing fixes that — but the message is then generated on a `setImmediate` tick after the
+response, and the auth suite's interceptor was being restored before it. It passed anyway, because
+three sequential awaits give the loop ample chance to drain. That is precisely the timing luck this
+session has spent its regressions removing, so the assertion now calls the queue's own
+`waitUntilIdle()` and is about the mail rather than the scheduler.
+
+**And a design note worth more than the code: a memory queue cannot have a separate worker.**
+`queue.js`'s header promised handlers running *"by the dedicated worker (PM2 process in
+production)"*. That is not achievable — the queue is an instance in one process's memory, and a
+second process gets its own, empty. It needs a durable store, and §29 forbids the table. Rather than
+ship a worker that starts, finds an empty queue and idles for ever looking healthy, `worker.js` does
+the thing that **is** achievable — run one job now, from a shell — and its header says why the other
+thing is not.
+
+**A wrapped paragraph loses its spaces.** A justified line break is positioning, not a character, so
+`"…certify that Amina Khan"` came back as `"…certify thatAmina Khan"` and an assertion failed for a
+reason unrelated to the document. Prose is now compared with whitespace squashed on both sides —
+which asserts the characters in order while staying indifferent to where the renderer broke the line.
+Only prose: the label/value assertions still compare literally, because those are drawn on one line
+by construction.
+
+
+### Session 26, part 3 — the run id Known Issues #25 said was impossible
+
+#25 recorded that scoping a teardown per run *"would mean tagging every row with a run id, which the
+fixed schema has nowhere to put"*. It has somewhere: both trail tables carry `request_id`, and
+`requestContext.js:24` has honoured an inbound `X-Request-Id` since it was written. Each suite now
+sends `vfy-<suite>-0001` and tears down on `request_id LIKE 'vfy-<suite>-%'`.
+
+**Measured, and scoped by measurement.** Only three suites were changed, because only two produced
+residue at all — running each suite alone against a cleared trail found `verify-platform-modules`
+leaving 19 activity / 17 audit rows and `verify-subscriptions` leaving 6 audit. Tagging all eighteen
+candidates would have been eighteen edits for two problems.
+
+| | before | after |
+|---|---|---|
+| `verify-platform-modules` alone | 19 activity / 17 audit | **0 / 0** |
+| one full serial loop | 32 / 25 | **13 / 9** |
+
+**The remainder is irreducible, and worth knowing why.** The six rows `verify-subscriptions` leaves
+come from driving `runLifecycleSweep()` **as a function**. A sweep called directly has no request, so
+`recordAudit(null, …)` writes a row with a null school, a null organization, a null user *and* a null
+`request_id` — nothing whatsoever that says which run made it. No scoping key can reach them. Closing
+that would mean changing `recordAudit`'s contract, which is a decision about the audit trail rather
+than about the suites.
+
+**Three mistakes on the way, all mine, all instructive.**
+
+- **A tag too short is silently ignored.** `SAFE_REQUEST_ID` is `/^[A-Za-z0-9._~-]{8,64}$/`, so
+  `vfy-ai-1` is seven characters, rejected, and replaced with a nanoid — the tagging would have
+  appeared to work while tagging nothing. The counter is zero-padded to four digits because of that.
+- **`REQUEST_TAG` declared in the wrong scope.** Put inside `verifyHttp()` first, while `teardown()`
+  lives outside it — so the teardown threw a ReferenceError, skipped entirely, and the residue this
+  change exists to remove got *larger*. It is at module scope now, and the comment says why.
+- **Cleaning up by hand made it worse.** Chasing the leftovers from that broken run, I deleted every
+  plan and every addon price, and left a seeded `units_per_quantity` at 50 where the seeder ships 1 —
+  which broke `verify-addons` three assertions deep, in a suite the change never touched. The seeder
+  is idempotent by *presence*, so re-running it did not repair the mutated value. **A destructive fix
+  for a state problem is how a state problem spreads.**
+
+**What this does not fix.** `verify-plans` and `verify-subscriptions` still assert *global* database
+state by design — *"every subscription in the database belongs to this run"* — and no teardown change
+can make those safe to run beside another suite. Those two stay serial.
+
+
+### Session 26, part 4 — the Anthropic adapter, as far as it can honestly go
+
+Row 5.2 has said *"written, never executed"* since §21. It cannot be **closed** here: proving the
+adapter works means a real request to a real key, which this environment has neither of and should
+not have. But *"never executed"* and *"verified against its contract"* are different states, and
+everything except the network hop turned out to be reachable.
+
+`verify-ai.js` gained a Part 1c that replaces `@anthropic-ai/sdk` in `require.cache` **before** the
+adapter's lazily built client exists. So the real prompt construction, the real `textOf()` and the
+real `parseJson()` all run — only the HTTP call is substituted. Fifteen assertions, and eight
+deliberate regressions on `src/ai/anthropic.js`, all caught.
+
+What that covers: the prompt carries every constraint `models/exams.js`'s `mcqNeedsOptionsAndAnswer`
+will enforce on the way back in; a reply wrapped in prose and a code fence still parses; "no JSON at
+all" and "malformed JSON" are two distinct failures rather than one; a missing key is refused by name
+before any network attempt; the model stamp reaches the bank; and the requested difficulty is applied
+when the model omits it.
+
+**What it does not cover, and the file now says so precisely.** A stub agreeing with itself is not
+evidence about Anthropic's API. The adapter's header used to open *"This adapter has never been
+executed"*; it now says what runs, what does not, and why the second list cannot shrink here. Row 5.2
+is narrowed to the round trip rather than closed.
+
+**One thing worth knowing before that round trip is attempted:** `extract()` calls `pdf-parse`, and
+`pdf-parse` was measured this session to fail with *"Illegal character"* on an untouched `pdfkit`
+document. Whether it copes with the PDFs a teacher uploads is unknown, and it is the likeliest place
+for the first live run to break.
+
+**Two regressions were crash-only until the reads were guarded.** Breaking the JSON parsing makes the
+adapter *reject*, and an unguarded `await` aborted the suite rather than failing the assertion that
+names the guard. Wrapped in an `attempt()` helper, both now fail by name — §5a's rule that a crash is
+a detection but a poor one, applied for the third time this session.
+
+
+
+### Session 26, part 5 — the requirement the checklist never counted
+
+I told the user twice that **"all seventy-nine functional requirements are Completed"**. The SRS
+defines **ninety**. The checklist tracked seventy-nine `FR-` rows and the other eleven — §§24–28's
+security, performance, backup, logging, deployment and API-documentation requirements — appeared in
+it by **no name at all**: not as FR rows, not cited by the numbered Phase 5/6/7 rows that cover them.
+Anyone counting `FR-` rows, including me, would conclude the SRS had seventy-nine.
+
+Reconciling the two documents found the gap. Measured one at a time rather than assumed: ten of the
+eleven already had implementations — `databaseBackup.js` for FR-BKP-001, `logger.js` and
+`activityLog.js` for FR-LOG-001, the whole middleware layer for the six FR-SEC clauses. **One had
+nothing**: FR-APIDOC-001, whose two dependencies had been installed and unused since `package.json`
+was written. That became §2af.
+
+The eleven are now a table in the checklist with evidence-backed statuses, and the count in this file
+says ninety. **The cause of the original omission is unknown** — there is no git history here, and
+inventing a reason would be the same failure in a different form.
+
+
+### Session 26, part 6 — the security suite, and two regressions that proved nothing
+
+Rows 6.3 and 6.4 (SRS §24) had been marked with a note saying input is **not** escaped. That is true,
+and it is about *escaping*. `sanitize.js` does something else: it **strips executable markup** —
+`script`, `iframe`, `object`, `embed`, `style`, `link`, `base`, `meta`, `form`, `svg`, `math`, `on*=`
+handlers, `javascript:` and `vbscript:` URIs — looping four times so a payload cannot reassemble
+itself as an earlier pass removes its interior. `scripts/verify-security.js` was written against the
+recorded premise and **failed on its first run**, because posting `<script>alert(1)</script>` as a
+name returns 422 `string.empty`: it sanitises to nothing, and `min(2)` then refuses it. The premise
+was corrected from the code, not the other way round.
+
+The suite asserts in both directions. Markup is stripped, **and** `Smith & Sons 5 < 7 Ltd` survives
+character-for-character — a sanitiser that strips too much is a data-corruption bug wearing a security
+badge, and only the second assertion can catch it.
+
+**Six deliberate regressions, and two of them initially passed — both the test's fault.**
+
+1. The canonical `<scr<script>ipt>` payload leaves the inert `<scr` after a single pass, so it stayed
+   green with the anti-reassembly loop cut from four passes to one. It was replaced with
+   `<scri<script>pt>…</scri<script>pt>`, which *does* reassemble into a live tag.
+2. The href-guard check matched a `.replace()` call elsewhere in the same file, so it stayed green
+   after the `^https?://` allow-list was turned into a denylist. **The fourth sighting this session of
+   a grep matching the wrong occurrence** — in this codebase the first textual occurrence of a term is
+   usually a comment describing it, not the code doing it.
+
+For injection, the payloads go at **value** parameters — `q`, a path id, a request body — where the
+defence is Sequelize's binding, rather than at `sortBy`, where the allow-list was already proven. The
+assertion that carries the weight is not the absence of a 500, because a successful injection returns
+200 too: it is that `' OR '1'='1` matches **zero** rows rather than every row, and that a value
+containing SQL syntax survives a database round trip unchanged — proof it was bound, not interpolated.
+
+One thing this suite broke and had to fix: a crash mid-run left a `VSEC-XSS2` organization behind,
+which then failed `verify-platform-modules.js` four assertions deep, pointing at *sorting*. The suite
+gained a prefix sweep in teardown and a start-of-run residue assertion, so a leak is reported where
+its cause is legible. Every suite written since carries the same pair.
+
+### Session 26, part 7 — row 6.14: the lock that had never been contended
+
+`fees.service.js:513-517` reads the `student_fee` row with `lock: transaction.LOCK.UPDATE`, and its
+comment calls that "the whole of the concurrency answer". The claim was argued from the SQL and had
+**never been exercised** — two simultaneous requests had not been sent, in this suite or any other.
+
+The failure the lock prevents is a lost update, and it is silent. `applyPayment` re-sums every payment
+for the fee and writes the total onto the row. Without the lock, two concurrent payments each read a
+sum excluding the other, each write their own figure, and the second write wins: two receipts exist,
+the money is in the till, and the ledger shows one payment. Nothing errors. A human counting cash
+finds it later.
+
+So the assertion is arithmetic, not status. Two payments of 120 and 180 are issued inside a single
+`Promise.all` — both in flight before either resolves — and `paid_amount` must read **300**, which is
+reachable only if the second transaction waited and re-summed. Removing the `lock` line produces four
+named failures: statuses `[201,500]`, `paid_amount 120`, `pending 830`, and `1 receipt`.
+
+### Session 26, part 8 — row 6.15, and the two ways a plan lies about itself
+
+Row 6.15 named its own gap precisely: the pagination *query contract* is asserted in
+`verify-validate.js` and the entitlement cache in `verify-entitlement.js`, but **"no performance
+measurement exists — no index-usage or query-time assertion anywhere."** `scripts/verify-performance.js`
+closes it with fourteen assertions.
+
+**No timing assertion was written, deliberately.** §25 states no numeric target, and "under 50 ms"
+would measure this machine on this afternoon and fail on a slower one for a reason nobody could act
+on. What is asserted instead is structural: every one of the **50** tables carrying `school_id` has a
+`school_id`-**leading** index — leading, because MySQL reads a composite left to right, so an index on
+`(status, school_id)` cannot serve a filter on `school_id` alone, and checking for the column anywhere
+would pass on an index that never helps. All 50 have one. The cache is measured by **counting
+queries** rather than by the clock, because a count means the same thing on every machine: the first
+`getSnapshot` reads the database, the second reads none of it, and after `invalidateSchool` the next
+read goes back to the database — a cache that never expires is a correctness bug, not a fast one.
+
+Two mistakes in the writing, both worth keeping:
+
+1. The first draft listed six table names as **string literals**, and one of them,
+   `student_attendances`, does not exist — the table is `student_attendance`. The suite crashed. The
+   fix was not to correct the string but to stop typing names: the sweep now derives every name from
+   `getTableName()` and covers all fifty. A near-miss name is worse than a wild one, because a
+   plausible plural reads as correct forever. **Widening the sweep from six to fifty immediately found
+   something the hand-picked six had missed.**
+2. That find was `school_settings`, and it was the assertion that was wrong. The draft asserted every
+   plan offers a `possible_keys`. `school_settings` holds one row per school, so its `school_id` index
+   is **UNIQUE on that column alone**; MySQL const-resolves `school_id = 1` while optimising, finds no
+   row, and reports `Impossible WHERE noticed after reading const tables` with a null plan.
+   `possible_keys` is null because no plan was needed — the *best* outcome, indistinguishable in that
+   one field from the worst. The suite's own header warns that `key` is data-dependent; it turns out
+   `possible_keys` is too. The assertion now targets the real pathology, `type: 'ALL'` **with no index
+   offered at all** — a scan forced by an absent index rather than one the optimiser chose because the
+   table is small — and counts the const-resolved tables separately, so a many-row table that wrongly
+   acquired a unique `school_id` index could not be waved through as "not a forced scan".
+
+Seven deliberate regressions, seven named failures: a hidden index, a forced scan, a cache that never
+caches, an invalidation that does nothing, `getSort` without its `['id', dir]` tail, an unbounded
+`limit`, and a leaked fixture. The suite was then run **fifteen times** — 14 PASS, 0 FAIL, exit 0 on
+every run, with the residue assertion passing on runs 2–15, which is what proves the teardown works
+rather than merely runs.
+
+### Session 26, part 9 — row 6.17, and the 3,143 assertions that were never running
+
+Row 6.17 asked for the `verify-*.js` scripts to be folded into jest. Investigating *how* found
+something more important than the fold.
+
+**Nineteen of the thirty-eight suites report success while skipping most of what they assert.** Each
+catches a database-connect failure, sets `dbSkipped`, returns early from its HTTP half, prints
+"All pure … checks passed" and exits **0**. That behaviour is deliberate — it lets the pure checks
+run without a database — but the exit code is not, and nothing ever checked the consequence. Pointing
+every suite at a database that does not exist:
+
+    baseline 5,112 PASS lines  |  with no database 1,969  |  lost 3,143  |  suites still exiting 0: 19
+
+`verify-exams.js` falls from 219 assertions to 73. `verify-assignments.js` 196 → 72.
+`verify-school-setup.js` 168 → 45. Exit code says fine. FAIL count says fine. **Only the assertion
+count knows**, and nothing was counting — which is exactly the discipline this project already
+applies to claims, applied one level up: a green suite is not evidence for a claim it does not
+assert, and *"the suite ran"* was the unasserted claim underneath all 5,133 of them.
+
+The second finding is that `NODE_ENV=test` — the obvious way to run a jest suite, and what
+`package.json` already did — makes the application under test a **different application**.
+`env.js` uses `isTest` to disable the rate limiter (`:185`, with no env override), default CSRF off
+(`:168`), drop bcrypt to 4 rounds and silence the access log. Under it `verify-app.js` fails 11
+assertions, all about the chain `isTest` dismantles. So the harness runs the **shipped** composition
+against the **test** database: `NODE_ENV=development`, `DB_NAME=msms_test`. Both are recorded as
+Known Issues 28 and 29 rather than quietly worked around.
+
+**What was built.** `tests/globalSetup.js` runs all 38 suites serially as child processes — spawned,
+never `require`d, because every script calls `process.exit()` and none guards on `require.main`, so
+an in-process harness would be killed by the first suite and exit with *its* code. Results go to a
+file; `tests/verify.test.js` reads it synchronously at module scope (jest builds its test tree by
+executing the module body, so a `test()` registered from a callback is never collected) and emits one
+named jest case per assertion. `scripts/record-baseline.js` writes `tests/baseline.json` and refuses
+to record from a run in which any suite failed, degraded or crashed — a baseline taken from a broken
+run makes the breakage permanent.
+
+Each suite is then judged on **four independent signals**, each asserted separately: exit code, FAIL
+count, degradation markers, and an **exact** assertion count. Exact, not a floor: a floor passes a
+suite that grew to 200 assertions and silently fell back to its recorded 168.
+
+An earlier draft of this section said the four signals "must agree", which overstated it — the code
+never compares them to one another. What it does is assert each against its own expected value, so a
+disagreement surfaces as whichever assertion is wrong rather than as a comparison between them. The
+practical effect is the same and the wording was not.
+
+**`npm test`: 5,329 tests, 0 failures, exit 0** — 5,133 assertions plus 196 suite-level and
+integrity tests — and jest exits cleanly with `--forceExit` **removed**, which was masking nothing
+but would have masked a leaked pool.
+
+Seven deliberate regressions, seven correctly-targeted failures. The two that matter: a suite whose
+assertion count silently drops by 40 with no `SKIP` line — the real Known Issue 28 shape — is caught
+by both the per-suite count and the total; and a suite that prints a `SKIP` line while exiting 0 with
+zero failures is caught by the degradation check alone, which is the only signal that sees it.
+
+One independent confirmation worth recording: `record-baseline.js` reaches **5,133 assertions and
+5,112 `PASS` lines, with the 21-line gap entirely `verify-seed.js`**, by spawning and parsing — a
+completely different code path from the bash loop that produced the documented figure.
+
+### Session 26, part 10 — reviewing the reviewer
+
+Six adversarial lenses were run over the new harness, producing 59 raw findings. **147 of the 183
+verification agents then died on a session limit**, so the run reported `survivorCount: 0` — which
+means nothing at all. Findings carrying `votes: "0/0"` had *no verifier run*, and the filter's
+`total > 0` test swept them in with the genuinely refuted ones. Unverified is not refuted, and
+reporting that zero as a clean bill of health would have been the exact false-green shape this whole
+session has been about. The surviving findings were checked by hand instead. Three were real:
+
+**1 — the uploads directory was never redirected (data loss).** `verify-ai.js:705`,
+`verify-homework.js:370` and `verify-students.js:430` each end with
+`fs.rmSync(path.join(config.uploads.dir, ` + u"`school-${schoolId}`" + u"), { recursive: true, force: true })`. `.env` sets
+`UPLOAD_DIR=storage/uploads` — **one directory, shared with the running application**. Redirecting
+only `DB_NAME` moved the rows to `msms_test` and left those recursive, forced deletes pointed at the
+directory the dev server writes real uploads into, keyed by an id from a different database. Both
+databases seed from the same starting point, so a collision is the expected case rather than the
+unlucky one. Nothing was lost only because the directory happened to be empty. `SUITE_ENV` now also
+sets `UPLOAD_DIR=storage/uploads-test`.
+
+**2 — the test-count breakdown in this file was wrong.** It said four suite-level signals and four
+integrity tests; the code emits **five** per-suite tests and **six** integrity tests, which is the
+arithmetic that actually produces 5,329. Corrected above.
+
+**3 — `npm run test:watch` could not work and would have been pathological if it had.** `jest --watch`
+needs a version-control root to compute changed files and this project is not a git repository; and
+with `globalSetup` attached, every keystroke would have re-run all 38 suites as child processes.
+It was already broken before this session for the first reason. **Removed** rather than left as a
+script that cannot do what its name promises.
+
+**4 — the documented runner was the weaker one, and both copies were stale.** Section 1 of this file
+and the checklist each carried a `for s in error-handler validate auth-chain …` loop with a
+**hardcoded suite list**, run with no environment prefix — so both inherited `.env` and pointed at the
+**development** database with no guard. Measured against the baseline: this file's list named 33 of 38
+suites (**245 assertions never run**) and the checklist's named 30 (**418 never run**). That is exactly
+the drift row 6.17 exists to prevent, sitting in the instructions telling people how to verify the
+project. Both are replaced with `npm test`, plus a glob-based jest-free equivalent carrying the same
+environment.
+
+**5 — row 6.17 described a wrapper as a fold.** jest executes none of the 5,133 assertions: they run
+in 38 child processes inside `globalSetup`, which completes before jest evaluates its first test file.
+Each jest case re-prints a result decided minutes earlier, so `-t` cannot narrow the work and
+`testTimeout` governs a string comparison. The row now says so plainly. The wrapper was the only
+option — `require()`ing the suites is impossible without rewriting all 38 — and the value delivered is
+the per-suite baseline, the degradation detection and the database guard, not jest execution. Saying
+"folded into jest" without that sentence claimed more than was built.
+
+One finding was **false** and worth recording as such: a lens claimed the per-script assertion list in
+§2 sums to 5,060 rather than the 5,133 it declares, with seven stale rows. Summed directly: 38
+entries, total **5,133**. The list is correct.
+
+**Measured runtime, since it decides whether anyone runs it:** `npm test` takes **229 s** — 227 s of
+that is `globalSetup` running the 38 suites serially, and 2 s is jest reporting 5,329 cases. That is
+the honest cost of the design: the serial loop is not an implementation detail that could be
+optimised away, it is Known Issue #25. Four minutes is tolerable before a commit and too slow for a
+tight edit loop, which is the other reason `test:watch` was removed rather than repaired.
+
+Three further gaps were fixed after the review rather than merely noted. `record-baseline.js` now
+**refuses to write a smaller baseline** without `--allow-shrink` — the broken-run gate caught a suite
+that failed, but not the quieter case of every suite green with fewer assertions than last time, which
+is coverage vanishing into the file that defines what correct means. It also now treats **zero parsed
+assertions as broken**, because a regression in `parseOutput()` would otherwise record 38 zeros on a
+first run and every future run would pass against them. And a crashed suite now **flags every suite
+that ran after it** (`precededByCrash`), so a downstream failure reads "this may be residue from
+`<script>`" instead of accusing an innocent suite — the misattribution that cost this project time
+twice, once via `VSEC-XSS2` and once via the `VST-*` schools above.
+
+Also observed on restart: `msms_test` held four leftover fixture schools (`VST-A`…`VST-D`, ids
+1836–1839) from a determinism run killed mid-flight, and **MySQL was down** — which is Known Issue #2
+and, uncaught, would have been Known Issue 28 in action: 19 suites would have exited 0 having skipped
+their database half.
+
+### Session 26, part 11 — row 4.3's sixteenth screen, and a requirement that points at nothing
+
+The Super Admin nav had a **Settings** entry pointing at `/super-admin/settings`, which had no page.
+Clicking it in the running app returned a bare Next.js 404 — found by actually opening the app, not
+by any suite: `verify-frontend.js` counts the nav's sixteen items and never asks whether their targets
+resolve.
+
+**I got this wrong first and it is worth recording how.** Reading §9 and finding no global-settings
+subsection, I removed the nav entry as unbuildable — and `verify-frontend.js:350` immediately went
+red, because it asserts *"the Super Admin nav covers §33's sixteen screens" -> 16*. **§33 lists
+Settings by name.** I had reasoned from the absence of a *detailed* spec in §9 to the absence of the
+*requirement*, without reading §33 — the section the row is actually keyed to. The assertion caught
+it in one run. Reverted.
+
+The true situation is narrower and stranger than "unspecified":
+
+  - **§33 requires the screen.** It is the sixteenth of the sixteen Super Admin MVP screens.
+  - **Nothing says what it holds.** The role table (SRS line 96) defers to "global settings (see
+    Section 9)"; §9 contains 9.1 Dashboard, 9.2 School Management, 9.3 Principal Creation. The
+    cross-reference resolves to nothing.
+  - **No endpoint backs it.** `/school-settings` is §14.1 — school-scoped, Principal actor — and
+    refuses a platform caller with `SCHOOL_CONTEXT_REQUIRED`, correctly.
+  - **No permission exists for it** in the fixed catalogue of 109, which is why the nav entry borrows
+    `schools.view`.
+
+So a form would have had to invent the requirement, the fields, and an endpoint to persist them —
+three inventions where the standing rule permits none. The screen now exists and says exactly that,
+then links to the six places platform configuration genuinely lives: Plans, Modules, Features, Limits,
+Add-ons and Coupons. That follows the precedent the Reports screen set, whose header records the same
+judgement in the same words: building the six school-scoped reports as dead links "would have been the
+easier thing and a worse one".
+
+Row 4.3 is **Completed**: sixteen screens exist and are reachable, fifteen functional and one
+documenting a gap in the source of truth. `npx tsc --noEmit` clean, `verify-frontend.js` 50/50.
+
+### Session 26, part 12 — row 5.3: a feature that could never have run
+
+Row 5.3 (§21 content extraction) was recorded `Pending` with an **empty note**. The code existed. It
+also could not work.
+
+`ai/anthropic.js` `extract()` dispatches entirely on `mimeType`: `application/pdf` is parsed locally
+with `pdf-parse`, `/^image\/(jpeg|png|webp)$/` goes to the model as an image block, and **anything
+else throws**. `ai.service.js:286` passed **`mimeType: null`, hardcoded**. Neither branch could ever
+be selected. Every PDF, image and syllabus upload would have thrown before doing any work — measured
+with the caller's own arguments:
+
+    extract({ sourceType:'pdf', mimeType:null, filename:'syllabus.pdf' })
+      -> THREW: Cannot extract text from "syllabus.pdf" (null)
+
+    extract({ sourceType:'pdf', mimeType:'application/pdf', ... })
+      -> reaches the pdf branch, fails only on the missing file (ENOENT)
+
+**Why five thousand assertions missed it.** `.env` sets `AI_DRIVER=mock`, and the mock ignores both
+the path and the MIME type *by design* — that is what makes the suites offline. So the entire §21
+workflow passed end to end through a driver that never looks at the argument that was wrong. No
+assertion about the *result* could have caught this; the bug is in what the service hands the seam, so
+`verify-ai.js` now spies on `aiDriver.extract` and asserts the argument itself (184 -> 188). Restoring
+`mimeType: null` produces two named failures.
+
+**The fix invents nothing.** `question_banks` stores `source_type`, `source_path` and
+`source_filename` and no MIME column, and §35 forbids adding one. The MIME is therefore derived from
+the filename extension through a new `UPLOAD_EXTENSION_MIME`, itself derived from the existing
+`UPLOAD_MIME_EXTENSIONS` table that `uploadSingle` already enforces — so the lookup cannot miss for a
+row that exists, and the two tables cannot drift.
+
+`source_type` could not have been used instead, and the suite's own fixture proves it rather than my
+arguing it: the uploaded file is a **`.pdf` whose `source_type` is `syllabus`**. My first version of
+the assertion expected `pdf` and went red, which is a better demonstration than the comment I had
+written. §21's three source types are the teacher's label for the material; the driver needs its
+format.
+
+**PDF extraction is now verified and the recorded expectation was wrong.** `anthropic.js` predicted
+trouble, citing a measurement that `pdf-parse` fails with *"Illegal character"* on pdfkit output. A
+`pdfkit` document written here came back as its exact text. The narrow claim is kept — simple PDFs
+extract correctly — because `utils/pdf.js` report PDFs use embedded fonts and compressed streams this
+probe did not exercise, so the older note may still hold for those. The **image** branch remains
+unverified: it calls the API and needs a live key, which is row 5.2.
+
+Row 5.3 is **Implemented**, not Tested, for exactly that reason.
+
+### Session 26, part 13 — the final SRS pass, and three requirements that were not met
+
+Nine read-only agents took §1–§37 a slice at a time, checking **367 requirements** against the code
+*and* against the checklist's own claims. 173 came back verified clean; 70 findings; four rated high.
+One of those four had already been fixed by the time it was reported (the stale baseline). The other
+three were verified by hand and are real.
+
+**1 — FR-FEE-002: the fee ledger showed neither payments made nor the balance.** The Expected Outcome
+is that the ledger *"reflects payments made and any remaining pending balance"*. The Fees screen had a
+single money column labelled **Owed**, bound to `net_amount` — the amount *charged* after discount and
+fine, before any payment. A student who had paid 300 against a 950 fee rendered as **"Owed 950.00"**
+beside a `partially_paid` badge: the label asserted a balance, the value was the bill, and the badge
+contradicted both. The row interface did not even declare `paid_amount` or `pending_amount`, though
+`GET /fees/ledger` returns every column of `student_fees` — proven by the concurrency assertions added
+earlier this session, which read both fields from that endpoint. The in-file comment defending the
+choice was itself wrong. Now three columns: **Charged**, **Paid**, **Pending**.
+
+**2 — FR-FIN-002: Net Balance was computed and never displayed.** *"Expected Outcome: Net Balance is
+displayed on the finance dashboard."* `finance.service.js:502` computed it; `net_balance` appeared
+**nowhere in `frontend/src`**. The Finance screen's header deferred the summary to "the school Reports
+screen" — and §33's School list is exactly seventeen entries, Finance among them and **Reports not
+among them**. The deferral pointed at a screen that is neither required nor built, so the clause was
+simply unmet while the checklist recorded FR-FIN-002 Completed and row 4.4 recorded all seventeen
+screens Completed. The Finance screen now renders Income, Expense and Net Balance from
+`/finance/report`, with a deficit shown negative and uncoloured-green — the service does not clamp it
+because *"a deficit is real"*.
+
+**3 — FR-NOTIF-001: four of the nine notification types stopped permanently after 500 rows.** §29 gives
+five passes a marker column, and those put it in the WHERE, so a notified row leaves the candidate
+set. The four with no marker — **Result Published, Fee Paid, Payment Received, Payment Failed** — did
+the opposite: they selected the OLDEST `limit` rows and discarded the already-notified ones **in
+JavaScript, after the LIMIT**. The limit was therefore spent on rows already handled. Once a school
+passed `SWEEP_LIMIT` (500) of the relevant row, every later run fetched the same 500, filtered them
+all out and reported 0 — for ever, while new rows accumulated outside the window. `sweepFeePaid` was
+the starkest: `findAll({ order, limit })` with **no WHERE clause at all**. FR-NOTIF-001 requires all
+nine types; four had a hard ceiling.
+
+§35 forbids adding the marker columns the other five enjoy, so the exclusion is now a subquery
+against `notifications` itself — the same table the old JavaScript filter read, asked one step earlier
+and in the other direction. The payments pass keeps its per-*type* semantics rather than collapsing to
+"has any payment notification", because a payment rejected and later approved is a case §23 does not
+discuss and the existing suite asserts the current answer.
+
+**The suite could not have caught any of it, and now can.** `verify-notifications.js` passed before and
+after the fix, because every existing assertion works on a handful of fixture rows — far under the
+500 ceiling. The new assertion reproduces it in **two** rows instead of five hundred: with `limit: 1`,
+one payment already announced and a second waiting, a sweep of one must reach the *second*. Restoring
+the JavaScript filter makes it return **0** and leaves the newer receipt unannounced. 98 -> 100.
+
+### Session 26, part 14 — triaging the medium findings: three more real, one refused
+
+Fifteen of the 70 findings were `contradicts-srs` or `not-implemented` at medium severity — the ones
+most likely to be real. Verified by hand, three were, and one turned out to be a requirement that
+**cannot** be implemented without inventing.
+
+**The invoice due date was computed by multiplying a Date by an array.** `issue()` fell back to
+`GRACE_PERIOD_DAYS` when no `dueDays` was given — but that constant is §12.2's preset **list**,
+`Object.freeze([1, 3, 7, 15])`, not a day count. `dates.addDays()` evaluated
+`d.getTime() + [1,3,7,15] * MS_PER_DAY`; multiplying a four-element array gives `NaN`, so the result
+was an `Invalid Date`. And it did not stop being invisible there: `toDateOnly()` falls back to
+`new Date()` on an unparseable value, so the invoice silently took **today** as its due date — born
+already due, nothing thrown, nothing logged.
+
+Currently unreachable: `generateForSubscription()` is the only caller and always passes
+`subscription.grace_period_days`, which is `allowNull: false, defaultValue: 0`. It was a landmine for
+the next caller. §13.1 names *Due Date* and states no billing term, so `issue()` now **refuses** a
+spec carrying neither `dueDate` nor a numeric `dueDays` rather than inventing a default. **No suite
+covers invoice `due_date` anywhere**, which is exactly why it survived — `verify-billing.js` never
+calls `issue()` and never reads the column.
+
+**FR-BILL-001 was recorded Completed on the strength of a route with the wrong actor.** Its Actor is
+**System** and its precondition is *"Subscription exists and a billing event occurs"*. In the code
+`generateForSubscription()` is reachable only from `invoices.controller.js:69` — an authenticated
+platform operator over HTTP. `src/jobs/cron.js` schedules coupon-expiry, database-backup,
+**invoice-overdue**, notification-dispatch and subscription-lifecycle; none of them generates. An
+invoice exists only because a human asked for one.
+
+**Not implemented, deliberately.** The SRS never says what "a billing event" is — which subscriptions,
+at what moment, with which lines — and every one of those is a decision. Writing the sweep would mean
+inventing three business rules §35 forbids. It needs a specification before it needs code, so the row
+is **downgraded to Implemented** with the gap named rather than left claiming a System actor it does
+not have.
+
+**The OpenAPI document described an envelope the application has never emitted.** `SUCCESS_SCHEMA`
+gave `meta` as a **flat** object of four keys. `ApiResponse.paginated()` nests everything one level
+deeper under `meta.pagination` and emits **six**, adding `hasNextPage` and `hasPreviousPage`.
+FR-APIDOC-001 asks for documentation that is accurate, and this failed in the most expensive
+direction: a client reading it would look for `meta.totalPages`, find `undefined`, and build a broken
+pager — which is precisely what happened to this project's own frontend before the shape was checked
+against the code, and it went unnoticed because every collection then fitted on one page.
+
+The suite could not have caught it: 101 assertions checked that the document is well-formed and that
+its guards match the routers, and none checked that a shape it *describes* is a shape the application
+*produces*. `verify-openapi.js` now calls `ApiResponse.paginated()` with a fake `res`, captures the
+envelope, and compares its `meta.pagination` keys against the document's — neither side a literal, so
+they cannot drift. 101 -> 104. Restoring the flat shape fails it by name.
+
+### Session 26, part 15 — the §29 guard that never ran, and three quotations the SRS does not contain
+
+Two findings challenged the project's most load-bearing constraint — §29's sixty-four tables and §35's
+prohibition on a sixty-fifth. Both were right.
+
+**The guard was documented as running at boot and did not run at all.** `models/index.js` says it in
+two docblocks — `:7` *"fails at boot if the registered models drift from the SRS §29 table list"* and
+`:602` *"Fails at boot if…"* — and `server.js`'s own header carries a section titled **"Fail at boot,
+not on the first request"**. `assertSchemaMatchesSrs()` had exactly **one** caller in the repository:
+`scripts/check-models.js`, an opt-in developer command. `start()` called `assertRuntimeConfig()`,
+`assertConnection()`, `initCache()`, `createApp()` and `listen()` — never the guard. A process started
+with `npm start` would bind its port with a 65th model registered and report nothing.
+
+It now runs, first, before the connection: the guard reads only the registered models, and a schema
+that cannot be right should be reported as the §35 violation it is rather than delayed behind a
+network round trip that might fail first and mask it. `verify-app.js` asserts it on a **real spawned
+process** rather than on the source — the boot log must carry `Schema matches SRS §29 (64 tables)` —
+and removing the call fails both new assertions by name. Matched without the section sign
+deliberately: that output is accumulated with `output += chunk` on a raw stream, and `§` is two bytes,
+so a chunk boundary would decode to replacement characters and flake.
+
+**Nothing caught it because every assertion about `server.js` was about shutdown, ports and logging.**
+None asked what boot *verifies*.
+
+**Three quotations attributed to the SRS do not appear in it.** The one physical table outside §29's
+sixty-four, `sequelize_meta`, was justified by claiming §3 and §28 "themselves mandate" migrations,
+quoting **"Database Migrations"** and **"Run migrations"**; `cli.js` and `seed.js` each quoted
+**"Seed initial data"** from §28. Measured against the source:
+
+    "Database Migrations"   0 occurrences
+    "Run migrations"        0 occurrences
+    "Seed initial data"     0 occurrences
+    "migration"             1 occurrence  — §32 step 2, "Create database migration."
+    "seed"                  0 occurrences in all 1,698 lines
+
+§3 lists only the technology stack; §28 is entirely about Swagger/OpenAPI. The exception itself was
+always defensible — §32 step 2 genuinely requires migrations and a migrator needs a ledger — but the
+authority cited for it was invented. On a project whose first rule is that the SRS is the sole source
+of truth, **a fabricated quotation is worse than a missing one**: it cannot be checked without going
+and looking, and it reads as authority. All three now cite §32 step 2, and the seeders say plainly
+that seeding is not an SRS-named step but the means by which reference data the SRS *does* specify
+reaches the database. The reviewer named two of the three; the third, `seed.js`, turned up on a grep
+for the same pattern.
+
+### Session 26, part 16 — triaging all 70, and the eighteen buttons that go nowhere
+
+Eight agents verified the 61 findings left after the high-severity pass: **44 real-fixable, 11
+real-blocked, 1 already-fixed, 5 refused**, recorded with evidence in `docs/SRS-TRIAGE-VERDICTS.md`.
+`real-blocked` — the defect is real but the fix needs a decision the SRS does not supply — is now a
+recognised category with eleven members, and it is an honest end state rather than a dodge.
+
+**The triage caught a correction of mine that was itself wrong.** Earlier in this session I wrote, in
+the checklist, in `nav.ts` and in the Settings screen, that "no settings permission exists in the
+fixed catalogue of 109". It does: **`settings.platform.manage`**, *"Manage global settings"*,
+`permissions.js:39`, granted to `super_admin` through `ALL`, and a near-verbatim match for SRS:96.
+Two consequences, both live: the false sentence was **rendered to the signed-in user** on the Settings
+screen, and because the nav borrowed `schools.view` — which `organization_admin` also holds — an org
+admin was shown a link into a **platform** screen. The permission was never the gap; the
+specification is, and that part stands.
+
+**Two screens broke on contact.** The Fees ledger offered an **Overdue** status filter;
+`STUDENT_FEE_STATUS` is exactly `{ unpaid, partially_paid, paid, waived }` and the endpoint pins the
+filter to it, so choosing that one option replaced the table with *"Validation failed"*. Overdue is a
+derived condition — `pending_amount > 0` past `due_date` — not a stored status, and §17 names no such
+state, so it is removed rather than invented. The Finance screen's **Category** control was a
+free-text box against a two-value enum per ledger (§18: salaries/other_expenses, fees/other_income),
+so *any* keystroke produced an off-enum value and the ledger vanished behind the same 422. It is now
+a select. A control that cannot be used correctly is worse than no control.
+
+**And the largest user-visible gap in the product: eighteen dead links.** Finding 27 named three
+"Add" buttons pointing at routes that do not exist. Diffing **every** internal `href` against **every**
+`page.tsx` found eighteen, and `find src/app -type d -name new` returns **nothing** — there is no
+create route anywhere. Every "Add" and "New" affordance in both the school and platform areas renders
+(each is gated on a permission its actor holds) and lands on a bare 404 with no not-found boundary.
+**The product has no create path through the UI at all.** Rows 4.3 and 4.4 record 16 and 17 screens
+`Completed`, which is true of the *screens* and misleading about the *product*; both now say so, and
+it is Known Issue 30.
+
+Not repaired here, deliberately: eighteen create forms is a phase, not a fix — each needs its field
+set, validation and refusal handling derived from the SRS section governing it. Removing the buttons
+would be worse, since the SRS requires creation for every one of these resources.
+
+`verify-frontend.js` now asserts the **exact** dead set rather than zero. Asserting zero would be the
+honest ideal and would leave the suite permanently red, which costs more signal than it buys; the set
+is recorded the way `baseline.json` records assertion counts, so a nineteenth dead link fails it —
+verified, naming `/super-admin/nowhere` — and repairing one fails it too, forcing the record to move
+deliberately. The failing output prints all eighteen, so the gap is visible on every run rather than
+buried in a document.
+
+### Session 26, part 17 — two verdicts overturned, and a regex that ate an identifier
+
+**Two `real-fixable` verdicts were wrong about being fixable.** The defect was real in both, but
+building it meant deciding something the SRS does not decide, so both are now `real-blocked`.
+
+*Student "Documents"* genuinely has no code path — `UPLOAD_PROFILES.STUDENT_DOCUMENT` cites
+*"§15.1 / FR-STUDENT-001 — Documents"* in its own rule and has **never had a caller**, while the photo
+half of the same clause is fully mounted. But it cannot simply be wired: the `documents` table's
+`document_type` enum holds only *generated* kinds — `student_id_card`, `admission_form`,
+`result_card` — with nothing for uploaded paperwork; its other columns (`is_generated`,
+`generation_payload`, `generated_at`) are shaped for generation; and the only view key in the fixed
+109 is `documents.view`, *"View **generated** documents"*. §15.1 says "Documents" and nothing more.
+A student's uploaded birth certificate would need a type and a permission the source never supplies.
+
+*Admission without a class* is likewise real — SRS:818 says "Student is assigned to a Class and
+Section" and `class_id` is optional — but §15.1 lists **Admission**, **Class Assignment** and
+**Section Assignment** as three separate features, which is exactly what the code implements, and
+`verify-students.js:122` deliberately asserts *"first_name and admission_date are enough to admit"*.
+The source answers the question two ways; changing the API on one reading would be picking a side.
+
+The pattern is now consistent enough to name: **where the SRS lists a capability without specifying
+it, a "fix" is a specification decision wearing implementation clothes.** Thirteen findings sit there.
+
+**The stale-figures cluster, corrected against the manifest.** The checklist's per-suite table listed
+**30** suites totalling **4,613**, against a measured 38 and 5,146 — individual rows out by as much as
+23 (`verify-entitlement.js` read 249 against 272). It is now regenerated from `tests/baseline.json`,
+the same manifest `npm test` checks each run against, so the two cannot drift. Ten further citations
+elsewhere in the file were corrected the same way.
+
+**And I corrupted a line doing it.** The replacement matched `\d{2,4}\s*/\s*\d{2,4}` within sixty
+characters of a `verify-*.js` mention — and swallowed **`FR-AUTH-006/007`**, an SRS identifier, turning
+it into `FR-AUTH-84 / 84/009`. This is the same substring trap the project has hit repeatedly, this
+time in my own tooling rather than in a suite. Caught by scanning for `FR-[A-Z]+-\d{3,}` afterwards,
+and reconstructed from the replacement log rather than guessed — the captured groups were `006` and
+`007`, and the surviving text either side was `FR-AUTH-` and `/009`. Restored exactly, not
+"improved": `006` is Email Verification and reads oddly beside "editing an account", but repairing a
+citation is not the same job as correcting one, and doing both at once is how a wrong number becomes
+permanent.
+
+### Session 26, part 18 — the documentation cluster, and a number I refused to replace
+
+Fourteen more findings applied, all documentation or comment accuracy, none with a runtime
+consequence — but two of them moved the completion figure **down**, which is the point.
+
+**Wrong section citations, in code.** The Fees screen cited §18.1 and the Finance screen §18.2; §17 is
+Fee Management and §18 is Finance Management, so the Fees screen was pointing at the other screen's
+chapter. `subscriptionLifecycle.js` cited **§13** three times for FR-SUB-015 — §13 is *Invoice, Payment
+& Coupon* (SRS:618), while FR-SUB-015 *Subscription Renewal* is at SRS:609 inside §12, whose §12.5 is
+Renewal. The `invoice-overdue` row next to it cites §13.1 correctly, which is what made the wrong one
+look right. `/school-settings` was cited as **§16** in the checklist — §16 is Attendance Management.
+
+**A claim about the code that no code path supports, in three files.** `authenticate.js` said the
+forced-password-change flag is set both by the seeder "and an administrator who resets a user's
+password"; the login and change-password screens repeated it. Grepping `must_change_password` across
+`src/` finds exactly three writers: the bootstrap seeder setting `true`, `auth.service.js:590`
+setting `false`, and the model default. **No administrator path sets it.** §9.3 lists Password among
+the fields principal creation captures and requires no forced change, so nothing is going unmet — the
+sentence described a path that does not exist. Also `auth.service.js:19` said forgot-password
+"Always 200" eleven lines above its own heading saying it "always answers 202"; the controller
+returns 202.
+
+**Two statuses corrected downward, and the completion figure fell from 149/152 to 147/152.**
+FR-BILL-001 went Completed → Implemented (the fields are right; the System actor is absent), and row
+**7.11 Monitoring** went Completed → In Progress — its own note ended *"No monitoring is attached to
+them"*, on a row named for monitoring, which is the legend's definition of In Progress almost word for
+word. A tally that goes down when the record is checked is the tally working.
+
+**And one number I would not replace.** `verify-platform-modules.js` described "the fourteen routes
+under test" in three places and "all fourteen keys in `denied_permissions`" in a fourth. The keys are
+provably **eleven** — `denied_permissions` is `[...ROUTE_KEYS]` and `ROUTE_KEYS` has eleven entries —
+so that one is corrected. The route count is not: the four modules involved define twenty handlers
+between them and the suite does not exercise all of them, so the reviewer's "eighteen" is as
+unverified as the "fourteen" it would replace. The figure is **removed** rather than swapped. Writing
+a second unchecked number in place of the first is how the first one got there.
+
+### Session 26, part 19 — a search that searched nothing, and a grace period half applied
+
+Two findings with real behaviour behind them, and in both cases the suite had to change with the code
+— which is the part worth recording, because a suite that has to change is a suite that was asserting
+the defect.
+
+**The fee search box returned everything.** `listQuery()` concatenates `commonSchemas.search`, so
+`?q=Transport` validated cleanly — and `fees.service.js` never read `query.q`. Both fee tabs sent it:
+the structures tab labelled *"Name or component…"* and the payments tab *"Receipt number or
+reference…"*. Neither filtered anything. **Not an error — a silent wrong answer**, 200 OK with a
+filtered-looking list that was never filtered, which is the harder kind to notice.
+`finance.service.js:312-318` had the shape already; the two fee lists now use it over the columns
+their own placeholders name.
+
+Nothing caught it because every existing list assertion either passed no `q` or exercised a different
+filter. Four new assertions, and the load-bearing one is the last: **a term matching nothing must
+return nothing.** Under the old code it returned everything, so an assertion checking only "the right
+row is present" would have passed against a completely unfiltered list. Removing the filter now fails
+all four, each printing both structures where one or none was expected.
+
+**A grace period whose date was written and whose state never was.** Two sweep passes make a
+subscription past due. Pass 3 (paid period lapsed) writes `PAST_DUE` and then `GRACE_PERIOD`. Pass 1
+(trial ended) computed `grace_period_ends_at`, wrote it, and stopped — leaving a subscription sitting
+in `past_due` carrying a grace deadline **nothing had entered**. Self-contradictory on its own terms,
+whichever reading you take: the code had already decided a grace period applied.
+
+FR-SUB-012 settles it: the grace period is "applied after a subscription becomes past due **or
+expires**", and the subscription "enters a Grace Period … before further state transition". Pass 1
+now does what pass 3 does.
+
+**The suite asserted the defect, under a citation that does not support it.** `verify-subscriptions.js`
+expected `trial: past_due` beneath the label *"each one lands where §12 says it should"* — and §12 says
+no such thing: §12.1 and §12.2 are **duration lists** describing no transitions at all. Five assertions
+moved (state, pass counts, history row count, event order, and the school's cached column), the label
+now cites FR-SUB-012, and each carries why. Removing the fix fails all five by name.
+
+It hid because `past_due` and `grace_period` are both in `SUBSCRIPTION_USABLE_STATES`, so a school's
+access was identical either way. What differed was the state a report or a screen reads, and the
+`GRACE_PERIOD_STARTED` row missing from the history.
+
+### Session 26, part 20 — a not-found page that is never found, and two files contradicting themselves
+
+**The 404 boundary written for the dead links does not catch them, and I had the reason wrong too.**
+Known Issue 30 said the eighteen "Add" buttons land on a bare 404 "with no not-found boundary
+either". There **is** one — `frontend/src/app/(platform)/not-found.tsx`, rendering *"This screen has
+not been built yet"* — and the checklist claimed it "answers those honestly rather than with a bare
+404". Both statements were wrong, in opposite directions, so the question was settled against a
+running dev server rather than by reading:
+
+    /super-admin/schools/new   404  "This page could not be found"
+    /school/students/new       404  "This page could not be found"
+    /nonexistent-entirely      404  "This page could not be found"
+
+All three get the **framework default**. Next cannot attribute a completely unmatched path to a route
+group, so a group-level `not-found.tsx` never sees it. The file is dead code for the case it was
+written for. My claim happened to describe the user's experience correctly while being wrong about
+why; the checklist's was wrong about the experience. Both corrected, and the boundary's existence is
+now recorded so nobody adds a second one expecting it to work.
+
+**Two files that contradicted themselves.** `settings.service.js`'s header said *"GET find-or-creates
+with the column defaults"*; the note thirty lines below it says *"GET does not insert: a settings
+screen opening is not a write, and inserting here would create a row with no audit trail and no
+`school.settings.manage` check. PATCH is the upsert."* The header was describing behaviour the same
+file explains it deliberately does not have.
+
+`platform.service.js` said an `organization_admin` has *"every figure narrowed to their own
+organization by the same helpers"*. `tenantWhere()` checks `tenant.schoolId` **first** and returns on
+it — its own comment reads "an explicit school scope always wins, including for a Super Admin who
+selected a school" — so a caller carrying a school scope gets school-scoped figures regardless of
+organization. Organization scope applies only when no school scope is set: the usual case, stated as
+the rule.
+
+**Also corrected:** the checklist still said the suites "write to the **development** database,
+because `NODE_ENV=test` resolves `DB_NAME` to `msms_test`, which does not exist". Both halves have
+been false since `msms_test` was created earlier in this session.
+
+### Session 26, part 21 — files the documents said did not exist, and a sweep for the rest
+
+Row 5.8 said the queue "still has **no consumer**" and that `src/jobs/handlers/` and
+`src/jobs/worker.js` "do not exist". Both exist, and `app.js:242` calls `registerJobHandlers()` inside
+`createApp()`, so the FIFO has handlers from the moment the application is built — four of the eight
+`JOB_NAMES` registered, the other four listed in `UNREGISTERED` each with its reason
+(`generate_report` "renders a Buffer with no storage or serving route to complete into"). FR-PERF-001
+cited "background jobs and the queue system" without disclosing that split; it does now.
+
+FR-HW-001 said `src/modules/homework/` has "four endpoints" and that there is "no download route —
+no file-serving anywhere in the application". There are **five**, and the fifth is
+`GET /:id/attachment` at `homework.routes.js:91` — the download route the note denied.
+
+**Then a sweep for the whole class.** Every backticked file path in both documents was extracted and
+resolved against the tree: **459 distinct paths, 5 unresolved**, and all five are correct as they
+stand — `.eslintrc.json` and `eslint.config.js` are cited *because they are absent* (Known Issue #6),
+`express.json` is a method rather than a file, `connection-manager.js` is a `node_modules` reference,
+and `docs/VERIFICATION.md` is explicitly recorded as "not yet written — it is 7.13's output".
+
+That is the useful result: after this pass, **no document claims a file that is not there, and no
+document denies one that is.** The class of error that produced "`src/jobs/` does not exist" beside a
+running scheduler is now checkable in one command rather than one row at a time.
+
+### Session 26, part 22 — two tables that dropped their evidence column
+
+A finding said the §22 requirement table's header was missing a column. It was, and so was another,
+and the consequence is worse than untidiness: **in any Markdown renderer a row's cells beyond the
+header count are discarded**, so both tables displayed their requirements and statuses and silently
+threw away the Notes column — the column carrying every piece of evidence a reader would check.
+
+  * The §22 table (FR-REPORT-001/002) declared `| ID | Requirement | Status |` over four-cell rows.
+  * The Phase 4 table (rows 4.1–4.9) declared `| # | Requirement | SRS | Status |` over five-cell rows.
+
+Both headers repaired. Rows 4.1 and 4.2 genuinely had no note and now carry an empty cell so the
+table is rectangular.
+
+**Three rows also carried literal `|` characters inside their notes**, which splits a cell wherever it
+appears — including inside backticks, where it looks safe and is not. Two were mine, written this
+session: `(jpeg|png|webp)` in row 5.3 and a `|` used as a visual separator in row 5.4. The third,
+`{ class|teacher, entries }`, was in the progress log's file inventory. All escaped.
+
+**And a false alarm worth recording, because it is the same trap twice in one session.** The first
+scan reported **17** malformed tables. It matched headers with
+`line.startswith('| ID | Requirement | Status |')` — which is a *prefix* of
+`| ID | Requirement | Status | Notes |`, so fifteen correctly-formed tables were counted as broken.
+Exactly the substring mistake that ate `FR-AUTH-006/007` earlier. The real count was one.
+
+The check is now a script rather than a grep: it walks every table in both documents, compares header,
+separator and each row, and ignores escaped pipes. **Both documents: 0 malformed tables.**
+
+### Session 26, part 23 — four Known Issues closed, two of them latent bugs nobody could have hit
+
+**#24 — `?q=` accepted and discarded, in two modules.** The fees half was user-visible: the screen's
+search boxes returned every row with 200 OK, a silent wrong answer. The attendance half was latent —
+no screen sends `q` there — but an endpoint that accepts a filter and returns an unfiltered list is
+wrong whoever is asking. Both now filter, over the columns their own placeholders name and over
+`remarks`, attendance's only free-text column. Six assertions; in each the load-bearing one is that
+**a term matching nothing returns nothing**, and each regression returns the full list.
+
+**#23 — a date range that could not be one-sided.** `to` carried a bare `.min(Joi.ref('from'))`.
+With `from` absent Joi **cannot resolve the reference and errors instead of skipping the rule**, so
+`?to=2025-12-31` was a 422 complaining about a reference — which reads as a server fault rather than a
+rejected input. Every endpoint sharing the schema was unable to ask for "everything up to a date". The
+comparison is now conditional, and the third new assertion is the one that matters: **a backwards
+range is still refused**, because that is the rule the fix must not have thrown away.
+
+**#27 — a registered job that would have thrown on its first run.** `sync_usage` read
+`() => usageService.syncAllHeadcounts()`, no argument, against `syncAllHeadcounts(schoolId)` — whose
+"All" means all limit *keys*, for **one** school. Measured, it throws
+`entitlementService.getSnapshot() requires a school id; received undefined`. It never fired because
+nothing enqueues `sync_usage`, and its own docblock claimed all along that the job "touches every
+school". `syncAllSchoolHeadcounts()` now is that: it iterates schools and reports which failed rather
+than abandoning the rest at the first error.
+
+The reason this survived is worth more than the fix. **Every existing assertion about the job handlers
+checked their registration *names*; not one had ever invoked a handler.** `verify-jobs.js` now calls
+this one — chosen because it is the only registered handler with no side effect: the other three send
+mail, write notifications, or shell out to `mysqldump`.
+
+**#16 — scripts and docblocks pointing at files that do not exist.** Verified gone two ways: every
+`.js` target in `package.json` `scripts` resolves, and a sweep of **459** backticked paths across both
+documents leaves 5 unresolved, all of them correct as they stand.
+
+Open Known Issues: **19 → 15.**
+
+### Session 26, part 24 — two defects that turned out to be a specification gap and a display note
+
+Neither #19 nor #17 is what its one-line summary said, and in both cases finding that out was the work.
+
+**#19 is worse than recorded and cannot be fixed.** The note said `wallet_balance` "is never
+debited". It is also **never credited**: the column exists (`subscription.js:413`, default 0),
+`payments.method` accepts `wallet`, `payments.validation.js:76` accepts `destination: 'wallet'` on a
+refund, and **no code anywhere reads or writes it**. There is no top-up route in any router.
+`subscriptions.validation.js:206` forbids setting it on the grounds that it "belongs to the §13.2
+wallet payment method, not to this module" — pointing at an owner that does not exist.
+
+§13.2 lists "Wallet" in a five-item list and says nothing else. Three questions must be answered
+before a line can be written and the source answers none: how the wallet is **credited**, what
+happens when the balance is **short**, and **whose wallet** it is (the column sits on `subscriptions`,
+not `schools`). Implementing the debit alone would make it worse — with no credit path the balance is
+permanently 0, so every wallet payment would fail, and a method that always fails is worse than one
+that is visibly unimplemented. Recorded as blocked with the three questions written down.
+
+**#17 is a display note, and the part that matters is already covered.** A school-scoped `GET /addons`
+does show prices restricted to other plans — `detailInclude()` filters on `is_active` alone. But the
+purchase path refuses a cross-plan price at `subscriptions.service.js:1837` with
+`ADDON_PRICE_PLAN_MISMATCH`, **and that refusal is asserted** (`verify-subscriptions.js:1867`). I
+checked the assertion rather than trusting the code comment that claims the hole is closed — the
+comment happened to be right, which is not the same as knowing it.
+
+Left unfixed, deliberately: hiding those rows needs the caller's plan inside a catalogue read, and
+`req.tenant` carries `schoolId` but no plan, so `detailInclude()` would have to become async and
+resolve an entitlement snapshot — changing a synchronous helper's signature for every caller. §11.3
+constrains what a school may **buy**, which is enforced, not what it may see.
+
+### Session 26, part 25 — a discrepancy that never existed, and a ceiling charged on the wrong thing
+
+**Known Issue #8 was not a defect.** It had stood for several sessions as an "unexplained 2-column
+discrepancy": `npm run db:schema` counting **1,154** columns from the models against
+`information_schema`'s **1,156** live. Diffed per table across both databases, the model and the
+schema agree **exactly** — zero columns on either side the other lacks, and `msms` and `msms_test`
+report identical figures. The whole difference is `sequelize_meta`, which has precisely two columns,
+`name` and `applied_at`. One count covers the 64 SRS tables, the other all 65 objects.
+
+It is now **asserted** in `verify-performance.js` rather than merely explained: the model total must
+equal the live total excluding `sequelize_meta`, and the remainder must be exactly 2. A drifted column
+or a 65th table fails a named assertion instead of becoming a new note. That is the difference
+between closing a question and answering it.
+
+**Known Issue #22 — a ceiling charged on the existence of a row rather than the flag it counts.**
+`teacher_limit` and `staff_limit` count `is_active: true`, and both modules already asserted the
+ceiling on the *re-activation* transition for exactly that reason — yet `POST` charged a flat 1
+whatever the body said. A record created **inactive** consumed an allowance it was never counted in.
+
+It failed **closed**, so nothing could be smuggled past a limit; the cost was the opposite — a school
+at its ceiling could not enter a member of staff who had already left. Both routes now derive the
+increment from the flag.
+
+**Two modules, not the three the recorded action asked for.** `students` refuses `status` on create
+outright — *"set by promote / transfer / leave, not by this request"* — so a student cannot be created
+inactive and its flat 1 is already correct. Branching there would be dead code on a field the schema
+rejects. The recorded action said to change all three "at once" to keep them consistent; consistency
+here means each module charging for what its own limit counts, which is what this does.
+
+Two assertions, and the second is what keeps the fix honest: the inactive row must not move the
+meter. A fix that admitted the row **and** charged for it would pass the first assertion on its own.
+The regression refuses the row with 403.
+
+### Session 26, part 26 — eighteen create screens, and the shared bug five agents found independently
+
+The product could read everything and create nothing. Every list screen rendered a permission-gated
+"Add …" button pointing at a `/new` route that did not exist — eighteen of them, with no `new`
+directory anywhere under `src/app`. All eighteen now exist: seven platform, eleven school. `next
+build` generates **61** pages, up from 43, and `verify-frontend.js` asserts **zero** unresolved
+internal links.
+
+**The exemplar was built by hand first**, and the seventeen followed it: field set taken from the
+module's own create schema and nothing else, only the fields the schema marks `.required()` marked
+required, empty optionals omitted rather than sent as `""`, permission gate matching the list
+screen's button, `router.replace` on success.
+
+**Two shared defects came out of building them, and both were mine.**
+
+The first, found **independently by five of the six platform agents**: `ApiError.fieldErrors()`
+iterated `this.details` with `for…of`, and `details` is only an array when the failure came from the
+`validate` middleware. `errorHandler.js` sends a plain **object** for `DUPLICATE_RECORD`,
+`FOREIGN_KEY_VIOLATION` and upload errors, and services add their own — `SCHOOL_CODE_TAKEN`,
+`COUPON_CODE_TAKEN`, `INVOICE_PERIOD_ALREADY_BILLED`. The `?? []` guard does not help, because an
+object is not nullish. So the most ordinary create failure there is — a duplicate code — threw
+**"details is not iterable" from inside the catch block of every form**, leaving the button stuck on
+"Creating…" with no message. The constructor now drops a `details` that is not an array of field
+errors.
+
+Five agents reaching the same conclusion from five different modules is what made it a shared fix
+rather than six local guards. Two had already written local guards; the invoices one noted it had
+done so *"rather than in `apiClient.ts`, which is shared and not this screen's to change"* — correct
+restraint, and the shared change was mine to make.
+
+The second was subtler and also mine, in the exemplar the others copied. A Joi `.custom()` on the
+whole object — "expires_at must be after starts_at", "billing_period_end must be after
+billing_period_start" — reports with `path: []`, which `validate.js:91` turns into `field: ""`. That
+landed in `fieldErrors()` under the `''` key, which no input renders; and the form, seeing a non-empty
+map, then suppressed its banner too. **The message vanished completely and a rejected submit looked
+like nothing had happened.** `fieldErrors()` now excludes fieldless entries and `formErrors()`
+returns them; all eighteen screens surface them.
+
+`verify-error-handler.js` gained the assertion that would have prevented the first: the suite already
+checked both shapes of `details` a dozen lines apart, and neither assertion said the other existed.
+It now says so plainly — a consumer must check before it iterates.
+
+### Session 26, part 27 — §22's Reports screen, and a premise that was wrong in three files
+
+**I mischaracterised this work before starting it.** At the end of part 26 I described the seven
+remaining `real-fixable` findings as *"all documentation-accuracy of the same kind"*. Three of them —
+29, 30 and 31 — are not documentation at all: they are a screen that ran **one** of §22's seven
+reports and offered **none** of its three export formats. Reading the verdicts rather than my own
+summary of them is what corrected it.
+
+**The false premise, and why it was load-bearing.** The Reports screen rendered six of the seven as
+inert `<li>` cards on a stated fact: *"Six of the seven resolve a school before they can count
+anything, so a platform caller cannot run them at all."* It is false. `entitlement.js:256` returns
+`next()` for `req.tenant.isPlatform` **before any snapshot loads**; Super Admin holds `ALL`; every
+school schema accepts `school_id`; and `schoolScope.js:46-53` requires the id and then honours it.
+The same sentence appeared in the checklist and in the screen's header comment, and both also named
+the wrong refusal code — `SCHOOL_CONTEXT_REQUIRED` is raised inside `resolveGatedSchoolId`, on the
+far side of that short-circuit, so a platform caller can **never** see it; the real refusal is a 422
+naming `school_id`. Six new assertions in `verify-reports.js` measure all of it: the six answer
+**200**, with the same figures that school's own principal sees, on the same id a principal scoped
+elsewhere is refused 403.
+
+**One of my four predictions about those assertions was wrong, and the wrong one taught the most.**
+Deleting the `isPlatform` short-circuit does **not** stop the six answering 200 — the school named in
+the fixture is subscribed to Reports on its own merits, so the module gate passes anyway. What that
+short-circuit actually governs is the refusal a caller with **no** school sees. Each of the four
+breaks was applied to the source and re-run; every resulting FAIL came from the new block and nowhere
+else in the 106 assertions that preceded it. The suite comment now says which assertion catches which
+link, measured rather than assumed.
+
+**The exports had no reachable caller.** `reports.controller.js` has served Excel and PDF since Phase
+5.4 with the right MIME and a dated `Content-Disposition`, and nothing in the UI could fetch either:
+`apiClient.request()` ends unconditionally in `await response.json()`. The documented workaround —
+typing `?format=excel` into the address bar — could not work either, because the access token is held
+in memory and travels as a header, so a pasted URL is unauthenticated. `api.download()` is the binary
+path, sharing the bearer header and the single-flight 401 refresh, with `saveFile()` split off so the
+fetch does not require a DOM. Its `Content-Disposition` parser was exercised against nine headers
+including `../../etc/passwd` and a Windows path — both reduce to a basename.
+
+**Print was deferred to a client that did not print.** The recorded justification was *"there is no
+view engine in this application, so the JSON report is what a client prints"*. Grepping the whole
+frontend for `window.print`, `@media print` and `onafterprint` returned zero matches, so Ctrl+P
+printed the header bar and the entire navigation sidebar around whatever was left of the report.
+`?format=print` stays refused 422 — that half genuinely needs a view layer the SRS does not
+specify — and FR-REPORT-002's own words are an actor's action, *"User prints the report"*, which a
+print control plus an `@media print` block satisfies with nothing invented. `constants.js:660`
+promised *"`print` returns a print-ready payload/HTML"*, which `reports.service.js` identified as a
+promise "nothing here can produce" and left standing; it now says what is true.
+
+**One renderer for seven reports, and it is the exporters' own.** §22's seven payloads have seven
+shapes and no endpoint describes them. Rather than seven bespoke tables the screen transcribes
+`reports.service.js` `toRows()` — the flattening `toExcel()` and `toPdf()` already share so the two
+exports cannot disagree — which extends the same guarantee to a third consumer. The Subscription
+Report keeps its own badges and by-plan table, because flattening the one report the screen already
+displayed well would have been a regression.
+
+**Verified in a browser, not only by assertion.** A temporary platform user and two throwaway schools
+were created in the development database, driven through the UI, and deleted afterwards with the
+residue counted back to zero. Measured live: the school selector populated from `GET /schools`; the
+Students report returned that school's rows for a platform caller; Attendance withheld the call until
+Period and Date were supplied and then ran; `?format=excel` returned **200, 6,887 bytes**; `format=pdf`
+returned 200 carrying the report's own `period` and `date`, so the file describes what is on screen.
+And the print block's two structural selectors — `body > div > header`, `body > div > div > nav` —
+were confirmed to match elements in the live DOM, which is the assertion most likely to rot silently
+when the shell is rearranged.
+
+**Eleven deliberate regressions on the frontend suite, all detected**, including one that exposed the
+**fourth** instance in this project of a substring search that cannot tell a rule from the warning
+against breaking it: removing the print button left `window.print()` in the header comment and the
+check stayed green. `code()` exists for exactly that and every presence check now uses it. Two
+assertions that grepped for the false premise's own words were replaced outright by one with real
+force — each report's permission pair, read off the screen and compared against the router's, with
+every key checked against the fixed catalogue of 109.
+
+**The other four findings were documentation, and one citation was off by one.** *Quotations* were
+attributed to "§33's SaaS-Engine *Quotations* entry" in five places; `grep -i quotation` over the SRS
+returns exactly **one** line in 1,698 — the bare table name at :1445 — and §33's SaaS Engine list is
+21 items with no Quotations among them, both verified here rather than taken from the verdict. All
+five now cite §29 alone. **§32 step 8, "Create Git commit." (SRS:1571), was filed under "not tracked
+as an SRS row, because neither is an SRS requirement"** — true of the missing ESLint config, false of
+git, and the checklist already treats §32 step 2 as binding enough to pick the ORM four hundred lines
+earlier. It is now row **7.14, Not Started**. FR-EXAM-005's row claimed `/exams/my-results` delivered
+its Parent and Student actors; that route has no `format` branch and no `format` key in its schema,
+and the only PDF route is gated on `results.view`, which the catalogue gives neither role. FR-EXAM-001
+and FR-EXAM-004 now carry the withheld-actor note FR-ATT-003 already carried. The verdict for the last
+of these cited SRS:1026 for FR-EXAM-004's actor line; :1026 is *Preconditions* and the actor line is
+**:1025** — corrected against the source rather than copied.
+
+**FR-REPORT-002 moves to `Completed`.** PDF, Excel and Print are all delivered — the first two by the
+server, the third in the browser, which is where §22's third format was always going to live.
+
+Baseline **5,162 → 5,183** assertions (+6 `verify-reports.js`, +15 `verify-frontend.js`), `npm test`
+**5,379 passed, exit 0**. Both new blocks were run **twelve times** each: 112 and 66 PASS every run,
+exit 0 every run, and the new `super-admin` fixture user leaves no residue. `next build` still
+generates 61 pages. Both documents have 0 malformed tables.
+
+### Session 26, part 28 — re-triaging the thirteen blocked findings, and twelve false statements
+
+Twenty-eight agents: one per blocked finding trying to **refute** the blocked verdict by finding a
+fix that invents nothing, two adversarial skeptics behind each claimed fix, and five scoping the
+actionable Known Issues. The first run died on a session limit with 15 of 28 agents lost; resuming
+replayed the 13 cached results and re-ran the rest.
+
+**Nothing was overturned. All thirteen stay `real-blocked`, and that is the finding.** Six refuters
+claimed a fix existed — findings 11, 16, 17, 18, 47 and 60 — and **every one was refuted**, nine
+skeptic votes, all against. The refutations were not pedantic. Student "Documents" (16) survives the
+§29/§35 lens completely — `document_type` is nullable and the model says *"null for a plain
+upload"* — and still fails, because `documents.title` is NOT NULL with no default so every upload
+must originate a human-authored value the SRS never specifies, and because writing
+`owner_type='student'` rows makes them readable by that student and every linked parent through
+`selfScope()`, which is a security policy §35 says this project may not decide. That is the pattern
+the earlier triage named, arriving again from a different direction: **a fix that quietly picks a
+default, a wording or a policy is a specification decision wearing implementation clothes.**
+
+**Twelve false statements were found and corrected, none of which needed the blocked decision.**
+Two are worse than an audit-trail problem:
+
+* **A 422 served to the caller instructed them to do something inert.** `subscriptions.validation.js`
+  refused `cycle_amount` with *"use a price override (SRS §33 Custom Pricing) to change what is
+  charged"*. A price override changes nothing: `grep -rn "SubscriptionOverride"
+  backend/src/modules/invoices/` returns **nothing**, `cycle_amount` is only ever
+  `computeCycleAmount(price, quantity)`, and `override_type` is written and echoed and never read.
+  The message now points at the §10.4 Custom Price model, which I verified actually works before
+  writing it — `PRICING_MODELS.CUSTOM` exists and `computeCycleAmount:448-450` returns
+  `money.round(price.custom_amount)` for it. Replacing one false instruction with another would have
+  been the easy mistake.
+* **A fabricated SRS quotation in shipped code.** `payments.routes.js:35` presented *"School submits
+  a manual payment with a screenshot / transaction ID."* in the file's own verbatim-quotation style.
+  `grep -c "with a screenshot" docs/SRS-extracted.md` returns **0**. The real FR-BILL-003 is
+  *"School submits a manual payment for review."* (SRS:679) plus two separate bullets (:684-685) —
+  and compressing two bullets into one sentence also implied both were required, which neither is.
+  That is the fourth fabricated quotation this session.
+
+The rest: `plans.validation.js` claimed `status` "is refused on **create** as well" when it is
+absent from the create schema and `stripUnknown: true` discards it silently — the exact shape
+`coupons.validation.js:60-62` argues against ("a stripped key answers 200 having changed nothing,
+which a caller cannot distinguish from success"); `entitlementService.js` and
+`subscriptions.validation.js` both named invoice generation as the consumer of a price override and
+said "until §13 is built", when §13 is built and still reads none; and **five places** attributed
+*"Super Admin and/or school"* to FR-SUB-009's **actor line** — SRS:521 is the Description, SRS:522 is
+the actor line and reads only *"Super Admin"*, which is the contradiction finding 53 is about.
+
+**An agent fabricated a quotation of its own, and grep caught it.** Finding 47's report quoted
+`teacher/page.tsx:8-13` asserting *"Every one of those is an existing School screen with a permission
+a teacher holds"* and built a correction on it. That phrase appears **nowhere in the project** — not
+in `frontend/src`, not in any of the six documents — and the file's header is seven lines, not
+thirteen. Only the half I could read for myself was applied. Every one of the twelve corrections was
+re-verified at first hand before it was written; two more agent claims were dropped for stale line
+numbers I could not confirm.
+
+**Sixty-six frontend files were rewritten between 01:30 and 01:38 on 2026-09-07, and I cannot say by
+what.** Essentially the whole of `frontend/src`, including the Reports screen from part 26. It was
+not this session. With no git history there is nothing to attribute it from, so the cause is
+recorded as unknown rather than guessed. What is establishable is that nothing was lost: `tsc` clean,
+`next build` 61 pages, and `verify-frontend.js` **66/66** including the new §22 block. The one
+observable difference is that `teacher/page.tsx` no longer carries the long §5 header, which is also
+the file the fabricated quotation named.
+
+**A check I decided not to write.** Four fabricated quotations in one session makes "every quoted SRS
+phrase must be in the SRS" an obvious assertion. Measured first: the backend holds **266** `*"…"*`
+quotations, **207** of them next to an SRS reference, and **45** of those are not verbatim in the
+source — almost all legitimately, because the same convention quotes model column comments, MySQL
+error strings and the project's own maxims (`notifications.service.js:20-25` quotes five column
+comments and says so). The distinction between "quoting the SRS" and "quoting a model comment" lives
+in the prose, not in the syntax. A check failing on 45 lines that are correct is worse than no check,
+and narrowing it by inventing a convention the codebase does not follow is the same mistake in
+another coat. Recorded as Known Issue 31 instead.
+
+**Four Known Issues were scoped to applicable patch plans, and all four are still real.** #6 (no
+ESLint config) and #17 (add-on prices) are hygiene; **#28 and #29 are real bugs**. Two things came
+out of the scoping that the register did not know:
+
+* **#17's recorded reason for leaving it is wrong.** The register says fixing it means "changing a
+  synchronous helper's signature for every caller". `detailInclude()` has exactly **two** callers,
+  both in its own file, and the signature need not become async at all.
+* **#28 reaches further than the register says, and it reaches my own process.** `stress.sh:17`
+  scores a run by its exit code alone — so the standing rule "run a new suite a dozen-plus times"
+  would report a **perfect determinism score for nineteen suites that never ran their database
+  half**. `npm test` is not exposed (globalSetup proves the database, `verify.test.js` asserts
+  `skipped` is empty and the exact per-suite counts), but the direct-run path is, and that is the
+  path this log documents throughout.
+
+`npm test` **5,379 passed, exit 0** — unchanged, because eleven of the twelve corrections are
+comments and the twelfth is a message no suite asserts. Both documents have 0 malformed tables.
+
+### Session 26, part 29 — a secret in the repository, a lint config, and two plans refused
+
+**Known Issue 29 was hiding a real one.** The register recorded that `NODE_ENV=test` reconfigures the
+application and that the harness works around it by never using that value. Underneath sat something
+sharper: `env.js:135-136` gave both JWT secrets a **hard-coded literal fallback** when `isTest`, so
+`NODE_ENV=test` was the one environment in which the boot guard would let the process **serve** with
+no configuration at all — signing real access and refresh tokens with a string committed to this
+repository.
+
+Measured rather than argued, with `.env` moved aside and restored byte-for-byte:
+
+    before                                    after
+    NODE_ENV=test         BOOTS on the literal    refuses
+    NODE_ENV=development  refuses                 refuses
+    NODE_ENV=production   refuses                 refuses
+    (three cells with the secrets present: identical, both times)
+
+Exactly one of six cells moved, and it is the unsafe one. The fix is subtractive — the fallbacks are
+now `''` — and the env-key census still reads `[73, 73]`. `verify-deploy.js` gained three
+assertions and **five deliberate regressions all fired**, including two shapes the original defect
+did not have: a fallback conditional on `isProduction` instead, and one hidden behind a plain
+constant. The check catches the class, not the instance.
+
+**And the fix's own comment broke two other checks, which is the fifth substring trap this session.**
+The comment I wrote to explain the removal contained two code-shaped examples. The env-key census at
+`verify-deploy.js:315` scans `env.js` as **text**, so my illustrative helper call was counted as a
+real environment key and the census went 73 → 74; and my own new assertion matched the *example* in
+the comment rather than the real call, reporting the defect as still present on a file that no longer
+had it. Both went red on the first run. The comment is reworded, the new check reads comment-stripped
+source, and the census's inability to tell code from prose is now written down as a limitation of
+*that* assertion rather than left to bite again.
+
+**Known Issue 6 is closed: `npm run lint` exits 0.** `eslint ^8.57.1` had been a dependency with the
+script wired and **no config file anywhere** for twenty-five sessions. The register also had the
+target wrong: `"lint": "eslint src tests"` — `scripts/` is not linted at all.
+
+All nine errors the new config reported were fixed **in the code, not by relaxing a rule**. Seven
+were dead requires, each confirmed to appear exactly once outside a comment before removal. `Grade`
+in `models/index.js` got a longer look, because a model destructured and never used could have been a
+missing association: it is registered, used at six call sites, and does carry `school`/`organization`
+— from the generic tenant loop, not from that destructure, which exists only for explicit ones. So
+the name was dead and nothing changed. The two remaining errors are deliberate constructs and got a
+disable comment that states its reason: the control-character class in `sanitize.js`, which is the
+*subject* of `no-control-regex` rather than an accident, and the lazy `require('redis')` in
+`cache.js`, whose disable comment named `import/no-unresolved` — a rule from a plugin this project
+does not install, which is itself an ESLint error.
+
+`verify-deploy.js` part 6 now runs `eslint src tests --max-warnings 0` **inside the loop** — 2.5
+seconds over 222 files, cheap enough that a config nobody runs cannot happen — and pins the target
+string, so "lint passes" can never quietly become "lint passes over less". Four deliberate
+regressions, all detected; the one that proved `--max-warnings 0` load-bearing was downgrading a rule
+to a warning, which otherwise leaves the exit code green while the finding stays. **`scripts/` holds
+45 errors of its own** (22 `no-inner-declarations`, 19 `no-unused-vars`) across 25 of 41 files —
+measured, recorded, not fixed, and the pinned target is what stops that exclusion being forgotten.
+
+**Two plans were scoped and then refused, and the refusals are the most useful output of the pass.**
+
+*Known Issue 28.* The fact-check confirmed all six factual claims and reproduced the false green end
+to end — and found the plan unsafe twice over. It selects the nineteen suites by an exit line it
+calls byte-identical; that line is shared by **33 of the 38**, so a blind sweep would have edited
+fourteen suites with no `dbSkipped` to honour. And its acceptance gate quotes **stale documentation
+instead of `tests/baseline.json`** — "5,183 assertions / 5,162 pass lines", two figures that are not
+even from the same moment — so an implementer following it would measure the real totals, read a
+delta, and conclude a correct patch had broken something. A verification step built on a stale number
+is the exact failure this project keeps a memory rule about.
+
+*Known Issue 21.* The scope is narrower than recorded — **four** of §11.2's eight limit keys, not
+eight, with four distinct reasons why the others cannot race — and **this register row's own
+prescription is not achievable**: "close it in `enforceLimit`" cannot be done, because `enforceLimit`
+is middleware and the transaction it would need to join is opened later inside the service, or does
+not exist at all. Its plan was refused too, on a load-bearing false schema claim: it locks the
+subscription row on the grounds that there is "one row per school", and `subscriptions.school_id` is a
+**non-unique** index — confirmed against `msms_test`, `Non_unique: 1`.
+
+Neither was applied. Both rows now carry what was established, so the next attempt starts from the
+corrected version rather than the plan that reads well.
+
+Baseline **5,183 → 5,189** assertions (+3 `verify-deploy.js` for KI#29, +3 for KI#6), `npm test`
+**5,385 passed, exit 0**, `npm run lint` exit 0, `verify-deploy.js` run **twelve times** at 58 PASS
+and 0 FAIL every run. Both documents have 0 malformed tables.
+
+### Session 26, part 30 — nineteen suites that lied about passing
+
+Known Issue 28 is closed at source. Nineteen suites answered an unreachable database by setting
+`dbSkipped`, returning early from their database half, printing *"All pure … checks passed"* and
+**exiting 0**. Anything that scores by exit code read that as green — `node scripts/verify-fees.js`
+run directly, which is the workflow this log documents throughout, and `scripts/stress.sh:17`, whose
+whole scoring is `if ! wait "$pid"`. **The determinism rule this project relies on —** run a new suite
+a dozen-plus times **— would have reported a perfect score for nineteen suites that never executed.**
+
+**The plan's own selector would have damaged fourteen innocent files.** It picked the suites by an
+exit line it called byte-identical. It is byte-identical, and it is shared by **33 of the 38**.
+Selecting instead on the presence of `dbSkipped` gives exactly nineteen, measured. That the plan was
+fact-checked before being applied is the only reason this is a footnote rather than a cleanup.
+
+**Measured both ways, all nineteen.** With the port pointed at nothing — nothing stopped, nothing
+deleted — a plain run now exits **1** and a `--allow-skip` run exits **0**, nineteen for nineteen.
+With the database up, every suite exits 0 at its exact recorded PASS count, nineteen for nineteen: the
+change is a proven no-op on a healthy run. The opt-out mirrors `record-baseline.js`'s `--allow-shrink`
+rather than inventing a convention, and `suiteRunner.js` spawns with no arguments, so the harness can
+never opt out by accident.
+
+**The register's own figure for this was stale and is now current.** It recorded *"3,143 of the 5,112
+PASS lines vanished"*, measured on 2026-09-05 across the whole loop. Re-measured against these
+nineteen alone: **1,563 of the 2,625 PASS lines they produce — 60% — disappeared while every one of
+them exited 0.** The two numbers count different things and both are now labelled with what they count.
+
+`stress.sh` needed no edit: repairing the exit code repairs its scoring, and a degraded `verify-fees.js`
+now returns 1 where it returned 0. Two harness-integrity tests hold the property at the source — every
+suite declaring `dbSkipped` must guard its exit, and `suiteRunner.js` must never pass the opt-out —
+both proved by deliberate regression, both detected.
+
+`npm test` **5,387 passed, exit 0**; the baseline is unchanged at 5,189, because the two new tests are
+jest-level rather than suite assertions.
+
+### Session 26, part 31 — a row that cited the wrong section, and nine figures nobody was checking
+
+**Row 7.11 "Monitoring" was measuring against a requirement the SRS does not contain, and its note
+was false about this repository.** It read *"No monitoring is attached to them, which is the
+requirement this row is named for."* Three things, each verified at first hand rather than taken from
+the scoping pass:
+
+* **§26 imposes no monitoring obligation at all.** Its heading says "Backup, Logging & Monitoring",
+  but its body is four items — Database Backup, Backup Retention, Error Logs, Activity Logs — and its
+  two requirements are FR-BKP-001 and FR-LOG-001, both already `Completed`. `grep -in monitor` over
+  the 1,698 lines returns **four** hits, and the §26 one is the heading.
+* **§27's requirement is that monitoring be *configured*.** FR-DEPLOY-001:1374 reads *"Database
+  Backup, Logging, and Monitoring are configured for production"* — the same grammar as :1369 nginx,
+  :1370 SSL, :1371 environment variables and :1373 cron workers, every one of which is `Completed`
+  here on the strength of a `deploy/` file nobody has executed.
+* **Probes are attached, and a suite says so.** `deploy/monitoring/README.md` is 863 lines whose
+  crontab hits **both** health endpoints every minute — liveness at :689, readiness at :690 capturing
+  the response body — plus the public chain, a cron heartbeat grepped out of the combined log, an
+  error-log delta, backup freshness, disk and TLS expiry. `verify-deploy.js` part 5 asserts six things
+  about that file and all pass, including *"the runbook probes the health endpoints the app actually
+  serves"*.
+
+The row is now `Completed` and cites **§27, not §26**. What is not claimed: no monitor runs inside
+this repository, and none is asked for — §27 gives one word, :1359 forbids introducing a technology
+to implement it, and the runbook says so in its own voice: *"Every threshold in this document — 1800
+s, 93600 s, 85%, 14 days — is a choice, not a measurement."* Holding this row to "a monitor is
+running" while its five siblings passed on unexecuted config files was a standard applied to one row
+and not the others.
+
+**Nine suite figures in the checklist had drifted and nothing was checking them.** The document cites
+each suite's count as the evidence a row is done — *"`verify-fees.js` → **170 / 170**"* — and nine
+were behind, `verify-frontend.js` worst at **20 against an actual 66**. Corrected by reading
+`tests/baseline.json` rather than typing numbers, and a jest test now asserts every quoted figure
+against it. Scoped to the checklist deliberately: `IMPLEMENTATION_PROGRESS.md` holds six figures that
+no longer match and every one is historical narrative — *"Wrote `verify-billing.js` (189
+assertions)"* — true when written, in a day-by-day record, and asserting against those would force
+the history to be rewritten every time a suite grows.
+
+**Running the fix against a throwaway copy first is what saved it.** The dry-run had scanned only the
+line grep found and pronounced every anchor unique; the copy-run showed `verify-deploy.js (52
+assertions` appears **twice**, at :905 and :911. The script now expects two sites there and fails if
+that changes. The assertion was pre-validated the same way — 9 stale figures reported against the
+unrepaired document, 0 against the repaired copy — and then proved by putting one number back, which
+failed it by name and quoted the exact drift.
+
+**Two scopings came back and neither produced code.** **FR-BILL-001's** missing System actor is
+**blocked**: *"a billing event"*, its own precondition, appears exactly once in the source and is
+never defined, so an automatic trigger would decide which events count, when in the period to issue,
+what `due_date` to set and what to do in grace — four rules §35 forbids. Its other half is better
+than recorded: all eleven §13.1 fields including Add-ons really are written, and **six of them are
+asserted by no suite**, which is a coverage gap worth closing on its own. **Known Issue 21's** second
+plan reworked the mutex to the school row locked by primary key — rejecting both earlier candidates
+because neither row is guaranteed to exist, and measuring that a `FOR UPDATE` matching no row
+serialises nothing — and was refused again on its own proof: one named regression cannot fail with the
+defect present, and it underwrites five of its seven edits. The mutex is probably right; the evidence
+for it is not yet.
+
+`npm test` **5,388 passed, exit 0**; baseline unchanged at 5,189.
+
+### Session 26, part 32 — five of FR-BILL-001's eleven fields, and an assertion that could not fail
+
+FR-BILL-001 says the System creates an invoice **containing** eleven things (SRS:668). `verify-billing.js`
+generates a real one over HTTP and asserted **five** of them — status, subtotal, discount, tax, total.
+Six were never read back off the generated row: Invoice Number, School, Plan, Add-ons, Billing Period,
+Due Date. Measured by grepping each column for occurrences inside a `check(`: zero for all six.
+
+**Billing Period and Due Date now ship, +5 assertions, and every expected value is derived rather than
+typed.** The period is compared against the subscription's own row read *before* billing, the span is
+pinned to `cycle_days`, and the due date is `issue_date + subscription.grace_period_days` — the
+derivation `generateForSubscription()` actually uses (`dueDays: subscription.grace_period_days`),
+anchored on the invoice's own issue date so there is no midnight race. A pin on the fixture's
+`[custom_days, 30, 7]` guards the guard: with a grace of 0, "due = issue + grace" would quietly become
+an identity.
+
+**One of the five could not fail, and my own regression pass is what found it.** *"The invoice bills
+the subscription current period start, not a fresh clock read"* stayed **green** when I replaced the
+service's `subscription.current_period_start` with `new Date()` — because the fixture activates and
+invoices within the same second, so both serialise to `09:16:06`. Two adversarial reviewers had passed
+the design on the vacuity lens and neither caught it; running the regression did. The fixture now
+back-dates the subscription's period by **five whole days** before billing, which makes the two
+provably different while leaving the span exactly `cycle_days`. **5/5 regressions detected** after that,
+4/5 before.
+
+**The other two groups are not applied, and both for good reasons.**
+
+*Invoice Number / School / Plan* — twelve assertions, and **both** reviewers confirmed every one fails
+when its field is removed. What refuted the set was a wrong fact in **its own proof**: the regression
+meant to break the `plan_name` snapshot claimed that removing `name` from the plan update schema would
+answer 200 with the field stripped. It would not — the schema carries `.min(1)`, and Joi applies
+`stripUnknown` before the object-level rule, so `{name: …}` reduces to `{}` and trips `object.min`.
+Both reviewers reproduced that with the project's own Joi. The assertions look sound; one proof step
+needs replacing before they go in.
+
+*Add-ons* — refuted on exactly the trap the brief warned about, and the reviewer caught it precisely.
+`addonsSummaryFrom()` returns **`null`** when no line is an add-on, the column is nullable, and
+`present()` spreads `toJSON()` — so `check(…, beforeCoupon.addons_summary, null)` compares `"null"`
+against `"null"` **whether or not the column is ever written**. The honest finding is that with this
+fixture Add-ons cannot be asserted at all, not weakly: it needs one `addon_prices` row and one
+`POST /subscriptions/:id/addons`, and it cannot go on the first invoice without moving the
+1000/100/1100/990 figures the suite already pins — so it wants a second invoice of its own.
+
+**And the checklist-figure assertion added earlier this session caught my own change.** Re-recording
+took `verify-billing.js` from 220 to 225 and the loop went red naming the drift: *"verify-billing.js:
+checklist says 220, baseline records 225"*. Corrected by reading the new value out of
+`tests/baseline.json`.
+
+Baseline **5,189 → 5,194**; `verify-billing.js` run **twelve times** at 225 PASS, 0 FAIL, exit 0 every
+run. `npm test` **5,393 passed, exit 0**.
+
+### Session 26, part 33 — Invoice Number, School and Plan, and two regressions that were the wrong shape
+
+Five of FR-BILL-001's eleven fields were asserted at the start of this session; **ten are now**. The
+twelve new assertions cover Invoice Number, School and Plan on the generated row, and both adversarial
+reviewers had already confirmed each one fails when its field is removed — what they refuted was a
+wrong fact inside the design's **own proof**, so the assertions went in and the proof was rebuilt.
+
+**The snapshot pair is the interesting one.** `plan_name` is documented as *"Snapshot at issue time"*,
+and the detail read joins the live plan beside it — so one response carries both. Renaming the plan
+after issue and asserting the pair is what makes "snapshot" testable: the join must move and the
+column must not. Measured: joined name `Verify Billing Plan Renamed`, column still `Verify Billing
+Plan`. Renaming is safe because that string appears exactly once in the suite and teardown keys on ids.
+
+**Two of my seven regressions were the wrong shape, and both taught something.**
+
+*The one the reviewers caught, before I wrote it.* The design proposed proving the snapshot by removing
+`name` from the plan update schema, expecting a 200 with the field silently stripped. It would not —
+the schema carries `.min(1)`, and Joi applies `stripUnknown` **before** the object-level rule, so
+`{name: …}` reduces to `{}` and trips `object.min`. Replaced with two that work: never write the
+column, and serve the live join in its place. Both fire.
+
+*The one I only found by running it.* Booking the invoice to the organization id instead of the school
+violates the foreign key, so the request answers **409** and `expectOk` throws before the assertion is
+reached — the suite **crashes rather than failing by name**, which this project counts as a bad
+detection rather than a detection. The fixture also holds exactly one school, so there is no
+valid-but-wrong id to substitute. Broken in the **response** instead — a correct row reported wrongly,
+which is a real failure mode and is what the assertion actually reads. **7/7 detected** after that.
+
+That is now twice in two parts that a regression, not a reviewer, found the flaw: part 32's period-start
+assertion could not fail because the fixture billed within the same second, and this one could only
+fail by crashing. Both times two adversarial reviewers had passed the design. **Running the regression
+is doing something the reading cannot do**, and it is worth the minutes.
+
+Baseline **5,194 → 5,206**; `verify-billing.js` run **twelve times** at 237 PASS, 0 FAIL, exit 0 every
+run. `npm test` **5,405 passed, exit 0**.
+
+**The checklist-figure assertion fired again on my own re-record** — 225 → 237 — and rather than fix
+the number by hand a second time there is now `syncfig.py` in the session scratchpad, which rewrites
+every quoted figure from `tests/baseline.json`. Typing the number was how all nine drifted originally.
+
+**Add-ons remains the one unasserted field of the eleven**, and deliberately so: `addonsSummaryFrom()`
+returns `null` when no line is an add-on, so any check against `null` passes whether or not the column
+is ever written. It needs one `addon_prices` row and a second invoice of its own, since an add-on on
+the first would move the 1000/100/1100/990 figures the suite already pins.
+
+
+### Session 26, part 34 — the eleventh field, and the vacuity test it had to survive
+
+**All eleven of FR-BILL-001's fields are now asserted.** Add-ons was the last, and the only one whose
+design had been refused outright rather than corrected: the reviewer showed that
+`check(…, addons_summary, null)` compares "null" with "null" whether or not the column is ever
+written, which is the failure this project keeps a list of. That assertion is not reworded — it is
+gone, and replaced with two that have something to be wrong about.
+
+**The fixture buys a real add-on and bills it on a second invoice.** `extra_students` at 25 a unit,
+bought twice, is 50 — every figure asserted is that arithmetic rather than a literal. It goes on a
+**second** invoice for a period the first does not cover, because buying it earlier would move
+subtotal, tax and total off 1000/100/1100 and the coupon figures off 100/90/990, rewriting six
+expected values that are about the coupon rather than about add-ons. `alreadyBilled()` matches on the
+period start, which is what makes a second invoice possible at all.
+
+The pair is what gives the column meaning: `addons_summary` exists so a list view need not join
+`invoice_items`, so it has to **agree** with those rows — and the line carries
+`subscription_item_id`, which ties it back to the purchase that created it. A summary that agreed
+with nothing would be decoration.
+
+**The vacuity test passed, and it was the point of the exercise.** Deleting
+`addons_summary: addonsSummaryFrom(lines)` — the exact regression that left the original design's
+third assertion green — now fails the suite by name. **5/5 regressions detected**, including
+summarising every line rather than only the add-on ones, dropping the quantity, cutting the line loose
+from its purchase, and collapsing the unit amount to zero.
+
+Baseline **5,206 → 5,208**; `verify-billing.js` run **twelve times** at 239 PASS, 0 FAIL, and the
+fixture leaves no residue — `addon_prices` and `subscription_addons` both back to 0 rows. `npm test`
+**5,407 passed, exit 0**.
+
+### Session 26, part 35 — the UI rebuild: a design system, and four screens that did not work
+
+Asked to rebuild the frontend to a commercial standard. The brief said to treat the current UI as a
+rough prototype; **it was not one**, and saying so first mattered, because "start over" would have
+thrown away a real token layer, custom typography and a considered palette. What it lacked was
+underneath: no dark mode, no icon set, no modal, no toast, no confirmation, no mobile table — and
+four screens that were broken outright.
+
+**The four broken screens came first, because a redesign of a screen that throws is decoration.**
+
+| Screen | What a user met | Cause |
+|---|---|---|
+| Super Admin dashboard | **`NaN`** in all thirteen metric cards | read `data.x`; the envelope is `data.metrics.x` |
+| `/school/classes/sections` | **`rows.map is not a function`** — Next's error screen, on every class | `useCollection` reads the *paginated* envelope; that endpoint answers `{ sections }` and does not paginate |
+| `/school/finance` | **TypeError** on `report.income.total` — and before it threw, `NaN < 0` painted a **deficit green** | envelope is `{ report }` |
+| `/school` | **`Cannot read properties of null`** — a school with no subscription crashed its own dashboard | the TypeScript type declared `subscription` and `plan` non-nullable; the API sends `null` for both |
+
+The last is the one I would least want a customer to find: a school created before billing is set up
+is an ordinary state, and it met an error boundary. **The type lied about the API**, which is exactly
+why `tsc` could not see it.
+
+**Enumerated rather than patched.** Rather than fix the dashboard and move on, all **32** `api.get` /
+`api.page` call sites were checked against the controller each one reaches. `auth.me`,
+`parents.dashboard`, `teachers.dashboard` and `plans.catalogue` all answer unwrapped and are correct;
+every `api.page` call is fine because `requestPage` owns the list envelope. The class is closed at
+three instances rather than "however many are left". One honest miss along the way: I fixed
+`subscription` being null, re-tested, and the **next** field — `plan` — crashed identically. Reading
+the service's null return in full would have caught both at once.
+
+**Then the foundation, built once so 59 screens inherit it.**
+
+*A three-layer token system.* Primitives (`--slate-500`) are never referenced by a component;
+semantics (`--ink`, `--surface-1`, `--danger`) are what screens use; components compose from those.
+That middle layer is why **dark mode cost one block rather than 59 files** — `--ink` means "the
+colour text is" in both themes and only its value moves. Three theme states, because a two-way toggle
+overrides what someone already told their operating system. The pre-paint script lives in
+`public/theme-init.js`, loaded render-blocking, so there is no flash of the wrong theme.
+
+*Everything that was missing.* An icon set — 40 glyphs on a shared 24×24 grid, hand-drawn inline SVG
+because the brief forbids new dependencies and a mixed-weight icon set looks wrong before anyone can
+say why. A toast system, which did not exist at all: every outcome was reported inline, so the most
+common action in the product — saving something — navigated away and said nothing. A `<dialog>`-based
+modal and a confirmation dialog, so a destructive action can have a second step. A dropdown that
+closes on Escape and returns focus.
+
+*The shell.* The sidebar was painted with a hard-coded dark ink — one deliberate choice in light mode
+and an accident in dark, where `--ink` **is** the text colour. It is now a surface like any other.
+Mobile was `hidden` / `block`: the panel appeared in the flow, pushed the page down, and could not be
+dismissed by tapping away or pressing Escape. Measured on the rebuilt drawer at 375px: opens with
+`aria-modal`, **focus moves inside**, body scroll locks, Escape closes it, **focus returns to the
+trigger**, scroll restored.
+
+*The shared primitives.* `table.tsx` and `form.tsx` are consumed by every screen, so they were the
+highest-leverage thing left. Tables **become cards below `md`**, rendered from the same `Column[]` so
+the two layouts cannot describe a row differently — measured at 375px: table hidden, cards shown,
+`scrollWidth === innerWidth`, no horizontal scroll. A refresh now dims the table in place instead of
+replacing it with the word "Loading…", which is what made every debounced keystroke throw away the
+scroll position. Status badges gained a dot, so they survive greyscale. Search gained a clear button.
+Forms gained a checkbox, a radio group, "required" **in words** rather than a red asterisk, and a
+spinner on submit.
+
+**Two security assertions were made more precise, not weaker — and both were proved.**
+
+The theme preference has to survive a reload, and `verify-frontend.js` banned `localStorage`
+outright. The heading says what the rule is for — *"the access token is never persisted"* — and the
+blanket ban was a proxy for it. It now reads keys from **comment-stripped code**, requires them to
+match a justified allow-list, and separately forbids any file that writes to storage from so much as
+mentioning a token. **5/5 regressions detected**, including persisting the token *under the allowed
+theme key* to dodge the list — which the old blanket rule could not have distinguished at all.
+
+`verify-security.js` forbids `dangerouslySetInnerHTML`. Rather than narrow a second security rule to
+fit my own code, the theme script moved to a static file. The assertion then failed on the **comment
+explaining that compliance** — the sixth substring trap this session — so it now reads code rather
+than prose, on this project's own recorded doctrine: *"narrow the search, never delete the sentence."*
+Proved: a real use still fails it by name.
+
+`verify-frontend.js` **66 → 68** assertions. Baseline **5,208 → 5,210**. `npm test` **5,409 passed,
+exit 0**; `npm run lint` exit 0; `next build` 61 pages, no errors.
+
+### Session 26, part 36 — auditing 59 screens, and what was hiding behind a green suite
+
+MySQL first: the Aria recovery from Known Issue 2, second time it has been needed (the server itself
+stopped more often than that — four times this session — but only twice with a corrupted system
+schema behind it). Three tables needed `-o` this time rather than four — **which table needs it varies,
+so read the run rather than working the list** — and the recorded procedure gained a correction it
+had earned. The logs were previously
+quarantined to `data/_aria_quarantine/`, and MariaDB enumerates every subdirectory of the data
+directory as a schema, so `SHOW DATABASES` had been listing `_aria_quarantine` as a phantom database
+ever since. Harmless, and exactly the sort of thing that later gets counted; it now lives one level up,
+outside the data directory. Both databases came back intact, and the server's own boot check agreed:
+*"Schema matches SRS §29 (64 tables)"*.
+
+**Then the audit.** 24 agents over all 59 screens — twelve reading a group of five against the
+backend module each call reaches, twelve more trying to *refute* what the first twelve found. **204
+findings judged, 174 confirmed, 30 refuted**, 17 of them "broken". The refutations mattered as much as
+the confirmations: one finding was dropped for a fabricated quotation, and the student half of another
+was correctly qualified as unreachable because **no code path creates a student user account** —
+`students.service.js` has no `db.User.create` and `users.routes.js` has no POST.
+
+Everything below was verified by hand before it was acted on. Two of them were verified by breaking
+them in a browser and watching the network log.
+
+#### The two that mattered most were not visual at all
+
+**Signing out did not sign you out.** `issueCsrfToken()` mints a **new** value and re-sets the cookie
+every time it runs, and `publishSession()` runs it on login, on refresh and on change-password —
+returning the new value as `body.csrfToken`, with a comment saying exactly why: *"Rotated with the
+session, so a client that just signed in can immediately POST."* The client never read it.
+`ensureCsrfToken()` cached the value it fetched from `/csrf-token` **before** signing in and
+`if (csrfToken) return csrfToken;` held it forever, so from the moment of login the cookie and the
+header disagreed — and `requireCsrfToken()` guards both `POST /auth/refresh` and `POST /auth/logout`.
+
+Measured in the browser, not argued: signing out through the account menu gave
+`POST /api/v1/auth/logout → **403 Forbidden**`. The UI went to `/login` anyway, because `clear()`
+runs in a `finally` — so it *looked* like it worked. The proof is in the data:
+
+| account | signed out | `refresh_token_hash` cleared |
+|---|---|---|
+| `ui-audit@msms.local` | before the fix | **no** — session never ended, refresh cookie still valid |
+| `ui-parent@msms.local` | after the fix | yes |
+
+The same mismatch refused the refresh, so a session also died at the first access-token expiry instead
+of renewing — and re-formed on every page reload, because the bootstrap refresh rotates the cookie
+while the cache keeps what it fetched a moment earlier. **The server was already correct and
+complete**; this was the client half that was missing.
+
+**A parent could not reach the parent portal.** Three screens and the shell each carried
+`isPlatform ? '/super-admin' : '/school'`. `PLATFORM_ROLES` is `[ROLES.SUPER_ADMIN]` — one role —
+so that expression sent everybody else to `/school`, including the two roles that hold no
+`school.dashboard.view` at all: measured against `config/permissions.js`, the `parent` block has ten
+keys and the `student` block thirteen, and neither contains it. A parent landed on the school
+administration dashboard with every shortcut filtered away and a sidebar filtered to nothing, and
+`/parent` was **unreachable**, because the only link to it lives in `PARENT_NAV`, which renders only
+once you are already there. `change-password` mattered as much as `login`: `must_change_password: true`
+is written by exactly three places — the Super Admin seeder, `principals.service.js` and
+`parents.service.js` — so every parent account a school creates is forced through that screen first.
+
+It is now one `landingRouteFor()`, ordered most-specific-first because three roles hold more than one
+of these keys — `teacher` holds both `teachers.dashboard.view` and `school.dashboard.view`, `parent`
+holds both `parents.dashboard.view` and `results.self.view`. `organization_admin` holds
+`platform.dashboard.view` while being `isPlatform: false`, and every `/super-admin` route is
+`platformOnly()`, so the platform test requires **both** the scope and the permission and an
+organization admin keeps falling through to `/school` — where it lands today. Verified live: a real
+parent account signs in and reaches **"Welcome, UI Parent"** at `/parent`; a principal still reaches
+`/school`.
+
+#### The queue that could not do the thing it was named after
+
+`super-admin/payments` listed FR-BILL-004's review queue and stopped there. `POST /payments/:id/approve`
+and `/reject` existed, were seeded to `payments.approve`, and **no screen called them**. A review queue
+with no decision is a report. The review now happens on the row: the dialog restates what is being
+decided — school, amount, method, reference, screenshot — because reading the amount off the row
+*behind* a dialog is how the wrong payment gets approved.
+
+Verified end to end, both directions: `POST /payments/566/approve → 200`, and the invoice actually
+settled — `status: paid`, `amount_paid: 499.00`, `amount_due: 0.00`. Then
+`POST /payments/567/reject → 200` with the reason persisted verbatim, which is the field the school
+reads. Approve is **disabled**, not refused, for a payment with no invoice: the service answers that
+with a 409, and a button that promises a refusal is worse than one that explains itself. The rejection
+reason is required by the dialog and optional in the schema — a documented departure, because a
+stricter client cannot accept anything the server refuses, and FR-BILL-004's rejection is a *message to
+the school*.
+
+#### Money, and a comment that had been wrong in four files
+
+`config/database.js` sets `dialectOptions.decimalNumbers = true`, so mysql2 parses DECIMAL into a JS
+**number** before Sequelize sees it. Four files said the opposite in prose and typed their money fields
+as `string` — and `subscriptions/page.tsx` had a hand-rolled formatter built on that premise:
+
+```ts
+// "The digits after the point are the server's, untouched — "1200.00" renders as 1,200.00
+//  and not 1200 the way Number("1200.00") would."
+const [whole, fraction] = String(value).split('.');
+```
+
+The split found no `'.'`, `fraction` came back `undefined`, and the cell rendered **`499`** —
+precisely the outcome the comment existed to prevent. `1200.50` rendered `1,200.5`. Measured through
+the model layer before changing anything: `Subscription.cycle_amount` reads back as the number `499`
+from both `.get()` and `.toJSON()`. Formatting is now one `lib/money.ts`, and the reasoning each screen
+had recorded for rolling its own — no `style: 'currency'`, because `invoices.currency` is a
+`STRING(10)` with no ISO constraint and an unrecognised code makes that constructor **throw** — was
+kept, because it is still right. Verified on screen: `1,250.50 USD` and `499.00 USD`.
+
+#### Three billing screens printed an integer where a name belongs
+
+`payments`, `invoices` and `subscriptions` all carry `school_id` and no school name, because none of
+the three services joins `School`. They printed `#12797`. Each screen had argued the fix away —
+*"inventing a lookup … would be this screen deciding what the API should have returned"* — which
+was right about the principle and wrong about the remedy, because the column stayed unreadable. It is
+now `lib/useSchoolNames`: one request per session, shared by all three, falling back to `School #42`
+above its page ceiling, and **no endpoint's shape changed**. Cleared on sign-out, because a
+module-level cache outlives the tree that filled it.
+
+Two bugs in my own first version, both caught by measuring rather than reading: `nameFor` was a fresh
+arrow every render, so every `Column[]` memo keyed on it rebuilt constantly; and on `invoices` I
+changed the cell and **not** the dependency array, so it froze around the version that still answered
+`School #12797`. The name appeared only after both were fixed.
+
+#### Four icons rendered nothing, and the console said so
+
+`Icon` did this:
+
+```jsx
+{d.split('M').filter(Boolean).map((segment, i) => <path key={i} d={`M${segment}`} />)}
+```
+
+— splitting path data on
+each uppercase `M` and re-prepending one. That corrupts any path whose first command is a **relative**
+`m`: `m9 18 6-6-6-6` came out as `Mm9 18 6-6-6-6`, which is not valid path data, so the browser
+rejected the whole attribute. It broke `chevron-down`, `chevron-right`, `chevron-left` and `layers` —
+the account dropdown's chevron, both pagination arrows and the nav — with two `<path> attribute d`
+errors in the console. The split bought nothing to begin with: every icon is stroke-only, and one `d`
+holding several subpaths strokes the same pixels.
+
+#### A scroll lock that Strict Mode switched off
+
+`Modal` set `document.body.style.overflow = 'hidden'` inside the `showModal()` branch and cleared it
+in a separate mount-once cleanup. Those halves have different lifecycles, and Strict Mode runs effects
+mount → unmount → mount: the cleanup cleared it, and the re-run could not restore it because
+`open && !node.open` is false the second time round. Measured: a modal open over a page that still
+scrolled. It is now one effect keyed on `open`, restoring the *previous* value rather than the empty
+string. Measured after: `hidden` while open, `visible` after close, on every dialog on the four screens
+that now have one.
+
+#### Dark mode was broken on fourteen screens, and the fix was one class
+
+`bg-white` is not theme-aware. A hand-rolled control class — `rounded-md border border-border-strong
+bg-white px-3 py-2 text-sm text-ink` — had been copied into eight files as a constant and written
+inline in six more, predating the `.field-*` classes. In dark mode `--ink` is near-white, so those were
+**white text on a white box**. All 19 constant sites and 8 inline sites moved to `.field-input` or
+`.field-select` — chosen per element, because a select class draws a chevron on something that does
+not open — and a further 14 selects that were using the *input* class moved too. Measured at the
+element: `selectBg` went from `rgb(255,255,255)` to `rgb(22,27,36)` in dark, with `--ink` text on it.
+
+`--color-brand-contrast` is now exposed to Tailwind, because the Reports screen painted its selected
+tab `bg-teal text-white` and `--brand` *lightens* in dark mode — the token is white in light and
+near-black in dark, which is the pairing `.btn-primary` already used in CSS and no className could reach.
+
+#### The dead-link assertion had a blind spot shaped exactly like the dead links
+
+`verify-frontend.js` asserted **zero** unresolvable internal links and passed. Three were dead. The
+pattern was this:
+
+```js
+/href=[{]?[`"](\/[A-Za-z0-9/_-]*)/
+```
+
+— and that character class has no `$` in it, so an
+interpolated href was **truncated at the first `${`**:
+
+```
+href={`/school/classes/${classId}/sections/new`}     recorded as     /school/classes/
+```
+
+`/school/classes` is a real route, so it passed. The assertion was validating a *prefix*. It now
+captures the whole href in any of the four forms JSX writes it, turns an interpolation into `:param`,
+and resolves that against route directories with `[id]` mapped the same way. Turned on, it named
+exactly the three the audit had found — independent confirmation from the other side.
+
+All three are now inline dialogs rather than routes, which is fewer clicks than the pages that never
+existed:
+
+| was | is |
+|---|---|
+| "Record income" / "Record expense" → 404 | a dialog on the finance screen; `POST /finance/incomes` → **201** |
+| "Add section" → 404, **and not rendered at all when a class had none** | a dialog; `POST /classes/5182/sections` → **201**, and the empty state now carries the action |
+| add-on name → 404 | FR-SUB-009's activate/deactivate on the row; `POST /addons/15/deactivate` → **200** |
+
+The add-on dialog says the thing an operator needs before pressing it — **schools that already own it
+keep it**, because entitlement resolves from `subscription_addons` and never from that flag — and
+tells the truth in the other direction too: *"though it has no active price yet, so it will still not be
+purchasable."*
+
+#### Four more type lies, each one silently emptying a column
+
+| screen | read | actual | what a user saw |
+|---|---|---|---|
+| `(parent)/parent` | `is_primary` | `is_primary_guardian` | **"no" for every child** on "Primary contact" |
+| `(teacher)/teacher` | `subjects[].name` | join rows; name at `.subject.name` | every subject chip **empty** |
+| `(student)/student` | `exam.start_date` | not selected by the include | "Held" permanently an em-dash |
+| `(school)/school/finance` | `category` shared across tabs | two disjoint enums | switching tabs **422'd the whole ledger** |
+
+The parent one carries a trap worth recording: `is_primary` **does** exist — in `models/academic.js`,
+on a different table. A grep for the bare name confirms the wrong thing; the column had to be found on
+the right model. The teacher one implied a second defect the audit had not named: `counts.subjects` is
+built from `new Set(...)` while the chip list was not de-duplicated, so one subject taught in three
+classes would read "Subjects 1" above three identical chips. The exam one was fixed by *supplying* the
+field rather than deleting the column — `start_date` is a real nullable `DATEONLY` and no suite pinned
+that attribute list. The finance one was one `key={kind}`: a single `LedgerPanel` whose prop changed was
+reconciled as the same element and **kept its state**, so `page` and `search` leaked across the tabs too.
+
+While there: the finance totals card did not refresh when an entry was recorded, so recording 1,250.75
+of income left three figures reading `0.00` beside a ledger row showing it — which reads as the total
+being *wrong* rather than stale. The report sums the whole ledger, so it is re-asked, never adjusted
+locally.
+
+#### Also shipped
+
+**`/` had no route at all.** Every screen lives behind `AppShell`, which redirects an unauthenticated
+caller to `/login`, so the root URL — the one a person types, and the one a link in an email lands on
+— rendered Next's built-in 404. There is now a landing page and a root `not-found`. Everything the
+landing page claims is a capability that exists: the module grid is `MODULE_LABELS`, **all twenty
+verbatim**, not a marketing selection, and there are no prices, no customer counts and no testimonials,
+because the SRS describes none of those. There is deliberately **no sign-up** — §9.3 has the Super
+Admin create principals — and rather than leave a visitor wondering, the page says so.
+
+The twenty modules are duplicated on the client because a public page has no session to read an
+entitlement snapshot from, and the copy is made safe the way this project makes every copy safe: an
+assertion that it is the backend's list, key for key and label for label, and still exactly twenty.
+
+One measured correction to my own first version. The landing page gated its call to action on
+`loading`, reasoning that flashing "Sign in" at someone already signed in would read as a flicker. With
+the API down that was backwards: the page sat there with **no call to action at all**. `/login` is a
+plain link that works whether or not the API is reachable, so "Sign in" is the default and `loading`
+only holds off the *swap*.
+
+Touch targets, measured rather than assumed: `.btn-sm` is 30px and the theme toggle's segments 28px.
+Both clear WCAG 2.5.8's 24px Level AA floor and both miss the 44px of 2.5.5, which on a phone is the
+difference between pressing a control and aiming at it. Raised to 40px under `@media (pointer: coarse)`
+only — a phone or tablet, never a trackpad — because coarsening a dense desktop table used with a
+mouse would be a regression. Verified: 40px with a coarse pointer, unchanged 30/28px with a fine one.
+
+#### Proved by deliberate regression, as usual
+
+**26 of 26 regressions behaved as designed**, in four batteries: 8/8 on the landing page and the module
+list, 7/7 on the landing route, 7/7 on the CSRF adoption, 4/4 on the dead-link pattern. Four of those
+26 are *inverse* cases — they plant the forbidden thing in a **comment** and require the suite to stay
+green, because three of these rules quote in prose the very code they forbid. The dead-link battery's
+last case is the one worth keeping: it restores the old truncating regex and watches the interpolated
+dead link start passing again, which proves the corrected pattern is what does the work and not
+something incidental.
+
+`verify-frontend.js` **68 → 88** assertions. Baseline **5,210 → 5,230**. `npm test` **5,429 passed,
+exit 0**; `npm run lint` exit 0; `tsc --noEmit` exit 0; `next build` clean, and `/` is a route for the
+first time.
+
+*Superseded by part 37 below: the four remaining "broken" findings named in the next paragraph are now
+closed, and the open count is 157.*
+
+**Still open, and worth stating plainly:** **161 of the audit's 174 confirmed findings are
+unaddressed.** 13 of the 17 "broken" are closed; the remaining four are the reset-password 422 whose
+only message is attached to a field the page does not render, the Reports screen throwing
+`Object.entries(undefined)` when the Subscriptions tab is opened over a stale payload, `fine_paid` read
+as a boolean when the column is `DECIMAL(14,2)` money, and `!entitlements` on the school dashboard
+being treated as "no plan" when the API returns null for a caller with no school in scope. Beyond
+those, 42 "wrong", 73 "poor" and 42 "minor" remain.
+
+The whole queue — evidence, user impact, proposed fix and the reason each finding survived refutation
+— is written to **`docs/UI-AUDIT-FINDINGS.md`**, along with the 30 that were refuted, so a refutation
+does not have to be re-derived and can itself be challenged. Read it as claims, not conclusions: the
+doctrine that caught a fabricated quotation in an earlier session applies to every line of it.
+
+The 59 screens inherit the design system but most have not been laid out individually. The remaining known money defect is the Expenses report rendering
+`[object Object]` over its whole category breakdown, and three dashboard cards still sum **mixed
+currencies** under a single `$`. Coupon expiry is still off by one day west of UTC.
+
+---
+
+### Session 26, part 37 — the last four broken findings, and a rule that found three more
+
+All **17** of the audit's "broken" findings are now closed. These were the four left.
+
+**A rejected submit that said nothing at all.** `reset-password` validates `{ token, password }`, and
+the token is never put in a field — it is a credential arriving from an emailed link, and an input
+holding it would be autofilled and screenshotted like any other. The screen suppressed its banner
+whenever the 422 carried any field error (`setError(caught.details.length ? null : caught.message)`),
+which is right only when every field error names an input the form renders. A link mangled by a mail
+client came back naming `token`, `details.length` was 1, the banner was suppressed, and there was no
+box to render it in: pressing "Set new password" produced **no visible output whatsoever**, and the
+server's *"This link is not valid."* was discarded.
+
+`ApiError.fieldErrors()` already records this exact failure one step along — there the field was
+*empty*; here it is named, and names a thing the form has no box for. So the decision moved to
+`ApiError.bannerFor(renderedFields)`, which takes the ids a form actually renders: a whole-object rule
+wins, then any field error whose field is not in that list, then nothing if every message has an input
+waiting for it. All three auth screens ask for it now — `login` and `change-password` had the same
+suppression and were safe only by the accident of their schemas naming exactly the fields they render.
+
+**A tab that crashed the page.** The Reports screen cast its payload using the **selected tab**:
+`spec.type === 'subscription' ? (report as unknown as SubscriptionReport | null) : null`. The tab
+handler changes only the selection, and `report` is cleared inside the read effect, which has not run
+yet — so clicking Subscriptions over a Students report gave one render with the previous payload cast
+to a shape it does not have, and `Object.entries(subscription.by_state)` threw mid-render on
+`undefined`. There is **no `error.tsx` anywhere under `app/`**, so that crash reached Next's default
+handler and the screen was gone until a reload. `reports.service.js` puts `type` on every report, so
+the payload can answer this about itself; the tab handler clears `report` as well, because showing one
+report's figures under another's heading for a frame is its own small lie. Verified live by running the
+exact sequence: page alive, no runtime error, no error screen.
+
+**A fine that said "paid" while money was owed.** `library/page.tsx` typed `fine_paid` as a **boolean**
+and read it as a flag. It is an amount: `models/other.js` declares it with the shared `money()` column,
+so a 10.00 fine with 4.00 paid arrives as the number `4`, which is truthy — the row read **"paid"** and
+the 6.00 still owed was invisible. Worst in the "only unpaid fines" view, whose server filter is
+`fine_amount > fine_paid` — i.e. exactly the rows where a balance remains. The screen now renders
+`fine_outstanding`, which `presentTransaction()` already computes as
+`clampNonNegative(fine_amount − fine_paid)` in the money util's own minor units, and says "4.00 of
+10.00 paid" beneath the balance, because *"6.00 owed"* and *"6.00 fine"* are different facts.
+
+One check mattered more than the fix: **does the list path actually send that field?** An absent
+`fine_outstanding` is `undefined`, `Number(undefined)` is `NaN`, and `NaN <= 0` is false — so a settled
+fine would have read as a debt, and had the comparison gone the other way every fine would have read
+"paid" again. `listTransactions` maps every row through `presentTransaction`, so it does. Asserted from
+both sides, because that is the half that would have made this worse than the bug it replaced.
+
+**A dashboard that blamed the wrong thing.** `callerEntitlements()` returns null for a platform or
+organization caller — `if (!req.tenant || req.tenant.isPlatform || !req.tenant.schoolId) return null;`
+— while an *unsubscribed school* gets an object with `plan: null`, a case the screen already handled
+correctly further down. So `!entitlements` never meant "no plan": it meant "no school in scope", and a
+Super Admin opening `/school` was told *"This school has no active plan yet"*, with the limits, the
+module list and every shortcut hidden behind the same condition. It now branches on
+`isSubscriptionScoped`, which the provider already published, and says what is actually true. Verified
+both ways: a platform caller sees "No school in scope" with a link to Schools, and the principal still
+sees Campus Complete, 20 of 20 modules, and all eight limits.
+
+#### The money rule found three the audit had not
+
+Rather than four narrow assertions, the money bug got a class-level one: **no screen may type a
+`DECIMAL` money column as `string` or `boolean`.** The column names come from the models themselves —
+every `name: money(...)` declaration, 32 of them — and a union that *includes* `number` is allowed,
+because that is defence against the one dialect option (`decimalNumbers`) this all depends on.
+
+Turned on, it named three more instances nobody had reported: `discount_value` and
+`max_discount_amount` on the coupons screen, and `credit_balance` on the invoice builder. The first two
+were harmless at runtime — both formatters run `Number()` first — but the third rendered the **raw**
+value with no formatting at all, so a credit balance of `1250.5` read as *"USD 1250.5"*. Four prose
+comments asserting DECIMAL-is-a-string were corrected with them.
+
+The rule has its own guard: a check that the column list is non-trivial, because a discovery regex that
+matches nothing would let the rule pass by looking at nothing. That guard is regression-tested by
+breaking the regex.
+
+#### Proved by deliberate regression
+
+**12 of 12**, in two batteries. Three are inverse cases: a defensive `number | string` union must stay
+green, a **non**-money field typed `string` must stay green, and breaking the money-column discovery
+inside the suite must go **red** even with a real violation present.
+
+`verify-frontend.js` **88 → 99** assertions. Baseline **5,230 → 5,241**. `npm test` **5,440 passed,
+exit 0**; `npm run lint` exit 0; `tsc --noEmit` exit 0; `next build` clean.
+
+---
+
+### Session 26, part 38 — the "wrong" tier, and a security assertion that could not fail
+
+22 of the 42 "wrong" findings closed, bringing the queue to **39 of 174 done**. The single most
+important thing in this part was not in the queue at all.
+
+#### A control character had disabled one of §24's XSS assertions
+
+While fixing a currency parse that matched nothing, the cause turned out to be my own: a non-raw
+Python string in a code-generation step had turned `'\\b'` into a literal **backspace** (0x08) on the
+way to disk. `tsc`, `eslint` and `next build` all passed with it in the source, because the file was
+valid — it just meant something else.
+
+So the tree was swept by code point, and it found a second instance in a file nobody had touched
+that day. `verify-security.js` carried this:
+
+```js
+if (!/href=\{(?!`?\/)[^}]*\brow\./.test(text)) return false;
+```
+
+where the `\b` was a backspace. A backspace never appears in source, so `.test()` was **always
+false**, the filter rejected every file, and the check compared `[]` with `[]` and reported **PASS
+whatever any screen did**. One of the two halves of §24's cross-site defence had been passing
+vacuously since it was written — and the same suite's `dangerouslySetInnerHTML` rule had been
+strengthened twice in this session while its sibling was inert.
+
+With the boundary restored it immediately flagged a real file, which then needed the rule narrowed
+rather than the finding accepted: `super-admin/settings/page.tsx` maps over a module-level `const` of
+six hardcoded internal paths, so `row` there is a `.map()` variable and not API data. The
+discriminator is whether the file reaches the wire at all — that screen imports exactly `Link` and
+`PageHeader` and makes no request. Proved both ways: it fails when a real scheme guard is removed
+from the organizations screen, and passes with the settings screen present.
+
+**Two standing guards now refuse the whole class**: an assertion over `frontend/src`, and a
+harness-integrity test over the 38 verify scripts, where such a character silently disables an
+assertion rather than breaking one. The one legitimate exception is allowed by name —
+`verify-assignments.js` builds a malicious-upload fixture whose bytes are the DOS/PE magic `MZ\0`.
+
+The diagnosis trap is worth recording: **`od -c` and the Read tool both render 0x08 as `\b`**, so the
+file looks correct while being wrong. It has to be compared by code point.
+
+#### Money, again, in four places
+
+The Super Admin dashboard stamped `currency: 'USD'` on figures that are `SUM(payments.amount)` with
+**no currency clause** — `sumPayments()` passes only a tenant scope and a date range, so a platform
+billing one school in USD and another in EUR adds them together. The frontend cannot fix the sum
+without changing what the endpoint returns, but it can stop asserting something the data does not
+support: the figure is now a plain grouped number and every such card says *"Summed across every
+currency on the platform — not converted."* It also used `maximumFractionDigits: 0`, which discarded
+the cents the server had just rounded to the currency scale — measured, two pending payments of 499.00
+and 1,250.50 rendered as **`$1,750`**.
+
+**The Expenses report lost its whole reason for existing.** `toRows()` walked one level into the
+payload and `finance.report()` is two: `{ income: { total, by_category: {…} }, … }`. So it pushed
+`by_category` — an object — into a cell, where `String(value)` rendered **`[object Object]`**, twice.
+The walk recurses now, with the path in the key, and money-bearing keys get two decimals from an
+explicit list (`billed`, `collected`, `outstanding`, `total`, `net_balance`, and every leaf under
+`by_category`) so counts are not decorated with cents. Verified live against a real report:
+`income.by_category.other_income 1250.75`, `expense.by_category.salaries 0.00`, no `[object Object]`
+anywhere.
+
+The student portal's `figure()` defaulted to `toFixed(0)`, so a `DECIMAL(9,2)` mark of **47.5
+rendered as 48** — not truncated, *rounded up*, so a student saw a mark they had not been given. It
+now shows as many decimals as the value carries, up to two.
+
+#### A refusal that was a dead end is now the control it implies
+
+`/finance/report` was called with no `currency`, and the service correctly refuses a window holding
+more than one — *"a single net balance is undefined"* — because there is no conversion table. The
+screen rendered that as a plain error with a **retry button that could never succeed**, so a school
+billing in two currencies had a permanent red box where its Net Balance belongs.
+
+The server names the options in the message it already sends, so the refusal is now read for them and
+offered as buttons. Verified by giving the fixture school a second currency: the screen asks *"Which
+currency?"* with **EUR** and **USD**, and picking USD resolves to Income 1250.75, Expense 0.00, Net
+balance 1250.75. The parse is tolerant on purpose — if that sentence ever changes shape the list comes
+back empty and the message is shown as received, which is the old behaviour rather than a worse one.
+
+#### A 28-field form that reported nothing
+
+`students/new` suppressed its banner when every field error had a control, which is right — and on 28
+fields spanning several screens it meant a rejected submit produced **no visible change at all**: the
+only sign was a red line far above the fold, and the button read as dead. `focusFirstInvalidField()`
+now takes the user there, and it queries `aria-invalid="true"` rather than taking the field names,
+because the caller's key order is the server's and "the first" has to mean first in **document
+order**. Focus rather than a scroll, because it also names the control and lets a screen reader
+announce the error the wrapper already wired to it. A `FieldErrorSummary` says how many fields need
+attention without repeating the messages, which are already beside their fields.
+
+#### Four comments that asserted the opposite of the code
+
+| file | claimed | actually |
+|---|---|---|
+| `login` | only the seeder sets `must_change_password` | **three** writers — and this comment had already been "corrected" once, to the same error stated more confidently |
+| `change-password` | the seeder "is the only writer that does" | so does every principal and every parent the product creates |
+| `attendance` | the service "never reads" `q`, so no search box | it applies it as a LIKE over `remarks` |
+| `plans/features` | `value` is "a JSON column with no schema" | `STRING(120)`, nullable; the boolean lives in `is_enabled` |
+
+The attendance one had withheld a control that works, so the box exists now — labelled **Remarks**,
+not "Search", because a box labelled Search on a register reads as name search and would return
+nothing for a name that is present. That is the same dead-control problem the old comment was
+correctly worried about, in a different disguise. Verified: `?q=late+bus → 200`.
+
+#### And the control classes, finished
+
+Part 36 migrated 41 hand-rolled controls. Three more constants turned up behind them — the reports
+screen's, and an `INPUT_CLASS` in **17** create screens — all with the same shape: they already reach
+`.field-input`, then layer `rounded-md border px-3 py-2` on top of a class that sets all three, and
+apply the *input* class to `<select>` and `<textarea>`. **79 more controls** moved, each classified by
+its own enclosing tag, and no hand-rolled control class remains anywhere in the tree.
+
+#### State
+
+`verify-frontend.js` **99 → 100** assertions, plus one harness-integrity test. Baseline
+**5,241 → 5,242**; `npm test` **5,442 passed, exit 0**; `npm run lint` exit 0; `tsc --noEmit` exit 0;
+`next build` clean.
+
+**Queue: 39 of 174 closed, 135 open** — 0 broken, 20 wrong, 73 poor, 42 minor.
+
+Of the 20 "wrong" left, **eight are not defects but missing features** — "no control anywhere" for
+document generation, fee assignment and collection, library issue/return/fine, result publication,
+staff deactivation, subject and teacher row actions, and timetable editing. Each is a real gap
+between what the API offers and what the UI can reach, and each is a piece of work rather than a fix;
+they are listed with the rest in `docs/UI-AUDIT-FINDINGS.md`. The remaining twelve are type lies and
+labelling.
+
+---
+
+### Session 26, part 39 — the last of the "wrong" fixes, and a colour rule
+
+**Every fix in the "wrong" tier is done: 49 of 174 closed, and the 10 that remain in that tier are all
+missing features rather than defects.**
+
+#### Six columns that could not answer their own heading
+
+Four screens rendered an association their endpoint never sent, and each fell back to an id:
+
+| screen | column | fell back to |
+|---|---|---|
+| `classes/sections` | Class teacher | `teacher #3822` |
+| `fees` (Structures) | Class | `class #12` |
+| `fees` (Payments) | Student | `student #45` |
+| `library` | Borrower | the *type* only — "student", never who |
+
+`classes/page.tsx` had met the same gap and answered it by showing presence — Assigned / Unassigned —
+with the reasoning written out. That is right for a catalogue of classes, where the question is which
+ones still need somebody. It is too thin for a sections table, which exists to say **who** takes which
+section.
+
+Two different remedies, chosen by where the information actually is. The teacher names were resolvable
+client-side — `/teachers` is a real list and `classes/new` already loads it for its picker — so the
+sections screen maps them the way `lib/useSchoolNames` maps schools, falling back to the id it
+replaced. The other three were not: `listStructures`, `listPayments` and `listTransactions` had **no
+`include` at all**, and the borrower is one of three associations chosen by `borrower_type`. Those got
+the association, with narrow attributes, the same additive change `exam.start_date` got in part 37 —
+a name and the school's own identifier, never the guardian phone numbers and photo paths those rows
+also carry.
+
+**The check that mattered most was the one that came before the edit.** Having written the borrower
+column against `row.student ?? row.teacher ?? row.staff`, the next step was to confirm the list
+actually sends them — and it did not. An absent association is `undefined`, so the column would have
+read "not named" on **every** row: worse than the type it replaced. Same shape as the
+`fine_outstanding` check in part 37, and it is now the habit rather than the exception.
+
+#### A filter whose rows contradicted it
+
+The library Status column rendered the **stored** `status`, and nothing ever writes `overdue` —
+`OVERDUE` appears exactly once in the whole module, inside the *filter*, which derives it as
+`status = issued AND due_date < today`. The service's own comment says so. So the backend was right
+and the column was not: choosing **Overdue** returned the correct rows and every one of them displayed
+**issued**, which reads as the filter being broken. It now renders the derived `is_overdue` that
+`presentTransaction()` has been sending all along, with the day count beside it.
+
+The results screen had the mirror of that problem: `listResults` **accepts** an `exam_id` filter and
+applies it, but included only the student — so a row could not say which exam it came from, and two
+results for the same student from two different exams were indistinguishable in a list ordered by
+position.
+
+#### A number input that swallowed what was typed
+
+`staff/new`'s salary was `type="number"`, and a number input hands back the **empty string** for
+anything the browser cannot parse. So "12,500" read as blank, the submit sends only what was filled
+in, and the figure was saved as *unrecorded* — silently, under a hint that says blank means exactly
+that. As `type="text"` with a decimal keypad the value reaches the server as typed, `salary` is a Joi
+number, and the 422 lands on the field. The same screen told the user a failed account link could be
+"added later from the Staff record itself"; there is no staff edit screen, so it now says so and says
+what to do instead.
+
+`documents` promised "Title or description…" while the service LIKEs `title` alone — the same
+dead-control failure this codebase keeps naming and keeps re-introducing in the *label* rather than
+the query.
+
+#### The account menu can now resend a verification email
+
+`POST /auth/resend-verification` is a real protected route taking an empty body, and a grep of
+`frontend/src` returned **no caller at all**. The `verify-email` failure state told the user to
+"request a new link from your profile" — a screen that does not exist, naming an action nothing could
+reach. There is nowhere to put a profile screen that the SRS asks for, so the control went where the
+account's own actions already live, shown only when `email_verified_at` is null.
+
+#### And a colour rule, because the last sweep was too narrow
+
+Part 36 fixed fourteen screens using `bg-white` with the themed `text-ink` — white text on a white box
+in dark mode. That sweep listed only the grey families, so **seven `amber-*` classes survived it**,
+marking warning states the semantic `--warn` family already covers. Both rounds were found by
+grepping and neither was caught by anything standing.
+
+`verify-frontend.js` now asserts over the **whole** palette — 22 families, 15 properties, plus bare
+`white` and `black` — with a self-check that the pattern still recognises a raw colour, because a rule
+that matches nothing passes by looking at nothing. Proved by regression on a grey, on an amber, on a
+bare white, and on the inverse: the class named only in a **comment** must stay green.
+
+#### State
+
+`verify-frontend.js` **100 → 102** assertions. Baseline **5,242 → 5,244**; `npm test` **5,444 passed,
+exit 0**; `npm run lint` exit 0; `tsc --noEmit` exit 0; `next build` clean.
+
+**Queue: 49 of 174 closed, 125 open** — 0 broken, 10 wrong, 73 poor, 42 minor. All ten remaining
+"wrong" entries are the same kind of thing: an endpoint the UI cannot reach. Document generation, fee
+assignment and collection, library issue/return/fine, result publication, staff deactivation, subject
+and teacher row actions, timetable editing, and opening a payment's screenshot. Each is a feature, and
+building them is a larger decision than fixing them was.
+
+---
+
+### Session 26, part 40 — the systematic passes
+
+The 125 findings still open were not 125 problems. They were about **ten repeated patterns**, and
+four passes closed 35 of them at once. **84 of 174 now closed, 90 open.**
+
+#### Every create form's controls now describe their own errors
+
+All eighteen create screens already used `Field` — 148 times between them — and **not one** used
+`SelectField` or `TextAreaField`. So every select and textarea on every create form was hand-rolled:
+no `aria-invalid`, no `aria-describedby`, and its 422 message rendered as a loose `<p>` that nothing
+associates with the control.
+
+That is not only a screen-reader problem, and the second consequence is the one that shows: on
+`students/new`, a 422 naming `class_id` had **no target for `focusFirstInvalidField()` to find** —
+the query is `[aria-invalid="true"]` — so the page did not move, the banner was correctly suppressed
+because a field was carrying the message, and a 28-field form looked untouched.
+
+**65 selects, 18 textareas and 7 inputs** moved, one agent per file so the writes could not collide.
+The six raw inputs left are account-picker **search boxes**, which hold no submitted value and have
+no error to describe; the rule allows exactly that and only when `type="search"` says so.
+
+One control resisted, for a good reason worth keeping: `plans/new`'s `is_recommended` checkbox stayed
+hand-rolled because **`CheckboxField` took a `hint` and no `error`**, so moving it would have *dropped*
+`fieldErrors.is_recommended` rather than associating it. A wrapper that silently discards an error is
+worse than the raw control it replaces. The component grew the prop; the exception went with it.
+
+#### A list keeps its shape while it reloads
+
+Thirty screens replaced the whole table with `<p className="text-sm text-muted">Loading…</p>` on
+**every** refetch — so each debounced keystroke tore the list out of the document, threw away the
+scroll position, and flashed the page down to one line and back. Both remedies already existed and
+neither was used: `LoadingBlock` for the first load, and `DataTable`'s `busy` prop for every load
+after it.
+
+**29 paragraphs swapped and 33 tables given `busy`.** Three of those `busy` props came straight back
+out — `tsc` caught the flag out of scope, because those tables sit inside a child component that only
+renders once its parent has resolved, where the prop is meaningless. The sections panel was the
+opposite case: its `loading` *is* in scope and it *does* refetch after adding a section, so it kept
+the prop and its guard became `loading && rows.length === 0`.
+
+#### A rejected submit takes you to the problem
+
+`focusFirstInvalidField()` existed and one screen called it. It is now on all **32** rejection paths
+across 24 files, including the client-side password-mismatch checks the audit named separately.
+
+Three files broke on the way and the compiler said so immediately: `if (cond) setFieldErrors(x);`
+with no braces, where a second statement orphans the `else`. Braced, not worked around.
+
+**And the helper itself was wrong in a way only a browser could show.** It scheduled a single
+`requestAnimationFrame`, which fires *before* React commits the state update — so the attribute it
+queries did not exist yet. Fixing that to retry across frames still failed, and the reason was not the
+retry: **`requestAnimationFrame` is suspended entirely in a background tab**, and the pane running the
+test was hidden. The control had `aria-invalid="true"`, the selector matched it, `focus()` worked by
+hand, and `document.activeElement` stayed on `<body>`. That is not only a testing artefact — a user
+who submits and switches tabs would come back to a form that never moved. It is a bounded
+`setTimeout` chain now, which fires either way. Verified live: `focusMovedToTheFailure: true`.
+
+#### A successful create says so
+
+All eighteen create screens ended in `router.replace('/the-list')` and said nothing. `ToastProvider`
+has been mounted app-wide since the design system landed and **not one screen used it** — so an
+operator filled in a form, pressed the button, and arrived at a paginated list where the new row may
+not even be on the first page.
+
+Each now confirms before it navigates, and the assertion checks that order: calling it after
+`router.replace` would still compile and would usually still work, and "usually" is not a contract.
+Verified in a browser, because the claim is that the toast **outlives the navigation** — creating a
+subject lands on `/school/subjects` with *"Subject created — Assign it to classes and teachers next."*
+still on screen.
+
+#### Three refusals that were reported as faults
+
+`PARENT_PROFILE_MISSING`, `PARENT_INACTIVE` and `TEACHER_PROFILE_MISSING` were not in
+`EXPLAINED_CODES`, so all three rendered as **"Something went wrong"** with a **Try again** button —
+the worst possible answer, since the one thing that cannot help is trying again. They are permanent
+structural states: the signed-in account has no profile row behind it, or has one that was switched
+off. The dashboards for those two roles are the *only* screen those accounts have, so this was the
+whole product for them. `RefusalNotice` also needed its own copy, because its fallback says "you do
+not have permission" — which sends a parent to argue with the wrong person.
+
+#### Five new standing rules, all regression-proved
+
+| rule | proved by |
+|---|---|
+| no create screen hand-rolls a control | a raw select, a raw textarea, a non-search input |
+| a checkbox can carry a field error | stripping the `aria-invalid` wiring |
+| no bare loading paragraph, and the skeleton is what replaced it | — |
+| every create screen confirms, **before** it navigates | removing the call; moving it after |
+| no raw palette colour anywhere | a grey, an amber, a bare white, and the inverse in a comment |
+
+The checkbox rule needed tightening after its first regression **passed**: the assertion had an `||`
+fallback that matched the `error?: string | null` **type declaration**, which survives even when the
+wiring is deleted. Declaring a prop and using it are different things, which is the whole point of
+the rule. It reads the checkbox's own element now.
+
+#### Two Known Issues are not pending — they are blocked, correctly
+
+Of the four remaining code defects, **#18 and #19 must not be "completed"**. #18's own row says *"Do
+not add an implicit price selection to `purchaseAddon()` — that would guess at a default
+`addon_prices` row the SRS does not name."* #19 is blocked because §13.2 lists "Wallet" among five
+payment methods and says nothing else: how it is credited, what happens when the balance is short,
+and whose wallet it is are all unanswered, and implementing the debit alone would make every wallet
+payment fail. Both are correct refusals to invent requirements, not unfinished work.
+
+#### State
+
+`verify-frontend.js` **102 → 111** assertions. Baseline **5,244 → 5,253**; `npm test` **5,453 passed,
+exit 0**; `npm run lint` exit 0; `tsc --noEmit` exit 0; `next build` clean.
+
+Row 6.17's two figures in the checklist were stale current-state claims (`5,358 jest tests`,
+`5,162 assertions`) and were refreshed. The others found alongside them were left: they are historical
+records of what a specific triage measured, and rewriting those would falsify the history rather than
+correct it.
+
+**Queue: 84 of 174 closed, 90 open** — 0 broken, 10 wrong, 43 poor, 37 minor. The 10 "wrong" are still
+the missing features; what remains under poor and minor is now mostly per-screen judgement rather than
+repeated pattern.
+
+---
+
+### Session 26, part 41 — every form in the product, rebuilt on one layer
+
+The brief was the forms, all of them, and not as a repaint: *"Do NOT just change colors or spacing.
+Rebuild the form UI/UX wherever necessary."* The audit found **24 `<form>` elements** (18 create
+screens, 4 auth screens, 2 in modals), **24 filter rows** above lists, and **1 file upload**.
+
+#### What the shared layer gained
+
+`components/form.tsx` had `Field`, `SelectField`, `TextAreaField`, `CheckboxField`,
+`RadioGroupField`, `Notice`, `SubmitButton` and `AuthCard`. It now also has **`FormSection`**,
+**`FormGrid`**, **`FormSpan`**, **`FormActions`**, **`PasswordField`**, **`MultiSelectField`**,
+**`FileField`**, **`FilterBar`**, **`SearchField`**, **`FilterSelect`** and **`FilterDate`** — and
+`SubmitButton` grew a `form` prop so the two modal footers use the same button as everything else.
+**All 24 submits are now one component**, with one spinner, one `aria-busy` and one guard.
+
+Applied: **71 `FormSection`s** across the 18 create screens, **18 `FormActions`**, **9
+`PasswordField`s**, **25 `SearchField`s**, **32 `FilterSelect`s**, **24 `FilterBar`s**, 2
+`FilterDate`s, 1 `MultiSelectField`, 1 `FileField`. Raw controls in `app/` went from **44 `<select>`
+and 40 `<input>`** to **two `<input type="checkbox">`** — the two filter toggles, both now carrying
+`field-check` and a bound label.
+
+Nothing was reordered. Each section is a run of fields that was **already adjacent**, because these
+files carry long comments justifying why a field sits where it does. Verified mechanically: every
+field `id` and every `onChange` handler present before the rewrite is present after it, across all
+44 changed files, with one intended exception — the two `<option>`s inside the coupon restriction
+select, which became `MultiSelectField` options.
+
+#### Sections are one column, and that was measured
+
+Two columns were the obvious reading of *"two-column layout where appropriate"*. It is wrong here:
+**121 of the 174 hints on these forms run past 80 characters, median 105.** In a 320px column one of
+those becomes five wrapped lines under a 38px input and the rows stop lining up. So `FormSection`
+picks its own column count and only takes two when every field in the section is short — which is
+**4 sections of 71**. The rest read better in one.
+
+#### Icons: three controls have them, and `Field` deliberately does not
+
+`SearchField`'s magnifier marks a control as search before the placeholder is read, `PasswordField`'s
+eye is a button, and `FileField`'s clip and bin name actions. An envelope beside a label already
+reading "Email" says nothing, and twenty-eight fields each with a small grey mark scan worse than
+twenty-eight plain boxes — so the `icon` prop that was added to `Field` was **removed again**, along
+with the two icon paths (`mail`, `phone`) that nothing then used. *"Do NOT overuse icons"* is a
+constraint, and the honest way to meet it was to delete the option.
+
+#### Three CSS cascade bugs, all of the same kind, one of them application-wide
+
+`globals.css` is plain CSS **after** `@import "tailwindcss"`. Under cascade layers an **unlayered**
+declaration beats every layered one whatever its specificity, and Tailwind v4 puts all utilities in
+`@layer utilities`. So component CSS here silently defeats any utility for a property it sets, with
+nothing reported anywhere:
+
+| the rule | what it defeated | what showed |
+|---|---|---|
+| `*, *::before, *::after { border-color }` | **every `border-*` colour utility in the app** — 72 uses across 19 files | all of them painted `var(--border)`, including 6 `border-danger` |
+| `.field-label { display: block }` | `flex items-baseline gap-1.5` on `FieldLabel` | every required field read **"Email or usernameREQUIRED"** |
+| `.field-input { padding }` | `pl-9` / `pr-11` | the search placeholder sat **underneath** the magnifier |
+| `.btn { display: inline-flex }` | `md:hidden` | the mobile drawer trigger was **visible at 1440px**, a hamburger beside the sidebar it opens |
+
+The border one was found by probe, not by reading: a `<div class="border border-brand
+bg-brand-subtle">` came back with the background applied (`#eef7f7`) and the border still `#dfe3ea`,
+because there is no global `background-color` rule to lose to. It is in `@layer base` now, which is
+where Tailwind's own preflight puts it; the other three got explicit classes
+(`.has-leading-icon`, `.btn-mobile-only`) that cannot quietly lose. A scanner over every
+`className` in the tree that pairs a component class with a utility for a property it already sets
+now reports **0 suspect combinations**, down from 10.
+
+#### Validation messages named database columns
+
+Submitting the New Principal form empty produced, verbatim: `name is required`, `email must be a
+valid email`, `username length must be at least 3 characters long`, and — under a label reading
+"School" — **`school_id is required`**. Joi names the column. *"Never use confusing technical error
+messages for users"* was not met.
+
+`humaniseFieldError()` replaces a message's **leading field key** with the label already on screen,
+and unwinds Joi's `length must be at least N characters long`. It touches nothing else: a message
+that is already a sentence (`Password must be at least 8 characters long.`) survives untouched, and
+one it does not recognise is shown as it arrived, because a mangled error is worse than a technical
+one. 13 cases, including a key that is a prefix of a longer word and an indexed
+`children.0.student_id` path. Live: **"School is required"**, **"Name must be at least 2
+characters"**.
+
+#### What was measured in a browser rather than argued
+
+  * **Double submission.** Three clicks 60ms apart → **1 POST**; within 60ms the button is already
+    `disabled`, `aria-busy="true"` and reads "Creating…". Six clicks dispatched in a *single JS tick*
+    produce 6 POSTs — React cannot re-render between them — which no pointer can do, and is worth
+    recording as the shape of the guard rather than left as a claim about it.
+  * **Data survives a rejected submit.** Values were still in the fields after a 422.
+  * **Focus.** A rejected submit moved focus to the first invalid control.
+  * **Buttons.** Cancel and submit are both **42px**; the link they replaced was 17px. The primary is
+    **first in the DOM** (so Enter submits and tab reaches it first) and **right on desktop** via
+    `sm:flex-row-reverse`; on mobile the row stacks with the primary **on top**.
+  * **Mobile, 375px.** One column, `scrollWidth` 375 against a 375px viewport, **no** overflowing
+    element, filter rows stacked with every control full width.
+  * **Drag and drop.** A synthesised `DataTransfer` drop was accepted and previewed as
+    `term-2-worksheet.pdf` / `1.5 MB`.
+
+That last one cost an hour to a trap already recorded in this project. The drop zone's highlight
+appeared not to apply: the class flipped to `border-brand bg-brand-subtle`, `--brand` resolved, an
+identical probe element rendered correctly — and `getComputedStyle` on the real element kept
+returning the old colour. **`document.hidden` was `true`.** CSS transitions are driven by the same
+animation clock as `requestAnimationFrame`, which is suspended in a hidden tab, so a `transition-colors`
+element reports its **frozen start value** indefinitely. Setting `transition: none` made the value
+jump to `#0e6b6e`. The earlier lesson was written about rAF; it is about the clock, and transitions
+are on it too.
+
+#### Two duplicated components became one
+
+`SearchInput` in `components/table.tsx` was a near-copy of `SearchField` — same props, same
+magnifier, same clear button, same defeated `pl-9`. Deleted, with a note where it was.
+
+Four `FormSection`s were retitled: each had exactly one field whose label repeated the heading
+verbatim ("Status" over a field labelled "Status"), which is a heading, a description and then the
+same word again.
+
+#### State
+
+`verify-frontend.js` **111 → 138** assertions, **18 deliberate regressions, all 18 caught**, tree
+restored byte for byte afterwards. The count is stable across **30 consecutive runs** and 12 clean
+exits. One of the 18 did not fail first time and the assertion was wrong, not the rule: it grepped
+the whole of `form.tsx` for `disabled={busy}` and was satisfied by **`FileField`'s remove button**
+while the submit button's guard was deleted. Narrowed to `SubmitButton`'s own body — and the first
+attempt at narrowing used a non-greedy `[\s\S]*?\n\}` that stopped at the closing brace of the
+destructured props, *before* the body. That is the second assertion in this project satisfied by
+something other than the thing it names.
+
+Baseline **5,253 → 5,280**; `npm test` **5,480 passed, exit 0**; `tsc --noEmit` exit 0; `next build`
+clean.
+
+Row 4.1's desktop claim in the checklist was refreshed rather than left: it said the toggle was
+measured hidden at 1100px, and the `md:hidden` above is why it was not. The figure now records what
+was re-measured at 1440px after the fix.
+
+**`npm run lint` does not run at all**, and has not since the Next 16 upgrade — the command was
+removed (`node_modules/next/dist/docs/.../version-16.md:1084`: *"The `next lint` command has been
+removed. Use Biome or ESLint directly. `next build` no longer runs linting."*), there is no
+`eslint.config.*`, and `npm run lint` still points at `next lint`. Earlier entries recording
+`npm run lint` exit 0 were true before the upgrade and are stale now. **This is attributable, not
+inferred**, and it is left open rather than fixed here because setting up ESLint 9 across this
+codebase is its own piece of work with its own triage.
+
+**Queue: 84 of 174 closed, 90 open** — unchanged by this part, which was a brief of its own rather
+than queue work. What it did close is the forms half of several "poor" entries; they are left counted
+as open until re-triaged against the new layer.
+
+---
+
+### Session 26, part 42 — the required marker is an asterisk again, and still not colour alone
+
+`FieldLabel` marked a required field with the word **REQUIRED** in small caps beside the label. That
+was a deliberate rule, written into `form.tsx`'s header: *"A required field says so in words, not
+with a red asterisk alone."* The user asked for the red star instead.
+
+The rule's own wording is what makes both possible — the objection is to an asterisk **alone**, not
+to an asterisk. So the marker is now:
+
+```tsx
+<span aria-hidden className="text-sm font-medium leading-none text-danger">*</span>
+<span className="sr-only">(required)</span>
+```
+
+A red asterisk on screen, `aria-hidden` because an asterisk read aloud is the word "star", and the
+word itself in an `sr-only` span beside it. A screen reader announces **"Name (required)"** and never
+reads the glyph; a sighted reader sees the convention every form already uses; and nobody is left
+depending on the colour, which is the part the original rule was actually protecting. Verified live:
+`textContent` is `Name*(required)`, the asterisk computes `rgb(180, 35, 24)`, and the `sr-only` span
+measures 1px wide at `position: absolute`.
+
+`gap-1.5` became `gap-1` — six pixels reads as a space before a separate word, which is right for
+"REQUIRED" and wrong for an asterisk.
+
+Three assertions, all three regression-proved: the glyph is present, it carries `aria-hidden`, and
+the `(required)` text is beside it. Deleting any one of the three fails the suite — which is the
+point, since the asterisk without the word is exactly the marker the old rule refused.
+
+**One thing worth recording about the tooling.** `npm test` passed **5,483** while `form.tsx` had a
+syntax error in it: a JSX comment placed before the root element of a `return`. `verify-frontend.js`
+reads these files as **text**, so nothing in the loop compiles them — `tsc --noEmit` is the only
+thing that catches a broken component, and it must be run alongside the suite rather than assumed to
+be covered by it.
+
+`verify-frontend.js` **138 → 141** assertions; baseline **5,280 → 5,283**; `npm test` **5,483 passed,
+exit 0**; `tsc --noEmit` exit 0; `next build` clean.
+
+---
+
+### Session 26, part 43 — the nine endpoints the UI could not reach
+
+The last of the audit's "wrong" bucket: working, permissioned, tested endpoints with **no caller
+anywhere in `frontend/src`**. Not bugs — absences. Each is now reachable, and each was driven end to
+end in a browser against the real API rather than asserted from the source.
+
+| what could not be done | now |
+|---|---|
+| generate any of §20.5's seven documents, or open the PDF | `Generate a document` on the header; a PDF button per row |
+| charge a fee structure to anybody | `Assign` per structure — a checkbox list of active students |
+| take a fee payment | `Record payment` per ledger row with a balance |
+| issue a book, record a return, settle a fine | all three on the loans panel |
+| calculate or publish exam results; open a result card | `Calculate` / `Publish` per exam; a card per result |
+| deactivate a staff member or a teacher | a per-row control that records **when** they left |
+| edit, delete or assign a subject | `/school/subjects/[id]` — four routes, two collections |
+| correct a timetable slot | `/school/timetable/[id]` |
+| see the payment proof a reviewer is told to check | the image, in the dialog |
+
+#### Four shared pieces, not nine independent screens
+
+  * **`lib/useRowAction.ts`** — which row, in flight, done, failed. Six of the nine are that same
+    shape, and five copies is five chances to forget the reload. It takes the overlay's value
+    **through `confirm(extra)`** rather than off the caller's state: `perform` closes over the render
+    it was made in, so a dialog that set state and then called `confirm` would send the *previous*
+    value — wrong on every use after the first, and invisible on the first.
+  * **`components/deactivate.tsx`** — staff and teachers are the same decision twice. Both routes
+    accept `left_at` as well as `is_active`, so the dialog **asks for the leaving date**, defaulting
+    to today. Sending only the flag would drop a fact the school holds; inventing the date would be
+    worse. Reactivation clears it, because a person who is active again has no leaving date.
+  * **`lib/useTimetablePickers.ts`** — five lists, four independent failure states, and the
+    section-follows-class rule, extracted from the create screen so the edit screen shares it rather
+    than copying ninety lines. The create screen was re-driven afterwards and loads identically.
+  * **`lib/formErrors.ts`** — `splitApiErrors`. Three sources report a 422 under a name no input
+    carries: model-level Sequelize validators (`timeOrdered`, `teachingSlotNeedsSubject`),
+    `rethrow()`'s `body`, and `resolveSchool()`'s `school_id`. Left alone each is filed under a key
+    nothing draws **and** the non-empty map then suppresses the banner — a rejected submit that looks
+    like nothing happened.
+
+#### What the browser proved, and one thing it disproved
+
+  * A back-dated library loan returned 25 days late computed **62.50** against a 2.50/day book, and a
+    20.00 part-payment left *"42.50 outstanding · 20.00 of 62.50 paid"*.
+  * A fee structure charged 950.00 to one student; 300.00 collected left **650.00 pending /
+    partially paid** and the system issued receipt `RCP-202609-00001`. That is precisely the case the
+    finding said the product could not produce.
+  * A Teacher ID Card generated, then downloaded as **1,757 bytes beginning `%PDF-`**.
+  * Publishing results before generating them was refused **409**, and the dialog **stayed open**
+    carrying *"Results must be generated before they can be published"* — `useRowAction`'s conflict
+    path, which exists so the answer is not a toast behind a dialog the user is still reading.
+  * A subject created **inactive** was switched on from the detail screen. That is the exact path the
+    create form promises — *"Leave it on unless the subject is being entered ahead of a session"* —
+    and there had been no screen anywhere that could later turn it on.
+  * Assigning a subject to a class also added a **teacher** assignment. Checked rather than assumed:
+    `subjects.service.js` `assign()` calls `upsertTeacherSubject()` itself. One row in each table
+    from one submit — not a double post — and the hint now says so, because a second panel gaining a
+    row otherwise reads as a bug.
+
+#### Two defects found by driving it
+
+**`money()` returns JSX.** Interpolated into a dialog description it rendered
+**`[object Object]`** — visible on screen. `formatAmountWithCode` is the plain-text formatter and is
+what those props take now. `studentName` has the same shape (JSX on its fallback branch, a string
+otherwise), so a `studentText` sibling was added; the association is a LEFT JOIN, so that branch is
+reachable and the failure would have shown only for the rows whose student did not come back.
+
+#### The suite
+
+`verify-frontend.js` **141 → 170** assertions, **22 deliberate regressions, all 22 caught**, tree
+restored byte for byte. Each case removes the **call**, not the screen — which is exactly how these
+nine got here: the routes were fine, the screens were fine, and nothing in between called them.
+
+Two did not fail first time, and the *regressions* were wrong rather than the rules: removing only
+the deactivate call left the reactivate call still hitting `PATCH /staff/:id`, so the endpoint
+assertion was right to keep passing. Deactivation on its own is covered by the `left_at` rule, which
+did fire.
+
+**A limit of the earlier pass, found and recorded rather than fixed here.** `callsIn()` matches
+`api.post('/literal')` and **nothing else** — every call added for these nine addresses one row and
+is therefore a template literal, which it cannot see. So the standing "every path the client calls
+exists on the API" assertion has never covered a parameterised call. These checks use their own
+collector that handles both forms; widening `callsIn` changes what that older assertion compares
+across every screen at once, and is its own piece of work.
+
+**And a flake that was not one.** Five suite runs came back with two failures in
+`verify-reports.js`, which passed twelve times on its own. The cause was mine: the harness holds
+`tests/.suite-run.lock` and says plainly that *"two overlapping runs delete each other's fixtures by
+prefix and produce failures in suites that are fine"* — I had a background run overlapping a
+foreground one, which is the serial rule Known Issue #25 already records. Run serially: **5,512
+passed, six consecutive runs, exit 0** every time.
+
+#### State
+
+Baseline **5,283 → 5,312**; `npm test` **5,512 passed, exit 0**; `tsc --noEmit` exit 0; `next build`
+clean.
+
+**Audit queue: 93 of 174 closed, 81 open.** The nine findings behind the ten named features are
+closed with what closes each recorded in `docs/UI-AUDIT-FINDINGS.md`. What is left is 46 `ux`, 12
+`stale-comment`, 9 `missing-state`, 4 `type-lie`, 3 `a11y`, 3 `money`, 2 `dead-link` and 2 `mobile` —
+per-screen judgement, with no remaining case of an endpoint the product cannot reach.
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+**Where the queue stands: 17 of 174 closed, 157 open** — 42 "wrong", 73 "poor", 42 "minor", all in
+`docs/UI-AUDIT-FINDINGS.md`. Every "broken" one is done. The largest single piece of work left is not
+in that queue: **31 of 60 screens still render a bare `<p>Loading…</p>`**, only 2 have a designed empty
+state, and of the 25 screens that mutate data only 4 report the outcome through a toast. The design
+system reaches all of them; the per-screen pass does not.
+
+---
+
+**Not yet done, and worth stating plainly:** the 59 screens now inherit the new system but have not
+each been laid out individually; there is still no landing page (`/` has no route) and no root 404;
+toasts and confirmations exist but are not yet wired into the screens that mutate; and the audit's
+remaining verified defects are open — a money column losing its cents, the Expenses report rendering
+`[object Object]` over its whole category breakdown, three dashboard cards summing mixed currencies
+under a `$`, and coupon expiry off by one day west of UTC.
+
+---
+
+**Where FR-BILL-001 now stands: eleven of eleven fields asserted, and the System actor still blocked.**
+The two halves were always separate. *"A billing event"* — the FR's own precondition — appears exactly
+once in the 1,698-line source and is never defined, so an automatic trigger would decide which events
+count, when in the period to issue, what due date to set and what to do in grace. That is four rules
+§35 forbids, and no amount of test coverage changes it.
+
+---
+
+## 5. Known issues
+
+| # | Issue | Impact | Action |
+|---|---|---|---|
+| 1 | ~~**`docs/IMPLEMENTATION_CHECKLIST.md` is inaccurate.**~~ **Resolved in session 7.** Every row had been pre-filled `Completed` / `Tested`, including Phases 4–7 which have not been started, and 37 SRS requirement IDs marked complete against modules that do not exist. It has been rewritten (320 → 441 lines) with each legend word defined and every status re-derived from the file system or from a check re-run first. | Was misleading in the worst possible way — it directly violated the "do not mark something complete without verifying it" rule. | Resolved. Both files are now truthful; where they disagree, **this file is corrected first** and the checklist follows. |
+| 2 | **MySQL (XAMPP) must be running**, and it does not survive this environment reliably — it stopped four times during session 26 alone, twice needing the Aria recovery below. | Every `db:*` command and every database-touching suite fails without it. `npm run check:models` and `npm run db:schema` still work (no connection needed). Worse, 19 suites answer an unreachable database by skipping their HTTP half and **exiting 0** (Known Issue 28), so a stopped server can read as a green run. | Start it from the XAMPP control panel, or `Start-Process C:\xampp\mysql\bin\mysqld.exe`. **If it refuses to start, read the error rather than reinstalling:** session 26 hit *"Aria recovery failed … Could not open mysql.plugin table … Aborting"* after an unclean shutdown. The `mysql` system schema is **Aria**; the project’s own data is **InnoDB** and was never at risk — InnoDB reported a clean start throughout. The recovery is the one the server itself prints: from the data directory run `aria_chk -r mysql/*.MAI`, then `aria_chk -o` on any table reporting *"aria_sort_buffer_size is too small"* — `-o` uses the keycache instead of the sort buffer, and passing `--sort_buffer_size` on the command line does **not** help because `my.ini` overrides it. Then move the `aria_log.########` files aside. Which tables need `-o` varies by occurrence — four the first time (`columns_priv`, `db`, `help_topic`, `proxies_priv`), three the second (`db` recovered under plain `-r`), so **read the run rather than working the list**. Both databases came back intact both times — 65 tables (64 domain + `sequelize_meta`), 109 permissions, 11 roles each. **Correction to the first recording of this procedure: quarantine the logs OUTSIDE the data directory.** They were first moved to `data/_aria_quarantine/`, and because MariaDB enumerates every subdirectory of the data directory as a schema, `SHOW DATABASES` then listed `_aria_quarantine` as a phantom database — harmless but wrong, and exactly the kind of thing that later gets counted. They now live in `C:\xampp\mysql\_aria_quarantine\`, one level up and outside the data directory, still moved rather than deleted. |
+| 3 | ~~**`docs/ARCHITECTURE.md` contained four inaccuracies.**~~ **Resolved in session 6.** Line 29's `xss-clean · mongo-sanitize-equivalent` (neither installed) now reads `sanitizeRequest (hand-written)`; the seeders row no longer claims "taxes, grade scale"; the upload row (now line 170) no longer claims a "magic-byte sniff" or "served non-executable" and states the real control plus the limitation; and a `src/services` row was added to the directory map. The request-flow diagram was also rewritten to the verified 11-step order from `createApp()` — it had omitted `cookieParser` and `activityAudit()` and put `hpp` before the body parsers. | Line 169 overstated a *security* control, which is the worst kind of drift. The code was always correct; the doc described something else. | Resolved. `docs/ARCHITECTURE.md` is now 216 lines and every claim in it is either code-backed or explicitly marked as not yet built. |
+| 4 | ~~**`npm test` fails**~~ **Resolved in session 26.** `tests/setup.js` was referenced by `setupFilesAfterEnv` but absent, and jest resolves that path during config normalization — so the run died with a ValidationError before discovering a single test. | None. `npm test` now runs the whole safety net: **5,358 jest tests, exit 0** — 5,162 assertions from the 38 `verify-*.js` suites, each a named test case, plus 196 suite-level and harness-integrity tests. | Done — checklist row 6.17. |
+| 5 | ~~**The `msms_test` database does not exist.**~~ **Resolved in session 26.** Created, migrated and seeded: **64 SRS tables plus `sequelize_meta`**, matching §29 exactly. | None. The jest harness runs every suite against it and proves the target with `SELECT DATABASE()` rather than trusting `DB_NAME`. | Done. **Note the harness does *not* use `NODE_ENV=test`** — see issue 28. |
+| 6 | ~~**`npm run lint` fails** — no ESLint config file exists~~ **Resolved in session 26.** Originally: no config file existed (`.eslintrc*` / `eslint.config.js`), though `eslint ^8.57.1` is installed. Note that several files already carry `// eslint-disable-next-line no-await-in-loop` comments in anticipation. | No lint enforcement. | **Scoped in session 26 and it is a small job, but the register had the target wrong.** `package.json:31` is `"lint": "eslint src tests"` — **`scripts/` is not linted at all** (41 files outside the target). Against `src` + `tests` (222 files) an `eslint:recommended` config on `{ env: {node, es2022}, parserOptions: {ecmaVersion: 2022, sourceType: "script"} }` produces **9 errors**, measured — not estimated — by running eslint with explicit flags. Three settings are load-bearing and each was measured: `sourceType: "script"` with `env.node` (the code is 100% CommonJS; `"module"` without it yields **1,477** errors), `ignoreRestSiblings: true` (4 errors from two deliberate rest-omit destructures that a docblock already explains), and a `tests/**` jest override rather than a global `env.jest` (36 `no-undef` errors otherwise, and a global would let jest globals into `src`). **Do not adopt the rules the existing `eslint-disable` comments name** — the register calls them "in anticipation", and they anticipate an airbnb-base config: enabling `no-await-in-loop`, `global-require` and `class-methods-use-this` takes 9 errors to **56**, adding 47 at sites with no disable comment. **Done. `npm run lint` exits 0.** `.eslintrc.json` is the measured config above, and all nine errors were resolved by fixing the code rather than by relaxing a rule: **seven dead requires** removed (`mailService` in `auth.service.js`, `path` and `env` in `payments.service.js`, `tenantWhere`, `QUESTION_STATUS` and `literal` in `reports.service.js`, and `Grade` from the association destructure in `models/index.js`), and **two deliberate constructs** given a disable comment that states its reason — the control-character class in `sanitize.js`, which is the subject of that rule rather than an accident, and the lazy `require('redis')` in `cache.js`, whose disable comment named `import/no-unresolved`, a rule from a plugin this project does not install, which is itself an ESLint error. Each of the seven was confirmed to appear exactly once outside a comment before removal, and `Grade` was checked further: the model **is** registered and **is** used at six call sites, and does carry `school`/`organization` associations — from the generic tenant loop, not from that destructure, which exists only for explicit ones. `npm test` is unchanged, so no removed require was load-bearing. `verify-deploy.js` part 6 now runs `eslint src tests --max-warnings 0` **in the loop** (2.5s over 222 files) and pins the target string, so "lint passes" cannot quietly become "lint passes over less". Four deliberate regressions, all detected — deleting the config, widening the target, reintroducing one dead require, and downgrading a rule to a warning, which is what `--max-warnings 0` is for. **Still outside the target: `scripts/`** — the 38 verification suites hold **45** errors of their own (22 `no-inner-declarations`, 19 `no-unused-vars`, 4 others) across 25 of 41 files. Measured, not fixed, and the pinned-target assertion is what stops that exclusion being forgotten. |
+| 7 | ~~**`npm start`, `npm run dev` fail**~~ **Resolved.** `src/server.js` exists and `npm start` is verified — a child process bound the port and answered `/api/v1/health` with 200 (`verify-app.js`). `npm run dev` is nodemon wrapping the same entry point; nodemon 3.1.7 is installed and in `node_modules/.bin`, but it was not run here because it never exits. **`npm run worker`, `npm run cron` and `npm run db:backup` still fail** — `src/jobs/` does not exist. | Expected at this phase, not a defect. | Phase 5 for the three remaining entry points. |
+| 8 | ~~**Unexplained 2-column discrepancy.**~~ **Resolved in session 26 — there was no discrepancy.** `npm run db:schema` counted **1,154** columns from the models and `information_schema` reported **1,156** live, and the difference is entirely `sequelize_meta`, which has exactly two columns: `name` (varchar) and `applied_at` (datetime). One count covers the 64 SRS tables, the other covers all 65 objects. | None. Diffed **per table** in both databases: zero columns on either side that the other lacks, and `msms` and `msms_test` report identical figures (65 tables, 1,156 all, 1,154 excluding `sequelize_meta`). | Closed, and **asserted** so it cannot return as a mystery: `verify-performance.js` now checks that the model column total equals the live total excluding `sequelize_meta`, and that the remaining difference is exactly 2. A drifted column or a 65th table now fails a named assertion instead of becoming a note. |
+| 9 | ~~**`storage/uploads`, `storage/backups`, `storage/tmp` do not exist.**~~ **Resolved.** All four now exist: `logs/`, `uploads/`, `backups/`, `tmp/`. | None. | Done. `upload.js` is now blocked only on #14. |
+| 10 | ~~**The extracted SRS lives in a temp directory.**~~ **Resolved.** It was copied into the project as `docs/SRS-extracted.md` (72,799 bytes — byte-identical in size to `C:/Users/Z/AppData/Local/Temp/srs.md`) together with `docs/extract-srs.py`. The temp copies still exist but no longer matter. | None. The line-number references used during implementation are now version-safe, and the `.docx` remains the source of truth in the project root. | Done. Re-extract with `python docs/extract-srs.py` if the `.docx` is ever revised. |
+| 11 | **`SUPER_ADMIN_PASSWORD` in `backend/.env` is still the `.env.example` value** (`SuperAdmin@123`). The seeder warns in development and hard-refuses to seed with it when `NODE_ENV=production`. | Fine locally; a real deployment blocker by design. | Set a real value before any deployment. |
+| 12 | **The project is not a git repository.** `.gitignore` exists but nothing is version-controlled. **This is an unmet SRS requirement, not a convenience** — §32:1571 is "8. Create Git commit.", inside a list §32:1563 introduces as "The exact daily development workflow specified in the source". The checklist filed it under "not an SRS requirement" until session 26 and now carries it as row **7.14, Not Started**. | No history, no rollback. Session 3's two security fixes are therefore not recoverable from history, and the standing rule that documentation drift be dated from file mtimes exists only because of this absence. | `git init` and commit — which is literally what §32 step 8 says. |
+| 13 | ~~**`TRUST_PROXY` is not in `env.js` or `.env.example`.**~~ **Resolved.** `env.js:82-110` parses it (`trustProxy()`, supporting a hop count, a boolean, or a comma-separated address list), `.env.example:58` documents it, and `app.js:141` now calls `app.set('trust proxy', config.app.trustProxy)` as step 1 of the pipeline — before the rate limiter, which keys on `req.ip`. | None. | Done, including the wiring. |
+| 14 | ~~**No upload allowlists exist.**~~ **Resolved.** `constants.js` now defines `UPLOAD_MIME_EXTENSIONS` (MIME → the extensions it may carry), `UPLOAD_MIME_LIST`, `UPLOAD_PROFILES` / `UPLOAD_PROFILE_LIST` — **six** upload surfaces: `ai_source`, `payment_proof`, `person_photo`, `homework`, `submission`, `student_document` — and `UPLOAD_RULES` (per-surface types and file counts). Derived from what the SRS names — §21/FR-AI-001 is the only clause that enumerates types — and each rule carries its source clause. | None. `upload.js` is written and verified. (Earlier revisions of this file and of the checklist said "five surfaces"; that was a miscount, corrected in session 7.) | Done. |
+| 15 | **`package.json` declares `express ^4.21.1`; the installed version is 4.22.2.** Not a defect — the range permits it — but worth knowing, because session 3 empirically confirmed that `req.query`, `req.params` and `req.body` are all assignable in 4.22.2, which `validate.js` relies on. Express 5 makes `req.query` a getter. | An Express 5 upgrade would break `validate.js`. | Pin or re-verify before any major upgrade. |
+| 16 | ~~**Four `package.json` scripts and one docblock point at files that do not exist.**~~ **Resolved by session 26.** | None. | Verified two ways: every `.js` target named in `package.json` `scripts` resolves on disk, and a sweep of **459** distinct backticked file paths across both documents found 5 unresolved, all of them correct — two cited *because* they are absent (Known Issue #6), one a method rather than a file, one a `node_modules` reference, and `docs/VERIFICATION.md` explicitly recorded as "not yet written". |
+| 17 | **A school sees add-on prices restricted to plans it is not on.** `addons.service.detailInclude()` filters `addon_prices` by `is_active` alone, never by `plan_id`, so a school-scoped `GET /addons` includes prices whose `plan_id` names a different plan. | **Display only — verified, not assumed.** The purchase path refuses a cross-plan price at `subscriptions.service.js:1837` with `ADDON_PRICE_PLAN_MISMATCH`, and that refusal **is asserted** (`verify-subscriptions.js:1867`, `[409, ADDON_PRICE_PLAN_MISMATCH, true]`). `readiness()` also reports the split as `planRestrictedPriceCount` / `unrestrictedPriceCount`. So the hole that matters is closed and covered; what remains is a school seeing a figure it cannot act on. | **Left as a display imprecision, deliberately.** Hiding the rows needs the caller’s plan inside a catalogue read, and `req.tenant` carries `schoolId` but no plan — so `detailInclude()` would have to become async and resolve an entitlement snapshot, changing a synchronous helper’s signature for every caller. §11.3 does not say a school must not *see* a price it cannot buy, only what it may buy, and that is enforced. The code says the same at `subscriptions.service.js:1784-1788`. **Session 26 correction: that stated reason is wrong.** `detailInclude()` has exactly **two** callers, `list()` and `findById()`, both in its own file and both already `async` — a grep for the name finds no external caller — and the signature need not become async at all, since the plan can be resolved by the caller and passed in. `addon_prices.plan_id` is nullable ("null = available on any plan") and **already carries an index**, so filtering on it adds nothing §35 forbids. Also worth recording: `addons.view` is granted to `super_admin` **alone**, so today every caller who can reach the route takes the `isPlatform` branch and the defect is unreachable in the seeded catalogue — it becomes live the moment an operator grants the key to a school role, which `verify-addons.js:944` already does deliberately. The classification (display imprecision, write path enforces) stands; only the excuse for not fixing it does not. |
+| 18 | **An add-on purchase that names no `addon_price_id` is recorded at `unit_amount: 0` with `addon_price_id: null`.** `purchaseAddon()` applies a price only when one is named (`const unitAmount = price ? money.round(price.unit_amount) : 0;`) — there is no implicit selection, unlike `selectPrice()` on the plans side. Found in session 13 when the suite's headline purchase stored zero; deliberately kept and now asserted on both paths (priced and unpriced). | Zero today, because the shipped seed data leaves `addon_prices` empty and the fallback is what keeps the seven §11.3 add-ons purchasable at all. Session 15's invoice generation bills `subscription_items` as they stand, so an unpriced add-on still becomes a **zero-amount invoice line** rather than being waived or refused. | Still open. Do not add an implicit price selection to `purchaseAddon()` — that would guess at a default `addon_prices` row the SRS does not name. |
+| 19 | **`subscriptions.wallet_balance` is never debited — and never credited either.** §36 triage went further than the original note: the column exists (`subscription.js:413`, default 0), `payments.method` accepts `wallet` and `payments.validation.js:76` accepts `destination: 'wallet'` on a refund, and **no code anywhere reads or writes it**. There is no top-up route in any router. `subscriptions.validation.js:206` explicitly forbids setting it, saying it "belongs to the §13.2 wallet payment method, not to this module" — pointing at an owner that does not exist. | A school can name wallet as the method and nothing moves. | **Blocked on the source, not on effort.** §13.2 lists "Wallet" in a five-item list of payment methods and says nothing else about it. Three questions have to be answered before a line can be written, and the SRS answers none: **how is the wallet credited** (refund destination only? a top-up endpoint §13 never mentions?), **what happens when the balance is short** (refuse the payment, part-pay it, allow negative?), and **whose wallet is it** (the column sits on `subscriptions`, not `schools`). Implementing the debit alone would be worse than leaving it: with no credit path the balance is always 0, so every wallet payment would fail, and a method that always fails is worse than one that is visibly unimplemented. |
+| 20 | ~~**A `DATEONLY` column stores the previous day on any server west of UTC.**~~ **Resolved in session 16.** `validate()` runs Joi with `convert: true`, so `Joi.date().iso()` turns `"2025-04-01"` into a `Date` at **UTC** midnight; Sequelize's `DATEONLY._stringify` (`node_modules/sequelize/lib/data-types.js:351`) then formats it with `moment(date).format('YYYY-MM-DD')`, which is **local**. Measured: the same `Date` formats as `2025-04-01` at UTC+0/+4/+5/+10 and as **`2025-03-31`** at UTC-5. **The first revision of this row said the defect was project-wide and named billing as affected. That was wrong, and the correction is the useful part:** the coercion happens at the *validation* layer, which billing does share — but `invoices.service.js:559-565` and `quotations.service.js:275,326` both normalise through `dates.toDateOnly()` (`toISOString().slice(0,10)`, UTC by construction) *before* the value reaches the column, so neither was ever broken. Of the 28 `DATEONLY` columns, only three are written by a module that exists, and only `sessions/` bypassed the helper. | Was a one-module defect, not a project-wide one. Invisible on this machine (UTC+5), which is why fifteen green suites never caught it. | Fixed by routing `start_date` / `end_date` through `dateOnly()` in `sessions.service.js`, matching what billing already did. Asserted at a **flipped process timezone** — the suite sets `TZ=America/New_York` for exactly one request and restores it — so the check fails on this machine if the fix regresses, which it does not at UTC+5 otherwise. **The 23 unwritten `DATEONLY` columns are the live risk now:** §15 onward must use `dates.toDateOnly()` on every date-only write. |
+| 21 | **A limit check and the write it guards are not atomic.** **Scoped in session 26, and the scope is narrower and the remedy different from what this row said.** It affects **four** of §11.2's eight limit keys, not eight: `student_limit`, `teacher_limit`, `staff_limit` and `ai_limit`. The other four cannot race for four separate reasons — `admin_limit` has no guard mounted anywhere (its only writer is platform-scoped, and `enforceLimit` exempts platform callers outright); `storage_limit` is never incremented and the code says a guard there "can never fire"; `api_limit`'s counter has no writer, so it is permanently 0; and `file_upload_limit` is PER_REQUEST and reads no shared state, so there is nothing to undercount. It is also **two different bugs**: a headcount race whose window is five to eight round trips plus a transaction, and an `ai_limit` race whose window is an entire LLM provider round trip. No existing constraint serializes either — `subscriptions.school_id` is a **non-unique** index (confirmed against `msms_test`: `Non_unique: 1`), and the `FOR UPDATE` in `allocateStudentId` is taken *after* the count, so it orders two admissions without correcting either. `enforceLimit` (and `assertWithinLimit` called from a service) counts, decides, and then the handler writes — two concurrent requests can both pass a ceiling of N and leave the school at N+1. Found by the session-16 audit of `teachers/`, but it is a property of the guard itself, present since session 4, not of any one module. | Small and self-correcting in practice: the next `syncHeadcount` records the true figure, overage pricing (§11.2) already covers a school that exceeds a soft ceiling, and the window is one request. It is a real hole in a **Fixed** limit on a plan with `allow_overage` false. | **This row's own prescription is not achievable and is corrected here.** It read: "Close it in `enforceLimit` for every limit at once — a locking read inside the same transaction as the write." `enforceLimit` is **express middleware**; the transaction it would have to join is opened later inside the service, or does not exist at all — `teachers.service.js` and `staff.service.js` create with a bare insert. Middleware cannot join a transaction it does not own. The fix has to move into the five service functions that write, or not happen; the unit of consistency is the three headcount modules rather than "every limit". The warning that followed it — do not fix one module in isolation — still stands. **A patch plan exists and is NOT safe to apply as written:** its central design decision (lock the subscription row) is justified by "it is one row per school", which is false, and the lock it proposes carries no `order` and no state filter, so it can lock a row other than the one `governingStateFor()` would choose. `ai_limit` is separately out of reach of that shape entirely — wrapping a provider call in a transaction holds a row lock across the network — and needs reserve-then-refund instead. **A second attempt reworked the mutex and was refused again, though it got closer.** It rejects both rows the first plan considered — the governing subscription and the `usage_records` row — on the ground that **neither is guaranteed to exist**, and measured that a `FOR UPDATE` matching no row serialises nothing, which is the real hazard rather than the non-uniqueness alone. Its answer is to lock the **school row by primary key** as the transaction's first statement; that row always exists, is reachable by the primary key rather than a new index, and the plan checked for a lock cycle and for `paranoid: true` on `schools`. What refuted it was its own proof: one of its named regressions **cannot fail with the defect present** — dropping `{ transaction: t }` from a module's `assertWithinLimit` call was supposed to make two concurrent requests both return 201, and there is no CLS in this project, so an untransacted query does not behave the way the matrix assumed. That regression underwrites five of the seven proposed edits. **So the mutex is probably right and the evidence for it is not yet.** Next attempt: keep the school-row lock, and rebuild the proof matrix against what an untransacted read actually sees. **Original note:** Do not fix it in one module: the inconsistency would be worse than the gap. |
+| 22 | ~~**`enforceLimit` charges a headcount ceiling on row creation, not on the flag the headcount counts.**~~ **Resolved in session 26.** `teacher_limit` and `staff_limit` count `is_active: true`, and both modules already asserted the ceiling on the *re-activation* transition for that reason — but `POST` charged a flat 1 whatever the body said. | It failed **closed**, so nothing could be smuggled past a limit; the cost was a record that could not be entered at all. A school at its ceiling could not enter a member of staff who had already left. | Both routes now pass `{ increment: (req) => (req.body.is_active === false ? 0 : 1) }`. **Two modules, not the three this row asked for:** `students` refuses `status` on create outright (`students.validation.js:80` — "set by promote / transfer / leave, not by this request"), so a student cannot be created inactive and its flat 1 is already right; branching there would be dead code on a field the schema rejects. Two assertions in `verify-teachers.js`, and the second is the one that keeps the fix honest — the inactive row must not move the meter, since a fix that admitted it *and* charged for it would pass the first alone. The regression refuses it with 403. |
+| 23 | ~~**`commonSchemas.dateRange` refuses a `to`-only window.**~~ **Resolved in session 26.** `to` carried a bare `.min(Joi.ref('from'))`; with `from` absent Joi cannot resolve the reference and **errors rather than skipping the rule**, so `?to=2025-12-31` alone was a 422 complaining about a reference — which reads as a server fault, not a rejected input. | Every endpoint sharing the schema was unable to express "everything up to a date". | The comparison is now conditional on `from` existing. Three assertions in `verify-validate.js`: to-only accepted, from-only accepted, **and a backwards range still refused** — the rule the fix must not have discarded. |
+| 24 | ~~**`?q=` is accepted and silently ignored by `fees/` and `attendance/`.**~~ **Resolved in session 26.** `listQuery()` concatenates `commonSchemas.search`, so both modules advertised `q` and discarded it. | The fees half was **user-visible**: the screen’s "Name or component…" and "Receipt number or reference…" boxes returned every row with 200 OK — a silent wrong answer rather than an error. The attendance half was latent: no screen sends `q` there. | Both implemented over the columns their own placeholders name (fees) and over `remarks`, the only free-text column (attendance). Six assertions added across the two suites; in each the load-bearing one is that **a term matching nothing returns nothing**, which is what the old code got wrong — the regressions return the full list. |
+| 25 | **The `verify-*.js` suites are not safe to run concurrently with one another.** They share one database and several of them assert on rows written *since a `max(id)` baseline* — `verify-plans.js:1238-1244` reads every `audit_logs` row above its baseline and asserts the exact set of `table_name`s. A second suite running at the same time lands its own rows inside that window. Observed directly in session 19: `verify-plans.js` failed intermittently with `exams`, `exam_subjects` and `grades` in its expected-plans-only list, because a background agent was running `verify-exams.js` against the same database. | Any parallel run produces false failures that look like real defects, and cost real time to diagnose — it was diagnosed twice in one session, once wrongly as "a pre-existing flake in verify-plans". Nothing is wrong with the suites individually. | Run the loop **serially**, and do not run a suite while any other process (including a subagent) is touching the database. **Session 25 found a second and worse mechanism, and refuted this row's own stated resolution.** Beyond one suite's rows *polluting* another's window, every suite tears down with `destroy({ where: { id: { [Op.gt]: baseline } } })` on `activity_logs` and `audit_logs` — an **unbounded delete of everything above its own baseline**. Two suites at once and whichever finishes first *deletes the other's rows*. Measured by sampling the tables during a five-way concurrent run: `activity_logs` went **39 rows → 10 → 1** while all five were still working, and the failing assertions read `[]`, not a partial set — which is also why `settle()` cannot help, the rows being deleted rather than late. **Session 26 part 3 acted on this and it worked**: `X-Request-Id` tagging cut a full loop's residue from 32/25 rows to 13/9, and `verify-platform-modules` from 19/17 to zero. What remains is not a teardown problem — the last rows come from sweeps driven as *functions*, whose `recordAudit(null, …)` writes no school, org, user or request_id at all. And this row's claim that a run id has *"nowhere to put"* was **false**: both tables carry a `request_id` column, and `middlewares/requestContext.js:23-27` already honours an inbound `X-Request-Id`. The fix is therefore available and cheap — have each suite's `call()` send `X-Request-Id: <suite>-<n>` and tear down on `request_id LIKE '<suite>-%'` instead of an id range; `verify-middlewares.js` already targets rows by `request_id` exactly that way. **Largely FIXED in session 25, part 4.** Every teardown is now scoped to the run's own tenant and users — `id > baseline` **and** one of `school_id` / `organization_id` / `user_id` — so it can no longer reach another run's rows. Measured: five suites over six concurrent rounds went from **18/30 red to 0/30**, and eight further suites scored **1/32** (unreproduced in 25 more runs, cause not captured). The serial loop is unchanged at 4,715 with byte-identical per-suite counts. The scoping is belt-and-braces for the tenant half — both tables are ON DELETE CASCADE from `schools`/`organizations` — but the `user_id` clause is load-bearing for platform-scope rows, and works only because the trail delete runs *before* `User.destroy` (the columns are ON DELETE SET NULL). **Two suites remain unsafe, by design:** `verify-plans.js:1274` asserts the exact set of `table_name`s above its baseline, and `verify-subscriptions.js:2800` asserts *"every subscription in the database belongs to this run"* — it drives a cross-tenant sweep, so a global count is the only honest assertion. Neither can be scoped without changing what it asserts. **Residue:** 32 activity / 25 audit rows per full loop, all belonging to the seeded Super Admin (shared by every suite, so attributable to no run) or to directly-driven sweeps. To finish the job, add the `X-Request-Id` tagging described above — 142/142 activity and 112/118 audit residue rows already carry a `request_id`. |
+| 26 | ~~**Five columns accept a caller-supplied filesystem path.**~~ **Resolved in session 23 — and the count was wrong: there were SIX**, `photo_path` on `students`, `teachers`, `staff` and `parents` plus `logo_path` and `favicon_path` on `school_settings`. All six are now refused from every request body. The fix is asymmetric, because the SRS names the artefacts asymmetrically (§2x): `students.photo_path` gained its first real writer, `POST /students/:id/photo` using the `PERSON_PHOTO` profile that had cited §15.1 / FR-STUDENT-001 since `upload.js` was written and never had a caller; `teachers` / `staff` / `parents` get **no** writer, because §15.2, §15.3 and §15.4 name no photo at all; and `school_settings.logo_path` / `favicon_path` take an **absolute http(s) URL, stored normalised through `new URL()`**, because §14.1 lists Logo and Favicon beside Website as configuration. | None. Thirteen deliberate regressions, each caught by the assertion written for it. `verify-students.js` uploads real image bytes and checks them on disk; `verify-school-setup.js` proves a traversal path, an app-relative path and a non-http scheme are all refused, and that a URL whose path climbs out is stored collapsed. | Done. The remaining caller-supplied-path surface is `organizations.logo_path`, which is protected by `stripUnknown` rather than a refusal — its own comment claimed an upload middleware that does not exist, corrected in the same session. |
+| 27 | ~~**`sync_usage` is registered, unreachable, and would throw if reached.**~~ **Resolved in session 26.** The handler read `() => usageService.syncAllHeadcounts()` — with no argument — against a signature of `syncAllHeadcounts(schoolId)`, whose "All" means all limit *keys* for one school. Measured: it threw `entitlementService.getSnapshot() requires a school id; received undefined`. | §11.2's headcount limits were never reconciled against the rows they count, and the handler's own docblock claimed it "touches every school" throughout. | `usageService.syncAllSchoolHeadcounts()` is that behaviour — it iterates schools and reports which failed rather than abandoning the rest at the first error. Two assertions in `verify-jobs.js` **call** the registered handler; every earlier assertion checked registration *names* and none had ever invoked one. |
+| 28 | ~~**Nineteen of the 38 `verify-*.js` suites report success while skipping most of their assertions.**~~ **Resolved at source in session 26.** Originally: Each catches a database-connect failure, sets `dbSkipped`, returns early from the HTTP half, prints "All pure … checks passed" and **exits 0**. Measured on 2026-09-05 by pointing every suite at a database that does not exist: **3,143 of the 5,112 `PASS` lines vanished and 19 suites still exited 0** — measured on 2026-09-05 and **not re-measured since**; the tree now records 5,189 assertions and 5,168 pass lines in `tests/baseline.json`, so treat the ratio as indicative and the absolutes as of that date. Attribution from mtimes only, there being no history: the baseline was re-recorded after this row was last written, and the row was not revised — `verify-exams.js` fell from 219 assertions to 73, `verify-assignments.js` from 196 to 72, `verify-school-setup.js` from 168 to 45. | A partial database fault — pool exhaustion is the realistic one — silently removes most of the safety net while the loop still reports green. Nothing detected this before, because exit code and FAIL count both look correct and no runner knew how many assertions a suite owed. | **Detected, not yet fixed at source.** `npm test` now fails on it three ways: a per-suite exact assertion count against `tests/baseline.json`, the `SKIP`/"database unreachable" markers, and the total. Fixing it properly means making the suites exit non-zero when degraded, which is a 19-file change and is deliberately not bundled with row 6.17. **Session 26 scoping found the exposure is wider than this entry said, and that it reaches this project’s own process.** `npm test` is genuinely closed — `globalSetup.js:46-70` proves the database with `SELECT DATABASE()` before any suite spawns, `verify.test.js:169-186` asserts `skipped` is empty **and** the exact per-suite count, and `record-baseline.js:122-142` refuses to record a run containing a skip. What is still exposed is the **direct-run path**, which is how these suites were designed to be used and which this log documents throughout: `node scripts/verify-fees.js` with MySQL down prints 65 of 174 assertions and exits **0**. Worse, `scripts/stress.sh:17` scores a run by its exit code alone, so the standing rule "run a new suite a dozen-plus times" would report a **perfect determinism score for nineteen suites that never ran their database half**. The fix needs no new signal: `suiteRunner.js:157-159` already detects degradation from **stdout text** the suites themselves emit (`SKIP`, `SKIPPED`, "database unreachable" — every one of the 19 emits two matching lines), so the child need only honour its own signal in its exit code, with an explicit opt-out flag for the deliberate pure-checks run. **A patch plan was written and then independently fact-checked, and it is NOT safe to apply as written — two things would have gone wrong.** (1) The plan selects the 19 suites by an exit line it calls byte-identical; that line is shared by **33 of the 38** suites, so it is not a selector and a blind sweep would edit 14 suites that have no `dbSkipped` to honour. (2) The plan's own acceptance gate — "confirm the totals still read 38 suites / 5,183 assertions / 5,162 pass lines, unchanged" — quotes **stale documentation rather than `tests/baseline.json`**, and those two numbers are not even from the same moment: 5,183 was a transition figure and 5,162 an older pass-line total. An implementer following the gate literally would measure the real figures, read a delta, and conclude a correct patch had broken something. The fact-check reproduced the false green end to end and confirmed all six of the plan's factual claims, so the diagnosis is sound and only the mechanics need correcting: select the 19 by the presence of `dbSkipped`, and read the acceptance figures from the baseline file. **Applied on the corrected mechanics.** The nineteen were selected by `dbSkipped` — measured, exactly nineteen, and the exit line the plan wanted to use is shared by 33. Each now refuses to exit 0 on a degraded run, with `--allow-skip` for the deliberate pure-checks run, mirroring `record-baseline.js`'s `--allow-shrink` rather than inventing a convention. **Measured both ways, all nineteen:** with the port pointed at nothing, plain runs exit **1** and `--allow-skip` runs exit **0** (19/19); with the database up, every suite exits 0 at its exact recorded PASS count (19/19 unchanged). The current cost of the defect, since the register's 3,143-of-5,112 figure was measured on 2026-09-05 across a different denominator: **1,563 of the 2,625 PASS lines those nineteen produce — 60% — disappeared while all nineteen exited 0.** `scripts/stress.sh` is repaired by the same change without being touched, since its whole scoring is the exit code: a degraded `verify-fees.js` now returns 1 where it returned 0, so a determinism run with the database down counts RED instead of reporting a perfect score. Two harness-integrity tests in `tests/verify.test.js` hold it: every suite declaring `dbSkipped` must guard its exit, and `suiteRunner.js` must never pass the opt-out. Both proved by deliberate regression. **What is deliberately NOT closed:** the suites still print "All pure … checks passed" before exiting 1, which is accurate but reads oddly; and `npm test` was never exposed, so nothing about the loop changed. |
+| 29 | ~~**`NODE_ENV=test` silently reconfigures the application, so the suites would verify something other than what ships.**~~ **The dangerous half is resolved in session 26; the divergence itself remains, worked around.** `src/config/env.js` derives `isTest` and uses it to switch off the rate limiter (`:185`, **with no environment override at all**), default CSRF off (`:168`), drop bcrypt to 4 rounds (`:145`) and set the log level to `error` (`:241`); `app.js:217` skips the access log and `logger.js:44` drops the console transport. Measured: under `NODE_ENV=test`, `verify-app.js` fails **11** assertions, every one of them about the middleware chain or the access log that `isTest` removes. | A jest run configured the obvious way would be green against a **different application** than the one deployed, and the 5,133 baseline would not be reproducible. | **Worked around, deliberately.** The harness runs every suite with `NODE_ENV=development` and `DB_NAME=msms_test` — the shipped composition, the test database — and `npm test` no longer passes `cross-env NODE_ENV=test`. Safe because `.env` already sets `MAIL_DRIVER=log` and `AI_DRIVER=mock`, so nothing is sent and no API is called. **Session 26 scoping found a real bug inside the workaround, and its fix is subtractive.** `env.js:135-136` gives `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` a **hard-coded literal fallback** when `isTest` — so `NODE_ENV=test` is the one environment in which `assertRuntimeConfig()` will let the process serve with no configuration, signing tokens with a secret committed to this repository. Deleting the two fallbacks is a proven no-op everywhere it matters (both keys are set in `.env` and `.env.example`, and the resulting config is byte-identical with them set, under either NODE_ENV); it changes exactly one case, from BOOTS to REFUSES, and that case is the dangerous one. It also costs nothing in the env-key census, since `str('JWT_ACCESS_SECRET', …)` still appears for `verify-deploy.js:317` to count. The other `isTest` branches (`:125` db name, `:185` rate limiter) should **not** move in the same change: :125 is what makes the `NODE_ENV=test npm run db:create` recipe `globalSetup.js:59-60` prints in its own error message work. **Applied.** Both fallbacks are now `''`. Measured before and after with `.env` moved aside and restored byte-for-byte — six cells, exactly one changed, and it is the unsafe one: `NODE_ENV=test` with the secrets absent went from **BOOTS on a repository literal** to refuses. The five other cells are identical, the env-key census still reads `[73, 73]`, and `npm test` is unchanged at the assertion level. `verify-deploy.js` gained **three** assertions — the two fallbacks must be the empty string, read from **comment-stripped** source, and the boot guard must still refuse an absent, a short and a duplicated secret while accepting the real one. Five deliberate regressions, all detected, including two the original defect did not have: a fallback conditional on `isProduction` instead, and one hidden behind a plain constant. The **remaining** divergence — `:125`, `:168`, `:185`, `:241` and the two logging branches — is untouched and still handled by never running under `NODE_ENV=test`. |
+| 31 | **Four fabricated SRS quotations were found in one session, and the class is not cleanly assertable.** Three in session 26 part 15 (`migrator.js`, `cli.js`, `seed.js`) and a fourth in `payments.routes.js:35` found by the part-28 re-triage. The obvious guard — every quoted SRS phrase must appear in the SRS — was measured before being written and **rejected**: the backend holds **266** `*"…"*` quotations, **207** of them sitting next to an SRS reference, and **45** of those are not verbatim in the source, almost all of them legitimately, because the same convention quotes model column comments, MySQL error strings and the project’s own maxims (`notifications.service.js:20-25` quotes five column comments and says so in prose). | A fabricated quotation reads as authority and cannot be checked without going and looking, which on a project whose first rule is that the SRS is the sole source of truth is worse than a missing citation. Nothing detects the next one. | **Open, and deliberately unasserted.** The distinction between quoting the source and quoting a model comment lives in the prose, not the syntax; a check failing on 45 correct lines is worse than no check, and narrowing it by inventing a convention the codebase does not follow is the same error in another coat. A real fix is a syntactic convention the codebase adopts first — a distinct marker for verbatim source text — after which the assertion is trivial and exact. That is a decision about house style, not about the SRS. Measurement script: `quotecheck2.py` in the session scratchpad. |
+| 30 | ~~**Every "Add" / "New" button in the product navigates to a route that does not exist — 18 dead links.**~~ **Resolved in session 26.** No `new` directory existed anywhere under `frontend/src/app` while 18 internal `href`s pointed at one, so the product could read everything and **create nothing**. | None. All eighteen create screens exist: seven platform (organizations, schools, principals, plans, subscriptions, invoices, coupons) and eleven school (students, teachers, staff, parents, classes, subjects, exams, homework, timetable, fee structures, library books). | Built against each module’s **own create schema** — the field set and the required-ness are the API’s, never a designer’s. `npx tsc --noEmit` clean; `next build` generates **61** pages, up from 43. `verify-frontend.js` no longer records a dead list: it asserts **zero** unresolved internal links, which was the honest ideal all along and only became affordable once the list emptied. **Correction, session 26 part 36: that "zero" was weaker than it read, and three dead links survived it.** The extraction pattern was `href=[{]?[`"](\/[A-Za-z0-9/_-]*)` — a character class with no `$` — so an interpolated href was truncated at the first `${` and a *prefix* was validated: `` href={`/school/classes/${classId}/sections/new`} `` was recorded as `/school/classes/`, which is a real route. The three it hid were the "Add section" button, both finance "Record …" buttons and the add-on name link. The pattern now captures the whole href in each of the four forms JSX writes it, normalises an interpolation to `:param`, and resolves it against route directories with `[id]` mapped the same way — and a second assertion names the offending file, because a URL alone does not tell you which screen renders it. All three are now inline dialogs; the count is genuinely zero, proved by a regression that restores the old pattern and watches an interpolated dead link start passing again. |
+
+**Two open defects exist in the implemented code: Known Issues #20 and #27.** #20 is the `DATEONLY`
+timezone coercion — real, measured, and deliberately left unfixed because it is project-wide rather
+than local to any one module. #27 is `sync_usage`, a queue handler that is both unreachable and
+broken at its first line; it was found in session 26 while writing the §27 PM2 configuration, and it
+is left unfixed because the repair requires a reconciliation cadence the SRS does not specify. Every other issue above is missing work, an environment state, or a documentation defect. The
+**nine** code defects found in sessions 3–8
+are fixed and re-verified — see §5a. **Session 9 found none**: `verify-users-roles.js`'s 236 checks
+turned up no defect in shipped code, only four wrong expectations of my own and one assertion of mine
+that had been passing without checking anything. **Session 10 found none.** **Sessions 11–12 found none
+in shipped code either** — but session 12 found four defects and one false positive in
+`scripts/verify-addons.js`, a suite that had never completed a run, so for one session the *verification*
+was the defective artefact rather than the code. Numbered 9–12 in §5a to keep one sequence, with the
+qualifier that they are verification defects, not shipped ones. **Session 13 found none in shipped
+code**: all nine failures on `verify-subscriptions.js`'s first run were in the suite — one fixture bug
+that manufactured seven false entitlement defects, three wrong expectations, two serialisation
+expectations, and one over-broad filter. That fixture bug is the one worth reading before writing
+another suite (§5a session 13).
+
+**Session 16 broke that run of clean sessions, and did it by reading rather than by running.** It found
+**four defects in shipped code** — numbered 16–19 in §5a — in the Phase 3.I modules it inherited
+unrecorded: a `tenantWhere()` call on two tables that have no `organization_id` column (a 500 one role
+grant away from being reachable), two delete paths that let MariaDB cascade rows away below the
+application with nothing written to `audit_logs`, and a check-then-insert on a key MySQL's NULL-permissive
+unique index cannot enforce. **All four were found while the suite covering that code was green at
+111/111.** None of them was a wrong expectation and none was a defect in the verification — they were in
+the code, and the suite simply never asked. All four are fixed and each is now asserted; the suite is
+157/157.
+
+The lesson is the one §8 already carried, now with a second body of evidence behind it: *a suite that
+passes tells you only what it asserted.* The organization-scope defect in particular was invisible to
+every possible HTTP test, because no seeded role can reach the branch — it took reading
+`src/models/academic.js` and noticing two tables were missing a column.
+
+### Accepted limitations (not defects — deliberate, and documented in the code)
+
+These are recorded so no later session mistakes them for oversights or believes them covered:
+
+- **No magic-byte content sniffing on uploads.** The type check is the client-declared MIME type
+  cross-checked against the extension it must carry (`image/png` must arrive as `.png`), which
+  defeats the common `payload.php`-renamed-to-`.png` case. True sniffing needs a dependency the
+  project does not have and the SRS does not ask for it. Stated in `upload.js`'s header under "Known
+  limitation". `docs/ARCHITECTURE.md:170` now says the same thing.
+- **Rate-limit counters are per Node process.** `express-rate-limit`'s in-memory store is used, so N
+  clustered workers would each allow the configured limit, giving an effective ceiling of N × the
+  limit. Correct for the single-process deployment the SRS §27 topology describes; a shared store
+  would need `rate-limit-redis`. Stated in `rateLimit.js:29-31`.
+- **CSRF protection covers cookie-authenticated endpoints only.** A request carrying its token in an
+  `Authorization` header cannot be forged by a browser, so the double-submit check is not applied to
+  it — applying it would break every legitimate API client for no gain.
+- **Ownership checks (`students.self.view` and friends) are not in the middleware layer.** The
+  permission is necessary but not sufficient; comparing a record to the caller's own profile depends
+  on the route's data model and belongs in each module's service layer. Phase 3.D.
+- **`verifyUploadedSize()`'s refusal branch is normally unreachable.** multer's ceiling derives from
+  the same plan limit the service re-checks, so anything that survives multer necessarily passes —
+  the branch is only reachable if the entitlement changes mid-request. The suite therefore asserts
+  the *confirm* path and tests `cleanupUploads` directly rather than constructing an artificial
+  failure.
+- **Real signal delivery is not verified on win32.** `process.kill(pid, 'SIGTERM')` on Windows
+  terminates a process abruptly rather than delivering a signal, so `verify-app.js` has the child
+  emit `SIGTERM` on itself. That runs the real handler in `server.js` and proves the close ordering;
+  what it does not prove is the operating system handing the signal over. On the SRS §27 Linux
+  deployment that path is exercised by every restart.
+- **No Content-Security-Policy is configured for the API.** helmet's default CSP is left on, but this
+  process serves JSON and the frontend is a separate Next.js origin that sets its own. It becomes
+  load-bearing when the §28 Swagger UI is added, which is the reason it was not disabled.
+- **The API router has no per-route rate limiting yet.** `apiLimiter` is global. `authLimiter` is now
+  mounted on all five public §7 routes and on `/auth/resend-verification` (session 7). `aiLimiter`
+  exists in `rateLimit.js` and is configured, but nothing mounts it because the §21 AI routes do not
+  exist — the next module that adds one must mount it.
+- **A ≤1-second window in which a pre-change access token is still accepted.**
+  `tokenPredatesPasswordChange()` compares the token's `iat` (whole seconds) with
+  `floor(password_changed_at)` using a strict `<`. Non-strict `<=` would reject a token minted in the
+  same second as the change — which is precisely the fresh pair `change-password` returns, so the user
+  would be signed out by their own successful password change. The strict comparison is therefore
+  deliberate, and the residual exposure is the remainder of one second to a token the attacker already
+  had. Recorded here because it looks like an off-by-one and is not; the auth suite works around the
+  same boundary with `sleepPastSecondBoundary()` rather than weakening it (§5a session 7).
+- **A user's own `must_change_password` flag lets them reach exactly two endpoints.**
+  `/auth/change-password` and `/auth/logout`. That is by design (a seeded password must not survive
+  first use), but it means the allow-list in `app.js` and the paths in `auth.routes.js` are coupled:
+  moving either path without updating the other locks the account out of clearing its own flag.
+
+---
+
+## 6. Files implemented
+
+All paths relative to `E:\School Managment System`. Line counts are actual — re-measured wholesale in
+session 10 with `find src scripts -name '*.js' | xargs wc -l` rather than adjusted for the files that
+session touched, which is how eight stale rows came to light (§5a session 10).
+
+### Root
+| File | Lines | Purpose |
+|---|---|---|
+| `.gitignore` | — | Ignores `node_modules`, `.env` (but not `.env.example`), `storage/{logs,uploads,backups,tmp}`, `frontend/.next`, coverage, editor/OS files |
+| `SRS_Multi-School-Management-System.docx` | — | Source of truth (input, not implemented) |
+| `IMPLEMENTATION_PROGRESS.md` | — | This file |
+
+### `docs/`
+| File | Lines | Status |
+|---|---|---|
+| `ARCHITECTURE.md` | 216 | Corrected in session 6 — see Known Issues #3, now closed |
+| `IMPLEMENTATION_CHECKLIST.md` | 594 | **Rewritten in session 7 with verified statuses** and a defined legend — see Known Issues #1, now closed. Extended in sessions 8, 9 and 10 as each module group landed. Requirement-by-requirement; this file remains the narrative resume point |
+| `SRS-extracted.md` | 1,698 | The `.docx` rendered to markdown, so the line references used during implementation are version-safe. The `.docx` in the project root remains the source of truth — see Known Issues #10 |
+| `extract-srs.py` | — | Regenerates the above if the `.docx` is ever revised |
+
+### `backend/` — configuration
+| File | Lines | Contents |
+|---|---|---|
+| `package.json` | — | 26 deps, 5 dev deps, 19 scripts, jest config, `overrides: { uuid: ^11.1.1 }`. Four scripts point at files that do not exist yet — Known Issues #16 |
+| `.env.example` | 124 | 73 documented keys (69 + the four auth keys added in session 7) |
+| `.env` | — | Real local dev values; `DB_NAME=msms`, `DB_USER=root`, no password, `AI_DRIVER=mock`, real 64-char base64url JWT secrets |
+| `src/config/env.js` | 297 | Typed env loader + `assertRuntimeConfig()`. `app.jsonBodyLimit` and `app.trustProxy` were added in later sessions; `auth.passwordMinLength`, `auth.loginMaxAttempts`, `auth.loginLockoutMinutes` and `auth.refreshCookieName` in session 7 |
+| `src/config/constants.js` | 935 | Every fixed vocabulary from the SRS: 11 roles, 20 modules, 8 limits + `ADDON_ONLY_LIMITS`, 7 add-ons + `ADDON_EFFECTS`, 10 subscription states, 7 billing cycles, 5 pricing models, 5 payment methods, 7 document types, 9 notification types, and more |
+| `src/config/permissions.js` | 429 | 109 permission definitions + `DEFAULT_ROLE_PERMISSIONS`; throws at load time if a role map references an unknown key |
+| `src/config/database.js` | 83 | Sequelize instance, `dialect: 'mysql'`, `assertConnection()`, and `SESSION_SQL_MODE` pinned on **every** pooled connection via the `afterConnect` hook — see §5a defect 3 |
+| `src/config/logger.js` | 71 | Winston + daily rotate, `combined-*.log` / `error-*.log` |
+| `src/config/cache.js` | 191 | Driver-swappable cache (`memory` default) |
+| `src/config/queue.js` | 159 | `enqueue`, `runNow`, `registerHandler`, `queueStats`, `waitUntilIdle` |
+
+### `backend/src/models/` — 64 tables, 323 associations
+| File | Lines | Tables |
+|---|---|---|
+| `index.js` | 699 | Registers all 9 group factories, installs JSON getters, declares 323 associations, guards the §29 schema, exports `tenantWhere()` / `belongsToTenant()` / `assertSchemaMatchesSrs()` / `PLATFORM_TABLES` (the 15 non-school-scoped tables, each with a rationale) |
+| `columns.js` | 180 | Shared column builders (`id`, `fk`, `schoolId`, `organizationId`, `money`, `enumOf`, `json`, `actorColumns`, `modelOptions`, `softDeleteOptions`) plus `parseJsonValue` / `installJsonGetters` |
+| `core.js` | 348 | 8 core tables |
+| `subscription.js` | 685 | 13 subscription tables |
+| `billing.js` | 496 | 9 billing tables |
+| `academic.js` | 228 | 5 academic tables |
+| `people.js` | 278 | 5 people tables |
+| `attendance.js` | 123 | 2 attendance tables |
+| `finance.js` | 340 | 5 finance tables |
+| `exams.js` | 563 | 8 exam tables |
+| `other.js` | 635 | 9 remaining tables |
+
+### `backend/src/database/`
+| File | Lines | Purpose |
+|---|---|---|
+| `schema.js` | 196 | Derives all DDL from the models — so migrations cannot drift from model definitions. Documents the two ordering problems (the `schools.principal_id ↔ users.school_id` cycle and the `fee_payments.income_id` forward reference) and the two-pass solution |
+| `migrator.js` | 190 | Hand-rolled runner over `sequelize_meta`. Exports `migrationFiles`, `appliedMigrations`, `pending`, `status`, `up`, `down`. Because MySQL cannot roll back DDL, a failed `up()` calls the migration's own `down()` as best-effort cleanup and reports clearly if that also fails |
+| `migrations/20260825120000-initial-schema.js` | 90 | Three passes: create all 64 tables with no `REFERENCES`, add all 354 indexes, add all 254 FK constraints — so table order is irrelevant and the FK cycle resolves |
+| `cli.js` | 203 | `create`, `drop`, `migrate`, `migrate:undo`, `migrate:undo:all`, `migrate:status`, `seed`, `seed:undo`, `seed:demo`, `seed:demo:undo`, `reset`, `schema`. Destructive commands refuse to run under `NODE_ENV=production` |
+| `seed.js` | 129 | Orchestrator. Discovers numbered seeders, runs them in one transaction, rolls back on failure. Exports `run`, `revert`, `runDemo`, `revertDemo`, `coreSeeders`, `demoSeeders` |
+| `seeders/01-roles.js` | 168 | 11 roles |
+| `seeders/02-permissions.js` | 78 | 109 permissions; prunes keys no longer in the catalogue |
+| `seeders/03-role-permissions.js` | 141 | 353 default grants |
+| `seeders/04-super-admin.js` | 107 | Bootstrap Super Admin |
+| `seeders/05-addons.js` | 118 | 7 add-ons |
+
+### `backend/src/utils/`
+| File | Lines | Exports |
+|---|---|---|
+| `ApiError.js` | 90 | `ApiError` class + `badRequest`, `unauthenticated`, `forbidden`, `notFound`, `conflict`, `validation`, `limitExceeded`, `moduleNotSubscribed`, `subscriptionInactive`, `internal` |
+| `ApiResponse.js` | 59 | `ok`, `created`, `noContent`, `paginated` |
+| `tokens.js` | 139 | `hashPassword`, `verifyPassword`, `randomToken`, `sha256`, `safeEqual`, `accessTokenPayload`, `signAccessToken`, `signRefreshToken`, `verifyAccessToken`, `verifyRefreshToken`, `secondsUntilExpiry` |
+| `dates.js` | 197 | 19 helpers incl. `addBillingCycle`, `billingCycleDays`, `periodRange` |
+| `money.js` | 82 | 11 helpers incl. `toMinor`, `toMajor`, `percentageOf`, `decimal` |
+| `pagination.js` | 63 | `getPagination`, `getSort`, `paginateQuery` |
+| `createRouter.js` | 36 | `createRouter` — the only sanctioned way to build a module router; installs the tenant param guards |
+| `documentNumber.js` | 244 | Document-number allocation for the §13 billing modules |
+| `schoolScope.js` | 135 | `resolveSchool` (which school a school-operations request is about — a Principal has it on `req.tenant`, a Super Admin must name it, an organization admin may name one of theirs; `CROSS_SCHOOL_ACCESS` otherwise) and `loadTeacherInSchool` (a `findOne`, not an invented teachers endpoint — §15 owns that module). Added by the Phase 3.I work; not a fifth table and not a new permission. Phase 3.J added `loadClassInSchool`, `loadSectionOfClass` and `loadSessionInSchool` here, which `subjects.service.js` still keeps private copies of — that module is verified at 157 assertions, so converging them is a refactor rather than a fix |
+
+### `backend/src/middlewares/` — Phase 3.C
+| File | Lines | Exports |
+|---|---|---|
+| `requestContext.js` | 37 | `requestContext`, `elapsedMs`, `SAFE_REQUEST_ID` |
+| `asyncHandler.js` | 35 | `asyncHandler` — forwards *all* arguments, so it is also safe on `router.param()` callbacks |
+| `sanitize.js` | 219 | `sanitizeRequest`, `sanitizeParsedBody`, `sanitizeContainers`, `cleanString`, `FORBIDDEN_KEYS`, `MAX_DEPTH` |
+| `errorHandler.js` | 281 | `errorHandler`, `notFoundHandler`, `normalize` |
+| `validate.js` | 175 | `validate`, `commonSchemas`, `listQuery`, `CONTAINERS` |
+| `authenticate.js` | 227 | `authenticate`, `enforcePasswordChange`, `readBearerToken`, `STATUS_REFUSALS` |
+| `resolveTenant.js` | 217 | `resolveTenant`, `ORGANIZATION_SCOPED_ROLES`, `TENANT_REFUSALS`, `ORGANIZATION_REFUSALS` |
+| `enforceTenant.js` | 372 | `enforceTenant`, `installTenantParamGuards`, `TENANT_KEYS`, `TENANT_PARAM_NAMES`, `PATH_COLLECTIONS`, `MAX_DEPTH`, `collect`, `collectFromPath` |
+| `authorize.js` | 206 | `requireRole`, `requirePermission`, `requireAnyPermission`, `requireAllPermissions`, `requirePlatformScope` |
+| `entitlement.js` | 434 | `requireActiveSubscription`, `requireModule`, `requireAnyModule`, `requireFeature`, `enforceLimit`, `attachEntitlement`, `resolveGatedSchoolId`, `loadSnapshot`, `assertTenantResolved`, `assertSubscriptionUsable` |
+| `upload.js` | 500 | `uploadSingle`, `uploadArray`, `cleanupUploads`, `uploadedFiles`, `CEILING_SOURCES` |
+| `rateLimit.js` | 244 | `createRateLimiter`, `apiLimiter`, `authLimiter`, `aiLimiter`, `clientKey`, `clientAddress` |
+| `csrf.js` | 183 | `requireCsrfToken`, `attachCsrfToken`, `issueCsrfToken`, `clearCsrfToken`, `secretsMatch`, `SAFE_METHODS`, `HEADER` |
+| `activityLog.js` | 427 | `activityAudit`, `logActivity`, `describeActivity`, `recordActivity`, `recordAudit`, `snapshot`, `diff`, `METHOD_ACTIONS`. `attributionFrom` was added in session 7 (§5a defect 8) and is used through `logActivity({ actor })` rather than exported |
+| `index.js` | 141 | Barrel — 44 named re-exports, with the documented mount order in its header. **`app.js` and every module must import from here, not from the individual files.** |
+
+### `backend/src/` — Phase 3.E, the application
+| File | Lines | Exports / contents |
+|---|---|---|
+| `app.js` | 472 | `createApp`, `corsOptions`. The 11-step pipeline, plus `buildApiRouter()` (module-private) which draws the public / authenticated boundary and carries the marked insertion point for Phase 3.D. Mounts both halves of the auth module, the four §9 routers, the users/roles pair, `/plans`, `/addons`, `/subscriptions`, the five Phase 3.H billing routers, the four Phase 3.I school-setup routers, Phase 3.J's four people routers, Phase 3.K's `/attendance`, Phase 3.L's `/fees`, Phase 3.M's `/finance`, Phase 3.N's `/exams`, Phase 3.O's `/timetable`, Phase 3.P's `/homework`, Phase 3.Q's `/assignments`, Phase 3.R's `/library` and Phase 3.S's `/documents` — `/api/v1` has exactly **thirty-eight** layers and `verify-app.js` asserts that count as well as the order. **This row read 370 and "sixteen layers" until session 16 re-measured it**: it had gone stale across the 3.H, 3.I and 3.J mounts, which is the §8 trap of a count that changes without the file being the one you edited |
+| `server.js` | 149 | No exports — the process entry point. `assertRuntimeConfig()` → `assertConnection()` → `initCache()` → `listen`, then `SIGTERM`/`SIGINT`/`unhandledRejection`/`uncaughtException` all routed to one guarded `shutdown()` with a 15 s hard timeout |
+
+### `backend/src/modules/` — thirty-three directories, thirty-two of them SRS feature modules
+
+Counted off disk in session 22, not remembered. **`system/` is not an SRS feature module** — it holds the
+four public routes (`/health`, `/health/ready`, `/meta`, `/csrf-token`) that Phase 3.E needed and no SRS
+section asks for as a feature — so the thirty-three directories are thirty-two feature modules plus that
+one. The thirty-two are: `auth`, `platform`, `organizations`, `schools`, `principals`, `users`, `roles`,
+`plans`, `addons`, `subscriptions`, `taxes`, `coupons`, `invoices`, `payments`, `quotations`, `settings`,
+`sessions`, `classes`, `subjects`, `teachers`, `students`, `parents`, `staff`, `attendance`, `fees`,
+`finance`, `exams`, `timetable`, `homework`, `assignments`, `library`, `documents`.
+
+*(This heading read "thirty directories, twenty-nine of them" and listed twenty-nine, having gone stale
+across the §20.3, §20.4 and §20.5 mounts. Re-measured with `ls -d src/modules/*/`. The §4 cross-reference
+it used to make — to a "29 of ~40" figure — is gone, because §4 was rewritten from the same measurement.)*
+
+The four Phase 3.I modules, measured after the session-16 fixes (`find src scripts -name '*.js' | sort |
+xargs wc -l`, which totals **68,201** lines across `src/` and `scripts/`):
+
+| File | Lines | Contents |
+|---|---|---|
+| `settings/settings.routes.js` | 34 | `GET /`, `PATCH /`. No `requirePlatformScope()` — the actor is Principal / School Admin |
+| `settings/settings.controller.js` | 24 | Two handlers |
+| `settings/settings.service.js` | 121 | `show` (find-or-**virtual**, never inserts), `update` (the upsert), `EDITABLE`, `virtualDefaults`, `pickEditable` |
+| `settings/settings.validation.js` | 75 | The ten §14.1 fields plus `theme_config` / `preferences`; `id` and `organization_id` forbidden |
+| `sessions/sessions.routes.js` | 84 | Seven routes; `GET /current` declared before `GET /:id`; no DELETE |
+| `sessions/sessions.controller.js` | 64 | Seven handlers |
+| `sessions/sessions.service.js` | 228 | `list`, `findById`, `current`, `create`, `update`, `activate` (the transactional `is_current` flip, `validate: false`), `close`, and `dateOnly()` — the `DATEONLY` normalisation of §5a defect 20 |
+| `sessions/sessions.validation.js` | 81 | `status`, `is_current`, `activated_at`, `closed_at` all forbidden on create and patch — they are the product of activate/close |
+| `classes/classes.routes.js` | 97 | Nine routes, sections nested under `/:id/sections` |
+| `classes/classes.controller.js` | 94 | Nine handlers |
+| `classes/classes.service.js` | 365 | Classes and sections, `loadSessionInSchool`, and the two delete guards — `CLASS_DEPENDENTS` (8 tables), `SECTION_DEPENDENTS` (6), `blockingDependents()` (§5a defect 18) |
+| `classes/classes.validation.js` | 120 | Class and section schemas |
+| `subjects/subjects.routes.js` | 114 | Eleven routes; `/classes` and `/teachers` declared before `GET /:id` |
+| `subjects/subjects.controller.js` | 111 | Eleven handlers |
+| `subjects/subjects.service.js` | 501 | Subjects, class assignment, teacher assignment; `childScope()` (§5a defect 16), `SUBJECT_DEPENDENTS` (§5a defect 17), the two locking-read transactions and the `kind`-aware `rethrow` (§5a defect 19) |
+| `subjects/subjects.validation.js` | 126 | Subject, assignment and teacher-assignment schemas |
+
+The Phase 3.J module (SRS §15.3):
+
+| File | Lines | Contents |
+|---|---|---|
+| `teachers/teachers.routes.js` | 102 | Six routes. **Mounts `requireModule(MODULES.TEACHERS)` router-level** — the first entitlement guard on a feature route in this project — plus `enforceLimit(LIMITS.TEACHER_LIMIT)` on `POST /`. `GET /dashboard` before `GET /:id`; no DELETE |
+| `teachers/teachers.controller.js` | 53 | Six handlers |
+| `teachers/teachers.service.js` | 411 | `list`, `findById` (school-scoped to match the guard — §5a defect 22), `create`, `update` (with the re-activation ceiling — §5a defect 21), `assignments`, `dashboard` (resolved from `req.user.id`, never a path id), `loadUserInSchool` (one teacher per account — §5a defect 23), `dateOnly`, `syncTeacherHeadcount` |
+| `teachers/teachers.validation.js` | 131 | Create / update / list schemas, every string width taken from the model rather than chosen (§5a defect 24) |
+| `students/students.routes.js` | 109 | Seven routes. `requireModule(MODULES.STUDENTS)` router-level, `enforceLimit(LIMITS.STUDENT_LIMIT)` on `POST /`, and the SRS's own actor split — `students.manage` for admission and profile, `students.progression` for the three lifecycle routes |
+| `students/students.controller.js` | 82 | Seven handlers |
+| `students/students.service.js` | 609 | `list`, `findById`, `create`, `update`, the `TRANSITIONS` table and `applyTransition` (promote / transfer / leave), `resolvePlacement` (§5a defects 27 and 29), `allocateStudentId` / `allocateRollNumber` (§5a defects 26, 28 and 30), `loadUserInSchool`, `dateOnly`, `syncStudentHeadcount` |
+| `parents/parents.routes.js` | 115 | Eight routes. `requireModule(MODULES.PARENT_PORTAL)` router-level; no `enforceLimit`, because §11.2 defines no parent limit and a parent account is not in `SCHOOL_ADMIN_ROLES` |
+| `parents/parents.controller.js` | 73 | Eight handlers |
+| `parents/parents.service.js` | 533 | `create` (account + profile + children in one transaction, then `sendVerificationEmail`), `update`, `listChildren` / `linkChild` / `unlinkChild`, `dashboard`, `childScope` (§5a defect 16's shape, avoided), `loadStudentInSchool`, and a `rethrow` that maps four unique indexes by **prefix** — see its header for why `includes()` was wrong |
+| `staff/staff.routes.js` | 80 | Four routes. `requireModule(MODULES.STAFF)` router-level and `enforceLimit(LIMITS.STAFF_LIMIT)` on `POST /`. No dashboard and no DELETE — §15.4 names neither, unlike §15.3 and §15.2 |
+| `staff/staff.controller.js` | 43 | Four handlers |
+| `staff/staff.service.js` | 282 | `list`, `findById`, `create`, `update` — **with the re-activation ceiling `teachers/` shipped without** (§5a defect 21) — plus `loadUserInSchool`, `dateOnly` and `syncStaffHeadcount` |
+| `students/students.routes.js` (Known Issues #26) | 137 | Gained `POST /:id/photo` — FR-STUDENT-001's capture step and the first caller `UPLOAD_PROFILES.PERSON_PHOTO` has ever had. Eight routes, six of them writes |
+| `students/students.service.js` (Known Issues #26) | 683 | Gained `setPhoto()` (writes `relativeUploadPath(req.file)`, `cleanupUploads` on error) and `present()` (suppresses `photo_path`, adds `has_photo`). `photo_path` is out of `EDITABLE` |
+| `settings/settings.validation.js` (Known Issues #26) | 123 | `logo_path` / `favicon_path` are now `brandingUrl()` — an absolute http(s) URL parsed with `new URL()` and stored **normalised**, so `..` and `%2e%2e` are collapsed and a filesystem path is refused outright |
+| `reports/reports.routes.js` | 128 | Seven GET routes, one per §22 report. **Two permissions each** — `reports.view` plus the owning module's own read — because `reports.view` reaches Librarian and Teacher, whom `finance.view` and `fees.view` do not. The only entitlement-aware router in the application with **no router-level guard**: the Subscription Report answers to a `module: null` permission held by the two scopes that have no single school |
+| `reports/reports.controller.js` | 57 | One handler factory rather than seven copies of the same format branch. The first handlers that can answer with something other than JSON — `ApiResponse` has no non-JSON path, so the Excel branch sets its own Content-Type and sends a Buffer |
+| `reports/reports.service.js` | 493 | Five reports built, **two delegated** — the Attendance Report to `attendanceService.report()` and the Expense Report to `financeService.report()`, so §22 never becomes a second source of truth for a number that already ships. The Exam Report aggregates §19's **stored** columns and recomputes no position. `toExcel()` requires `exceljs` lazily and returns a Buffer, so nothing is written to disk |
+| `reports/reports.validation.js` | 127 | Seven schemas; the two delegated ones **reuse the owning module's own schema** extended with `format`, so the paired endpoints cannot drift apart in what they accept. `pdf` and `print` are refused rather than silently answered with JSON |
+| `notifications/notifications.routes.js` | 118 | Five routes, none of which sends anything — SRS §23's actor is `System`, so dispatch lives in `runNotificationSweep()` and is reachable from no URL. The **first module since §14 with no `requireModule()` and no `enforceLimit()`**, and not by choice: there is no `MODULES.NOTIFICATIONS` and none of §11.2's eight limits counts a notification. `notifications.send` guards the retry alone, because §23 names no human sender |
+| `notifications/notifications.controller.js` | 64 | Returns the unread badge in the page's own `meta`, so a client needs no second request for it. Marking read is deliberately **not** written to §24's trail — thirty students opening one notice is not thirty trail rows — while the retry is, because that is an administrator acting |
+| `notifications/notifications.service.js` | 938 | The engine: eight sweeps covering §23's nine types, four audience resolvers, and `notify()`. Idempotent by §29's five marker columns and, for the four types that have none, by the `(reference_type, reference_id)` index. An `in_app` row is born `sent` because persisting it *is* the delivery; an `email` row is a delivery attempt through `mailService` and is the only thing a retry can repair. **The one module that must not call `tenantWhere()`** — `school_id` is nullable here, so an equality would never match a platform notification; every read is scoped by `user_id` instead |
+| `notifications/notifications.validation.js` | 111 | A forbidden map covering **every one of the table's sixteen columns** — the first module where no column is caller-writable at all. `type` is *lifted out* of it for `read-all` rather than re-declared after it, the spread-order trap having now bitten three times |
+| `ai/index.js` | 94 | The provider seam — a flat driver switch in `mailService.js`'s shape, with each adapter **lazily required** so `AI_DRIVER=mock` never loads `@anthropic-ai/sdk` or `pdf-parse`. Refuses an unknown driver name, which `env.js` does not validate, and refuses an adapter missing a contract method |
+| `ai/mock.js` | 118 | The driver `.env` ships. Never opens the uploaded file and contains no randomness or clock, so the whole workflow runs offline and every string is predictable — which is what lets the suite assert exact values instead of shapes |
+| `ai/anthropic.js` | 173 | Written against the same contract and **never executed** — checklist row 5.2. Its header says so first, so the file cannot be mistaken for a working integration by anyone who did not check which driver is configured |
+| `ai/ai.routes.js` | 188 | Ten routes for §21's nine steps, with three collapses each justified against something that already exists. One route carries `enforceLimit(LIMITS.AI_LIMIT)`; three carry `aiLimiter`, which had existed with no caller. `question_bank.manage` is granted but deliberately mounted nowhere |
+| `ai/ai.controller.js` | 156 | Ten handlers, all returning `presentBank()`. The generation's response carries the usage counter beside the bank, because that is the request that consumed a unit |
+| `ai/ai.service.js` | 613 | The stage machine as a frozen `TRANSITIONS` table, the driver calls, and **the project's first production caller of `usageService.recordUsage`** — after the commit, awaited, unswallowed. Both writes to `questions` go through loaded instances, because a bulk `Model.update()` trips the MCQ validator against a partial row |
+| `ai/ai.validation.js` | 216 | Every column the workflow owns is `forbidden()`, `workflow_stage` most of all: a body that could set it could jump to `approved` and put unreviewed questions in the Question Bank |
+| `documents/documents.routes.js` | 89 | Three routes, and **the only module router in the application that mounts no `requireModule()`** — it mounts `requireActiveSubscription()` instead, because `DOCUMENT_TYPE_MODULE` maps the seven document types onto four different subscribable modules and the key is not known until the body names a type |
+| `documents/documents.controller.js` | 49 | Three handlers, all returning `service.present()`. The activity metadata records *which* document was generated and never the assembled payload, which holds a date of birth and a guardian's name |
+| `documents/documents.service.js` | 544 | `assertModuleForType()` does the per-request module check the router cannot, in the same state-then-module order `buildModuleGuard` uses. Seven payload builders that read the underlying records — a student's class and section by **name**, a teacher's employment record, the receipt number and amount really paid, §19's stored result columns. `selfScope()` returns three audiences, because a teacher is an owner here as well as a reader |
+| `documents/documents.validation.js` | 107 | One write schema. `owner_type` is derived from the document type and refused from the body; every file column and `generation_payload` are refused; `exam_id` is required for a result card and forbidden for the other six |
+| `library/library.routes.js` | 146 | Nine routes across two collections. `requireModule(MODULES.LIBRARY)` router-level; no `enforceLimit`, no upload. `library.manage` guards FR-LIB-001's two writes, `library.issue` FR-LIB-002's three. Every path is prefixed by a literal collection, so unlike §20.3 nothing depends on declaration order |
+| `library/library.controller.js` | 131 | Nine handlers, each returning `presentBook()` or `presentTransaction()` so `cover_path` cannot leak and a loan always carries its derived overdue fields |
+| `library/library.service.js` | 618 | The catalogue half and the loan half. `issue()`, `returnLoan()` and the quantity branch of `updateBook()` each run in a transaction with a **locking read** on the book row — the first shared counter in the project. The fine is `fine_per_day` × whole days late through `utils/money.js`. Overdue is derived, never stored |
+| `library/library.validation.js` | 283 | Two schema families. `available_quantity` and `cover_path` are `forbidden()` on both book routes; the issue schema enforces borrower **exclusivity**, which the model validator does not; `ownedExceptReturnDate` exists because spreading the shared owned map last silently forbade the one column the return route writes |
+| `assignments/assignments.routes.js` | 150 | Eight routes, and the only router in the application whose **declaration order** is load-bearing: the three literal `/submissions` paths are declared above `/:id`, which would otherwise swallow them. `requireModule(MODULES.ASSIGNMENTS)` router-level; no `enforceLimit`. Three permissions for FR-ASG-001's three steps — `manage` to create, `submit` to submit, `review` to review — and the upload sits on the submit alone |
+| `assignments/assignments.controller.js` | 114 | Eight handlers, all returning `service.present()`. `submit` answers **201** on a first submission and **200** when a returned one is replaced, because the unique index permits a single row per student per assignment and a replacement is not a creation |
+| `assignments/assignments.service.js` | 708 | Both halves of the single-table design: `list`/`findById`/`create`/`update` over `record_type = 'assignment'`, `listSubmissions`/`findSubmissionById`/`submit`/`review` over `'submission'`. `selfScope()` returns **two** sets — classes for assignments, students for submissions — because narrowing a submission by class would show one child every classmate's answer. `submit` runs in a transaction with a locking read on the existing row |
+| `assignments/assignments.validation.js` | 213 | Four write schemas, one per step plus the edit. The three discriminator columns (`record_type`, `parent_assignment_id`, `student_id`) are `forbidden()` everywhere, so no body can mint a submission through the create route. `ownedExceptReview` exists because spreading the shared `owned` map last silently forbade the two columns the review route is for |
+| `homework/homework.routes.js` | 100 | Four routes. `requireModule(MODULES.HOMEWORK)` router-level; no `enforceLimit`. The create mounts `uploadSingle(UPLOAD_PROFILES.HOMEWORK)` — the first caller the profile has ever had — with `validate` after it so the multipart text fields are visible. No DELETE, and PATCH deliberately takes no replacement file |
+| `homework/homework.controller.js` | 46 | Four handlers, every one returning `service.present()` so the stored path cannot leak through a response |
+| `homework/homework.service.js` | 349 | List/find/create/update, `selfScopeClasses()` (the student-and-parent narrowing the fixed catalogue makes necessary), `present()`, and `assertReferences()` including the changed-class/kept-section check §5a session 19 found on `PATCH /exams/:id` |
+| `homework/homework.validation.js` | 130 | Three schemas. `attachment_path` and `attachment_name` refused with a reason rather than stripped; the due window is ordered, so a transposed one is refused instead of answered with an empty list |
+| `timetable/timetable.routes.js` | 127 | Six routes, both named views declared before `/:id` — `/class` would otherwise match as an entry whose id is the word "class". `requireModule(MODULES.TIMETABLE)` router-level; no `enforceLimit`; no DELETE |
+| `timetable/timetable.controller.js` | 58 | Six handlers. The two named views return `{ timetable: { class\|teacher, entries } }`, so a renderer knows what the week belongs to |
+| `timetable/timetable.service.js` | 455 | `assertNoConflict()` (the three FR-TT-002 queries as one, run inside the write transaction), the class-wide NULL-section guard the unique index cannot carry, `normaliseTime()`/`normaliseRoom()`, `classView()`/`teacherView()`, and CRUD. `WEEK_ORDER` relies on the `day_of_week` ENUM being declared Monday-first |
+| `timetable/timetable.validation.js` | 167 | Nine schemas. `timeField` bounds the hour at two digits and 23 — the column would accept `24:00`, and the model compares times as strings. The two named views take no page/limit |
+| `exams/exams.routes.js` | 250 | Nineteen routes, literals before the `/:id` family because `GET /marks` and `GET /:id` both match `/marks`. `requireModule(MODULES.EXAMS)` router-level; no `enforceLimit`. No DELETE — every table cascades from `exams`, verified against the live schema |
+| `exams/exams.controller.js` | 208 | Nineteen handlers. The marks batch is one activity row; the per-row trail is the `entered_by`/`submitted_by` the row already carries |
+| `exams/exams.service.js` | 1,518 | Grade-scale CRUD with an overlap guard, exam and paper CRUD, bulk marks upsert, `submitMarks()` behind a locking read, `recalculate()` (the FR-EXAM-003 calculation, transaction-required, re-derived never incremented), `rankResults()`, `generateResults()`, `publishResults()`, `resultCard()` and `myResults()`. `childScope()` throughout — `exam_subjects` has no `organization_id`; `gradeScope()` for the opposite shape, a nullable `school_id` |
+| `exams/exams.validation.js` | 371 | Seventeen schemas. `weightage` and `result_card_path` refused with a reason rather than stripped; `examSubjectParam` declares **both** ids, because params validate with `stripUnknown` and `idParam` alone silently deleted the second |
+| `finance/finance.routes.js` | 162 | Nine routes. `requireModule(MODULES.FINANCE)` router-level; no `enforceLimit`. No DELETE — neither table is `paranoid`, so it would hard-delete a financial record. PATCH is present and the header argues for it explicitly, because §18's only write verb is "records" |
+| `finance/finance.controller.js` | 96 | Nine handlers. The report handler is the one read that answers both FR-FIN-002 and FR-FIN-003 |
+| `finance/finance.service.js` | 524 | One `LEDGERS` description drives the CRUD for both tables so it is written once, plus `report()`, `sumByCategory()` (`findAll` + `fn('SUM')` + `group`, never `Model.sum` with a group) and `foldBuckets()`, which the suite tests directly. `assertReferencesInSchool()` checks all four optional FKs in-school on **both** create and update |
+| `finance/finance.validation.js` | 266 | Ten schemas. Money bounded at `DECIMAL(14,2)` **including its scale**; `attachment_path` and `recorded_by` refused with a reason; `orderedWindow()` refuses a transposed range while still allowing either bound alone |
+| `fees/fees.routes.js` | 140 | Eight routes. `requireModule(MODULES.FEES)` router-level; no `enforceLimit` (§11.2 defines nothing fee-shaped). No DELETE on any of the three tables — a receipt already handed to a parent is not deletable, and a `student_fees` delete cascades into its payments |
+| `fees/fees.controller.js` | 103 | Eight handlers. `pay()` returns the receipt **and** the balance it left behind, because FR-FEE-002 asks for both |
+| `fees/fees.service.js` | 616 | Structure CRUD, `assign` (bulk, with the `alreadyAssigned()` double-billing guard), `listLedger`, `pay` (`withRetry` around a transaction holding a `LOCK.UPDATE` read), `applyPayment` (recompute from SUM), `listPayments`, plus the two pure helpers the suite tests directly — `netOf` and `discountFor` |
+| `fees/fees.validation.js` | 219 | Nine schemas. Every money field bounded at `DECIMAL(14,2)`; `net_amount`, `paid_amount`, `pending_amount` and `status` refused on assignment and `receipt_number` on payment, each with a message naming what does write it |
+| `attendance/attendance.routes.js` | 99 | Five routes. `requireModule(MODULES.ATTENDANCE)` router-level; no `enforceLimit` (§11.2 defines nothing attendance-shaped, and attendance rows are not a headcount). No PATCH and no DELETE — re-posting a register corrects it |
+| `attendance/attendance.controller.js` | 54 | Five handlers. The batch is described once for the activity trail; see the service header for why there is no per-row audit |
+| `attendance/attendance.service.js` | 423 | `markStudents` / `markTeachers` (bulk upsert on the two NOT NULL unique indexes), `listStudents` / `listTeachers`, `report` (the FR-ATT-002 arithmetic), `periodRange` (daily / monthly / yearly, built from the date **string** so it cannot drift west of UTC), `resolveRegister`, `assertStudentsInRegister`, `assertTeachersInSchool`, `assertNoDuplicates` |
+| `attendance/attendance.validation.js` | 137 | Mark / list / report schemas. The four §16 statuses come from `ATTENDANCE_STATUS_LIST`, and `period` is exactly the three words §16 names |
+| `staff/staff.validation.js` | 128 | Create / update / list schemas. The four §15.4 categories come from `STAFF_CATEGORIES`, and every string width from the model |
+| `parents/parents.validation.js` | 168 | Create / update / link / list schemas. `user_id` is `forbidden()` — this endpoint creates the account — and so are the account's `email`, `username` and `password` on patch |
+| `students/students.validation.js` | 186 | Create / update / promote / transfer / leave / list schemas. `status` and the six lifecycle columns are `forbidden()` on both bodies — the §11.2 ceiling would otherwise sit behind `students.manage` rather than `students.progression` |
+
+| File | Lines | Contents |
+|---|---|---|
+| `system/system.controller.js` | 91 | `health` (touches nothing), `ready` (503 when the database is down, logs rather than throws), `meta` |
+| `system/system.routes.js` | 38 | `GET /health`, `GET /health/ready`, `GET /meta`, `GET /csrf-token` — public |
+| `auth/auth.routes.js` | 136 | Exports **two** routers, `{ publicRoutes, protectedRoutes }`, so `app.js` can mount each on its own side of the authentication boundary. The header explains why, and why `/auth/change-password` and `/auth/logout` must be below it |
+| `auth/auth.controller.js` | 350 | The nine handlers. Owns the HTTP concerns the service does not: setting and clearing the refresh cookie, rotating the CSRF secret on sign-in and sign-out, and describing each request for the activity trail |
+| `auth/auth.service.js` | 823 | `login`, `refresh`, `logout`, `forgotPassword`, `resetPassword`, `changePassword`, `sendVerificationEmail`, `resendVerification`, `verifyEmail`, `profile`, plus `publicUser`, `activityActor`, `findByIdentifier`, `PUBLIC_USER_FIELDS`, `PASSWORD_AUDIT_FIELDS`. No HTTP; `req` appears only as audit context |
+| `auth/auth.validation.js` | 165 | `schemas` (five request schemas) plus `newPassword`, `singleUseToken`, `email` and `PASSWORD_MAX_BYTES` — exported so user-creating modules reuse the same rules instead of writing a second password policy |
+| `platform/platform.routes.js` | 36 | `GET /dashboard`. The header records why this is the one §9 module with no `*.validation.js` (nothing to validate — the reporting period comes from the clock, not the caller) and no `requirePlatformScope()` (`organization_admin` holds `platform.dashboard.view` in the seeded catalogue) |
+| `platform/platform.controller.js` | 16 | One handler |
+| `platform/platform.service.js` | 201 | `dashboard(tenant)` — §9.1's eleven metrics plus `archivedSchools`, `pendingPaymentsAmount`, `period` and `scope`, every aggregate scoped by `tenantWhere()` so the same endpoint answers platform-wide or per-organization |
+| `organizations/organizations.routes.js` | 76 | `GET /`, `POST /`, `GET /:id`, `PATCH /:id` |
+| `organizations/organizations.controller.js` | 53 | Four handlers |
+| `organizations/organizations.service.js` | 183 | `list`, `create`, `findById`, `update`, plus `scopeFor` (403 `TENANT_SCOPE_REQUIRED`) and `rethrow` (409 `ORGANIZATION_CODE_TAKEN`) |
+| `organizations/organizations.validation.js` | 132 | `create`, `update`, `list`, `idParam`, `CODE_PATTERN`. Header records the three decisions the source does not specify: why `code` is upper-cased, why `website` needs a scheme, and why `status` is editable but there is no organization DELETE |
+| `schools/schools.routes.js` | 165 | The ten routes FR-SADMIN-002…008 need |
+| `schools/schools.controller.js` | 146 | Ten handlers |
+| `schools/schools.service.js` | 512 | `list`, `create`, `findById`, `update`, `setStatus` (the `TRANSITIONS` table driving activate/suspend/archive, each awaiting `tenantService.invalidateSchool`), `assignPrincipal` (three 422 refusals keyed on `user_id`), `remove` (soft delete), `usage`, plus `requireOrganization` |
+| `schools/schools.validation.js` | 129 | `create`, `update`, `activate`, `suspend`, `archive`, `assignPrincipal`, `list`, `idParam`. `status` is deliberately absent from `update` — see §2e |
+| `principals/principals.routes.js` | 68 | `GET /`, `POST /`, `GET /:id`. The header records why there is no PATCH or DELETE here |
+| `principals/principals.controller.js` | 53 | Three handlers |
+| `principals/principals.service.js` | 281 | `list` (narrowed by `role_id`), `create` (derives `organization_id` from the school, always sets `must_change_password`, sends the verification email without letting a mail failure fail the request), `findById`, `present` |
+| `principals/principals.validation.js` | 98 | `create`, `list`, `idParam`. Reuses `email` and `newPassword` from `auth.validation.js` rather than restating the password policy |
+| `users/users.routes.js` | 109 | `GET /`, `GET /permissions`, `GET /:id`, `PATCH /:id`, `PUT /:id/permissions`. `/permissions` is declared **before** `/:id` or the literal would be swallowed as an id. No `requirePlatformScope()` anywhere — the header records why, and why there is no POST or DELETE |
+| `users/users.controller.js` | 88 | Five handlers |
+| `users/users.service.js` | 498 | `list` (`?role=` by §5 slug, `?q=` across name/email/username, a widening `school_id`/`organization_id` refused), `findById`, `update` (six editable columns; an email change re-issues verification and reports `verificationEmailSent` as `null`/`false`/`true`), `setPermissions` (the grant ceiling, one-sided), `present`, `presentWithPermissions`, `permissionCatalogue` |
+| `users/users.validation.js` | 164 | `update`, `list`, `setPermissions`, `idParam`, plus `USERNAME_PATTERN` and `PERMISSION_KEY_PATTERN` — exported because `users` owns the column, so `principals.validation` imports the regex rather than keeping a second copy. The header records all six fields deliberately not accepted and why `role_id` heads that list |
+| `roles/roles.routes.js` | 86 | `GET /`, `GET /:id`, `PATCH /:id`, `PUT /:id/permissions`. Both writes carry `requirePlatformScope()`; neither read does. No POST, no DELETE — §5 fixes the eleven |
+| `roles/roles.controller.js` | 52 | Four handlers |
+| `roles/roles.service.js` | 225 | `list` (unpaginated by design; `userCount` tenant-scoped, `permissionCount` not), `findById`, `findByIdWithPermissions` (read through the cache so the screen shows what the guard enforces), `update` (labels only), `setPermissions` (whole-set replacement in one transaction, then `invalidateRole`), `present` |
+| `plans/plans.routes.js` | 202 | Thirteen routes. `GET /catalogue` is declared **before** `GET /:id` or the literal would be matched as an id. Every write carries `requirePlatformScope()`; no read does. No DELETE — the header records why FR-SUB-005 Archive is the removal operation |
+| `plans/plans.controller.js` | 231 | Thirteen thin handlers plus `present()` (the plan with its derived `readiness` block) and `transitionTo()`, curried over the three statuses so the activity row, message and metadata cannot drift between activate, deactivate and archive |
+| `plans/plans.service.js` | 828 | `catalogue` (the §10.3/§10.4/§11 vocabulary projected from `config/constants.js`), `list`, `findById`, `create` (forces `inactive`), `update`, `setStatus` (the `TRANSITIONS` table; refuses activation with `PLAN_NOT_PRICEABLE` when no active price exists), `duplicate` (one transaction, all four collections), `setPrices` (deletes the unreferenced, retires the referenced), `setModules`/`setFeatures`/`setLimits` via a shared `replaceCollection`, plus `readiness`, `scopeFor`, `pricesInUse`. Every write awaits `entitlementService.invalidatePlan` |
+| `plans/plans.validation.js` | 485 | Eleven schemas. `status`, `archived_at` and `duplicated_from_id` are deliberately unaccepted anywhere; `plan_limits.unit` is derived, not taken. `setPrices` rejects a repeated `(cycle, days, model, tier_min, tier_max)` tuple and more than one `is_default`; `setLimits` demands all eight §11.2 keys and names the missing one. The header records why the module `settings` map must be `Joi.object().pattern(...)` — `stripUnknown: true` overrides `.unknown(true)` |
+| `roles/roles.validation.js` | 75 | `update`, `setPermissions`, `idParam`. `permissions: []` is legal and has to be — a replacement API that refuses the empty case cannot revoke the last permission |
+| `addons/addons.routes.js` | 124 | Six routes: `GET /`, `GET /:id`, `PATCH /:id`, `POST /:id/activate`, `POST /:id/deactivate`, `PUT /:id/prices`. All four writes carry `requirePlatformScope()` *and* `addons.manage`; neither read does. No POST at the collection and no DELETE — §11.3 fixes the seven rows, and `subscription_addons.addon_id` is `RESTRICT` besides |
+| `addons/addons.controller.js` | 141 | Six thin handlers plus `present()` (`toJSON()` + the derived `readiness` block) and the shared activate/deactivate path, so the reason, message and activity row cannot drift between the two |
+| `addons/addons.service.js` | 446 | `list`, `findById`, `update`, `setActive`, `setPrices` (deletes the unreferenced, retires the referenced — the same rule as `plans.setPrices`), plus `readiness`, `scopeFor`, `detailInclude`, `unitFor`, `pricesInUse`, `assertPlansExist`. **No `create` and no `destroy`, deliberately.** The only write module in the subscription area that calls no `entitlementService.invalidate*`; the header explains that `resolveSchool()` never joins `addons` because `subscription_addons` copies the effect at purchase, so there is no cached value to stale |
+| `addons/addons.validation.js` | 247 | Six schemas. `key`, `name`, `effect_type`, `effect_target`, `unit` and `is_active` are each **refused with a reason** via `forbiddenField()` rather than stripped — the header records why this is the opposite of the `plans` module's choice to strip `status`. `unit` is re-derived from `LIMIT_UNITS`; `units_per_quantity` is capped at `MAX_SAFE_INTEGER` because the column is BIGINT and a JSON number stops being exact above it |
+| `subscriptions/subscriptions.routes.js` | 304 | Nineteen routes and **three guard shapes**, one per SRS actor line: `requirePlatformScope()` + a permission where the source names the Super Admin alone (FR-SUB-010/011/012), `requireAnyPermission()` where it names both (FR-SUB-013/014/015, FR-SUB-009), a permission alone for the reads. `GET /catalogue` is declared **before** `GET /:id`. No DELETE and no `POST /run-renewals` — the header records both silences. Six `subscriptions.*` keys, none invented |
+| `subscriptions/subscriptions.controller.js` | 482 | Nineteen thin handlers plus `present()` and the shared transition path curried over the six administrative edges, so the activity row, message and metadata cannot drift between activate, suspend, reactivate, pause, resume and cancel. Owns the money and `change` blocks each lifecycle response carries |
+| `subscriptions/subscriptions.service.js` | 2,608 | `catalogue`, `list`, `findById`, `history`, `create` (forces `pending`; refuses a second usable subscription per school), `update` (§12.1 trial + §12.2 grace), the `TRANSITIONS` table behind the six edges, `upgrade` (§12.3 proration), `downgrade` (§12.4, immediate or deferred), `renew` (§12.5, one function for both manual and automatic), `purchaseAddon` / `cancelAddon`, `createOverride` / `revokeOverride` (§33), and `runLifecycleSweep()` — **five passes in a fixed order**, exported with no route. Every write goes through `afterWrite()`, which calls **both** `entitlementService.invalidateSchool` and `tenantService.invalidateSchool`, and `syncSchoolState()`, which owns `schools.subscription_state` |
+| `subscriptions/subscriptions.validation.js` | 596 | Sixteen schemas (fifteen its own plus the shared `idParam`). **Twenty-seven derived columns are refused with a reason** via `forbiddenField()` rather than stripped — `state`, `cycle_amount`, `renewal_count`, all five `scheduled_*`, `credit_balance` and the rest — each message naming the route or requirement that does write it, plus `plan_id` / `plan_price_id` refused on `update` because changing a plan is what upgrade and downgrade are for. `custom_days` is required for the `custom_days` cycle and refused otherwise; `downgrade` is the only body with a **required** `when`, because §12.4 offers Immediate and Next Billing Cycle and an immediate downgrade can drop a limit below current usage, so the choice is not defaulted |
+
+### `backend/src/services/`
+| File | Lines | Exports |
+|---|---|---|
+| `permissionService.js` | 222 | `getRolePermissions`, `getEffectivePermissions`, `hasPermission`, `hasAnyPermission`, `hasAllPermissions`, `invalidateRole`, `invalidateAllRoles`, `assertKnownPermissionKeys`, `findPermissionsByKeys` |
+| `tenantService.js` | 117 | `getSchool`, `getOrganization`, `schoolBelongsToOrganization`, `invalidateSchool`, `invalidateOrganization`, `invalidateAll` |
+| `mailService.js` | 163 | `send`, `close`. Two drivers — `log` (default; renders the message into the application log, so a reset link appears in `storage/logs`) and `smtp` (nodemailer, required lazily so a deployment that never sends mail does not load it). `send()` resolves `{sent, driver, error}` rather than rejecting; an incomplete message throws, because that is a caller defect, and an unknown driver is reported rather than silently treated as `log` |
+| `entitlementService.js` | 727 | `resolve`, `getSnapshot`, `isSubscriptionUsable`, `hasModule`, `hasFeature`, `getFeatureValue`, `getLimit`, `assertKnownModuleKeys`, `assertKnownLimitKeys`, `assertValidFeatureKeys`, `invalidateSchool`, `invalidatePlan`, `invalidateAll`, `SOURCES` |
+| `usageService.js` | 611 | `getUsage`, `getUsageSummary`, `checkLimit`, `assertWithinLimit`, `checkPerRequestLimit`, `recordUsage`, `syncHeadcount`, `syncAllHeadcounts`, `countHeadcount`, `measurementFor`, `periodFor`, `MEASUREMENT`, `PER_REQUEST_LIMITS`, `HEADCOUNT_SOURCES` |
+
+### `backend/scripts/`
+| File | Lines | Purpose |
+|---|---|---|
+| `check-models.js` | 188 | Schema-integrity check, runs without a database. Loads the group factories on a throwaway unconnected instance to snapshot declared columns, then loads `src/models/index.js` and diffs. Catches extra/missing/duplicate tables, columns invented by a mistyped `foreignKey`, columns lost, models declared-but-unregistered, association targets that are not registered, association keys that do not exist on the owning model, and `references` pointing at non-existent tables |
+| `verify-seed.js` | 240 | 22 behavioural checks on the seeders, including transactional rollback on a simulated failure |
+| `verify-error-handler.js` | 229 | 52 checks with a mock `res`. Empirically pins the Sequelize/JWT error-class inheritance order the mapping depends on, and asserts that a `DatabaseError` never leaks SQL, a bcrypt hash, a column name, a table name, an index name, a port, or a credential embedded in a connection URL |
+| `verify-validate.js` | 198 | 23 checks. Mass-assignment stripping, all-errors-at-once with per-field `location`, coercion and defaults, over-`MAX_LIMIT` rejection, SQL-shaped `sortBy` rejection, `listQuery` composition, `dateRange` ordering, headers never replaced, no half-validated request, and both boot-time wiring errors. Uses an order-insensitive stringifier so merged key order cannot cause a false failure |
+| `verify-auth-chain.js` | 701 | 84 checks over real HTTP against a real Express app on an ephemeral port, with real signed JWTs and real database fixtures (3 organizations, 5 schools, 15 users across 8 roles). Proves the SRS §8 critical scenario in 8 request shapes. Creates and removes its own fixtures |
+| `verify-entitlement.js` | 1368 | 261 checks. Nine schools, no two alike — plan-only, plan+add-ons, plan+overrides, override-over-add-on, expired, grace period, no subscription, premium, and one in a second organization. Covers the §11/§12 precedence chain, all four usage measurement kinds, overage pricing, cache invalidation in both directions, 7 boot-time argument checks, and 55 HTTP assertions on the guards. Reuses the 7 seeded add-ons by key rather than creating them |
+| `verify-middlewares.js` | 1535 | 262 checks across upload (109), rate limiting (38), CSRF (25) and activity logging (90) — counted per section from the run, summing to the 262 total. Pins `MAX_UPLOAD_MB=2`, `UPLOAD_DIR=storage/uploads/verify-mw` and `CSRF_ENABLED=true` **before any require**, because dotenv does not overwrite an already-set variable. Four plans differing only in `file_upload_limit` (Fixed 1, Fixed 5, Unlimited, absent) across 8 schools in 2 organizations. Writes real files to a temp upload tree and removes it. A `raw` body option exists for one case only: `{"__proto__": …}` cannot be expressed as an object literal, so it has to be sent as a string. Polls for activity rows (the insert is deliberately not awaited) and waits out a grace period before asserting a row's *absence*. Found §5a defects 3 and 4 |
+| `verify-app.js` | 975 | 202 checks on the app wiring across 17 sections. Asserts the app-level mount order layer by layer against a literal expected list, asserts that `/api/v1` has exactly **forty-one** layers, then identifies the authentication-chain layers by **function identity** (`layer.handle === authenticate`) rather than by name — because `asyncHandler`'s wrapper erases both the name and the arity of what it wraps, and because a name check is exactly what let §5a defect 5 through. Pins `JSON_BODY_LIMIT=1kb`, `LOG_LEVEL=info`, a two-entry `CORS_ORIGINS` and `CSRF_ENABLED=true` before any require. Spawns three real `src/server.js` child processes: one that binds and serves, one that emits `SIGTERM` on itself to exercise the shutdown ordering, and one with a nonexistent `DB_NAME` to prove it refuses to bind. Creates no fixtures and writes no rows — `activity_logs` and `audit_logs` were both confirmed still 0 afterwards. The one authenticated request reuses the seeded Super Admin read-only, whose `must_change_password` flag makes it the live test of the forced-change gate. **Its total moves whenever a router is mounted, usually with no edit to the script** — 116 → 118 → 123 → 127 → 129 → 131 → 133 → 143 → 151 → 154 → 157 → 160 → 163 → 166 → 169 → 172 → 175 → 178 → 181 → 185 → 188 → 191 → 194 → 198 → 202; see §8 |
+| `verify-auth-module.js` | 1399 | 231 checks on SRS §7 in four parts: the five Joi schemas (32), route wiring by function identity and the refresh cookie's attributes (22), `mailService`'s two drivers (5), and 170 assertions over real HTTP against the nine endpoints on an ephemeral port, plus 2 fixture checks. Creates five users (`@verify-auth.invalid`) with real bcrypt hashes, baselines both log tables before writing, and removes everything in a `finally`. Proves that login and forgot-password cannot be used to discover whether an account exists — comparing the two refusal bodies **byte-for-byte with the request id stripped** — that a rotated refresh token ends the whole session, that a password change ends every other session, that no response carries a hash or a reset token, and that the seeded Super Admin's forced-change flag really does gate everything but two endpoints. Found §5a defects 6, 7 and 8 |
+| `verify-platform-modules.js` | 1663 | 313 checks on SRS §9 in three parts: the three modules' Joi schemas directly, the four route tables by function identity, and the rest over real HTTP. Creates two organizations, three schools and three Principals **through the endpoints themselves** (a fixture built with `User.create` would not exercise FR-SADMIN-009), plus three users under `@verify-platform.local`. Proves FR-SADMIN-005 with a live token — suspending a school refuses the Principal's *existing* token, which only holds if `setStatus` awaited `tenantService.invalidateSchool` — and pins each of the eighteen routes' permission key from its own 403 body, using a `super_admin` fixture with all eleven §9 keys in `denied_permissions`, since `requirePermission` is `asyncHandler`-wrapped and identifiable by neither name nor identity. Also asserts the guard *order* (a caller lacking both scope and key gets `PLATFORM_SCOPE_REQUIRED`, not `INSUFFICIENT_PERMISSION`). Teardown uses `force: true` on schools so the soft-deleted row from the DELETE test also goes; the database was confirmed back at 0 organizations / 0 schools / 1 user afterwards. Also carries the only assertions on `utils/pagination.js` — 13 checks on page arithmetic, offset, `sortOrder`, an out-of-range page, an over-`MAX_LIMIT` refusal, and the two §24 ORDER BY cases. Found §5a defect 9 |
+| `verify-users-roles.js` | 1792 | 236 checks on SRS §33 "Users" and §29 roles in four parts: the two Joi schema sets directly (31), the two route tables by name and by function identity (29), 162 assertions over real HTTP against the nine endpoints, and 9 against `users.service.list()` **called directly** — because `enforceTenant` refuses a cross-tenant `?school_id=` at layer 3 before the service's own widening refusal can run, and a test that only went over HTTP would not notice layer 4 disappearing. Five users under `@verify-users.local` across two organizations and two schools. Pins `CACHE_TTL=600` deliberately: the two invalidation assertions are meaningful only if a revocation bites *before* the TTL expires, and a short TTL would let them pass for the wrong reason. Proves that a role edit is honoured on the next request with an unchanged token (`permissionService.invalidateRole`), that a per-user override is honoured with **no** cache call at all, that `users.manage` is not a route to privilege escalation (`PERMISSION_GRANT_EXCEEDS_OWN`, refused for granting and allowed for denying), and that a cross-tenant read writes an `access_denied` activity row without the route declaring one. **Mutates two seeded rows** — the `principal` role's grants and the `librarian` role's labels — and restores both unconditionally in a `finally`, asserting the restore rather than assuming it. Found no defect in shipped code; found one of its own assertions passing for the wrong reason (§5a session 9) |
+| `verify-plans.js` | 1385 | 175 checks on SRS §10 / §11 in four parts: the eleven Joi schemas directly (41), the route table by name (9), `plans.service.scopeFor()` and the copy-field lists called directly (7), and 118 assertions over real HTTP against the thirteen endpoints. Two users under `@verify-plans.local`, one organization, one school. Pins `CACHE_TTL=600` for the same reason `verify-users-roles.js` does: the invalidation assertions read a school's entitlement snapshot, change the plan and read it again, and a short TTL would let them pass whether or not `invalidatePlan()` was ever called. Proves that a plan is born inactive whatever the body says, that activating a priceless plan is refused, that a price row a subscription points at is retired rather than deleted (all three referencing columns are `SET NULL`, so a delete would silently blank a live pointer), that a duplicate copies all four collections in one transaction and rolls back whole on a taken code, that a school already on a plan keeps its entitlement when the plan is archived, and that the five `plans.*` keys are five distinct keys — denying `plans.pricing.manage` on the Super Admin fixture breaks `PUT /:id/prices` and leaves `PUT /:id/limits` working, which holds only because `buildPermissionGuard` has no super-admin bypass. **Mutates one seeded row** — the `principal` role gains `plans.view` — restored in the `finally` with the restore asserted. Hard-deletes its plans with `force: true`, since `subscription_plans` is paranoid. Found no defect in shipped code |
+| `verify-addons.js` | 1348 | 169 checks on SRS §11.3 / FR-SUB-009 in four parts: the six Joi schemas directly, the route table by name, `addons.service` called directly, then real HTTP against the six endpoints. Two users under `@verify-addons.local`, one organization, one school, one plan built through `/plans`, and one subscription with a purchased add-on. Pins `CACHE_TTL=600` — here to prove a **negative**: that a catalogue edit does *not* move an already-resolved ceiling, which a short TTL would let pass regardless. Proves that a plan granting `student_limit: 100` plus a 500-unit purchase resolves to 600, that changing the block size to 1,000 leaves that 600 untouched because `subscription_addons` holds the copy, and that deactivating the add-on still leaves it at 600 because resolution reads `subscription_addons.status`, not `addons.is_active`. Also proves the four SRS-fixed columns are refused with a reason rather than stripped, that a deactivated add-on is 404 to a school and 200 to the platform admin, and that `?is_active=false` from a school returns `[]` **and** a total of 0. **Mutates the seeded catalogue itself** — the only suite that does — plus `addons.view` on the `principal` role; both restored in the `finally`, the add-on restore asserted column by column against a baseline captured before the first write. **Had never passed before session 12**: it aborted on a `TypeError` at check 76. Found no defect in shipped code; four defects and one false positive in itself — §5a sessions 11–12 |
+| `verify-subscriptions.js` | 3,040 | 208 checks on SRS §12 / §30 / §33 in five parts: the sixteen Joi schemas directly, the nineteen-route table by name, `subscriptions.service` and the state/event constants offline, then real HTTP against all nineteen endpoints, then `runLifecycleSweep()` called directly against five hand-built subscriptions. Four plans built through `/plans` (`VSB-BASIC`, `VSB-PRO`, `VSB-SAME` and `VSB-DRAFT`, the last never activated so `PLAN_NOT_AVAILABLE` is asserted against a real inactive plan), one organization, six schools, four users under `@verify-subs.local`. Pins `CACHE_TTL=600` so a missing `invalidateSchool()` cannot pass by TTL expiry, and uses `custom_days`/30 for every fixture cycle rather than `monthly` — `monthly` yields 28–31 days depending on the date, so the §12.3 proration expectations would have to be re-derived from the function under test instead of stated as constants. Proves the §12.3 arithmetic number by number (`periodDays 30`, `elapsedDays 15`, `unusedCredit 15`, `amountDue 15`, `creditBalance 0`) **and that the period boundary does not move**; that a §12.4 deferred downgrade writes only the `scheduled_*` group and leaves the school resolving to Pro at 650 students; that the next renewal applies it, nulls all five `scheduled_*`, and starts the new period exactly at the old period's end; that an override replaces rather than duplicates (200, same id, one row per target); that a suspended school is `isUsable: false` in the entitlement snapshot **and** `suspended` in `tenantService`'s cache; and that the sweep's renewal pass runs before its past-due pass, asserted by checking the renewed subscription is **not** past due. `governingStateFor()` and the snapshot are compared four times. **Mutates `addons.units_per_quantity` and creates `addon_prices` rows** — restored in the `finally`, add-on columns asserted back per column and the price count back to baseline, along with 0 remaining fixture plans, schools, organizations, users and subscriptions. Found no defect in shipped code; three defects in itself, one of which manufactured seven false entitlement defects — §5a session 13 |
+
+| `verify-billing.js` | 1202 | 216 checks on SRS §13 / §33 in five parts: billing math, the five route tables, the request schemas, the scheduled sweeps, and Part 5's HTTP money path — issue an invoice, apply a coupon, take a school payment, approve it, refund it. **This row did not exist until session 16**: session 14 wrote the suite and session 15 measured it into §1's table, but neither added it to this inventory, so §6 listed thirteen scripts while §1 listed fourteen. Session 14 left it pure-verified only (MySQL was down); session 15 ran Part 5 against the live database |
+| `verify-school-setup.js` | 1214 | 168 checks on SRS §14 in three parts: the request schemas with no database, the four declared route tables (including the assertion that `sessions` has **no** DELETE and that no write carries `requirePlatformScope()`), and real HTTP against **all twenty-nine** endpoints. Creates its own organization, two schools, four users and a teacher; **reads the seeded roles but never writes to `roles` or `role_permissions`**, so unlike four of its siblings it needs no restore. Asserts the audit trail directly — all seven tables in `audit_logs`, all three events, `changed_fields` read as a **model instance** rather than `raw: true` so the JSON column is a real array and not a substring match — and asserts the organization-scope branch against the service, because no seeded role can reach it over HTTP. Arrived unrecorded at 111 checks; session 16 audited the code it covers, found four defects (§5a 16–19), and took it to 154 |
+
+| `verify-teachers.js` | 905 | 85 checks on SRS §15.3 in three parts: the request schemas (21, including the column-width bounds of §5a defect 24), the route table plus the router-level guard (9), and 52 over real HTTP. **The fixture shape is the point**: one organization, four schools, and two plans differing in exactly one thing — whether the Teachers module is enabled — so a refusal can only be about the module under test. School A is on the enabled plan at `teacher_limit: 2`, B on the disabled plan, C has **no subscription**, D is on the same plan as A. B and C prove the two refusals are distinct (`MODULE_NOT_SUBSCRIBED` vs `SUBSCRIPTION_INACTIVE`, which is **402**, not 403); D exists so a cross-school read can be tested *at all* — as B or C it would be refused by entitlement before isolation was reached, which would look like a passing isolation test while proving nothing. The ceiling is proven as a cycle (create → refuse → deactivate → mirror falls → reuse → **re-activation refused**), and `joining_date` is asserted at a flipped `process.env.TZ` |
+
+| `verify-students.js` | 1213 | 136 checks on SRS §15.1 in three parts: schemas (35), the route table and router-level guard (8), and 68 over real HTTP. **Four schools and three plans**, because the fixture shape is what makes the assertions mean anything: A carries the module and a `student_limit` of 2, B a plan without the module, C no subscription, D a roomy plan with its own classes and sections. B and C keep `MODULE_NOT_SUBSCRIBED` and `SUBSCRIPTION_INACTIVE` (402) distinguishable; D clears the guard so a cross-school 404 is isolation rather than entitlement refusing first, and gives the allocator and promotion tests headroom school A no longer has. Proves the ceiling as a cycle (admit → refuse → transfer → leave → re-admit into the freed allowance) with the promotion in the middle asserted **not** to move the figure; proves the receptionist may admit but not promote; and asserts the id allocator at the four-digit boundary and against a non-numeric caller-supplied id (§5a defect 26) |
+
+| `verify-parents.js` | 1049 | 116 checks on SRS §15.2 in three parts: schemas (31), the route table and router-level guard (9), and 48 over real HTTP. Four schools, two plans differing only in the Parent Portal module. The assertions that matter are the ones about the **account this module creates**: a failed create is proven to leave no orphan user by counting `users` before and after rather than by trusting the status; and the created account is then signed in, asserted to be told to change its password (§9.3), changed, and only then used to read the dashboard — so the account, the flag and FR-PARENT-002 are proven end to end. The organization-scoped read of `parent_students` is asserted against the service directly, because no seeded role both resolves to that tenant shape and holds `parents.view` — which is exactly why §5a defect 16 got through twice |
+
+| `verify-staff.js` | 797 | 89 checks on SRS §15.4 in three parts: schemas (23), the route table and router-level guard (8), and 55 over real HTTP — the split **measured from a run**, after an earlier revision of this row stated 26 / 10 / 38, which no part of the file produced. The same four-school / two-plan fixture the other §15 suites use. Asserts the ceiling on **both** paths as one cycle — create to the ceiling, refuse, deactivate, reuse, then fail to re-activate — which is the check `teachers/` lacked; asserts that `STAFF_CATEGORIES` and the model's `category` enum are the same list, so a fifth category cannot be added in one place and missed in the other; and asserts the absences §15.4 implies (no DELETE, no dashboard). **Green on its first run**, so the re-activation guard was regressed deliberately to confirm four assertions go red with the predicted values |
+
+| `verify-reports.js` | 935 | 98 checks on SRS §22 in three parts. Its fixture exists to make coincidence impossible — every count, sum and percentage is distinct, and the run includes an over-payment, a second currency and an exam nobody sat precisely because three deliberate regressions proved the guards for those cases were otherwise unprovable. The two delegated reports are compared **field for field** against the endpoints they delegate to. The Excel export is read back through exceljs and its cells matched to the JSON. **Twenty-three** deliberate regressions |
+| `utils/fileResponse.js` | 219 | The first thing in the application that can serve a stored file. Never takes a path from a request: a caller names a record, the owning module's finder applies every existing guard, and only then is the stored path resolved here. Refuses null bytes, absolute paths, drive-relative forms, lexical `..` and the sibling-prefix bug, then `realpath`s and re-checks containment so a symlink cannot escape. Two of the eighteen `*_path` columns hold **http(s) URLs**, not filesystem paths, and must never reach it |
+| `utils/pdf.js` | 208 | Phase 5.4's table engine — the thing `pdfkit` was installed for and the reason it sat unused. One shape only: a titled table with repeating headers, wrapped cells and numbered pages, returning a **Buffer**, so an export still needs no file on disk. Row height is measured from the wrapped text, not assumed. Its settle listeners are attached before any drawing — the sibling mistake in `databaseBackup.js` produced a complete artefact and a process exiting 0 having reported nothing |
+| `jobs/handlers/index.js` | 108 | The registration `config/queue.js` named and never got. Four of §25's eight job names are registered — the four whose work can **finish** — and the other four are refused *with a reason*, because a job whose result nobody can collect has not been processed. Two of the refusals are blocked on the same missing file-serving route three path columns wait on |
+| `jobs/worker.js` | 111 | `npm run worker`, and honest about what it cannot be: a separate process cannot consume an in-memory queue, so it runs **one job now** from a shell with the exit code reporting that job's outcome. A malformed payload is refused rather than run as `{}`, and a known-but-unregistered job is refused with its reason rather than as a typo |
+| `jobs/cron.js` | 260 | The scheduler `package.json` has named since it was written. Five tasks in a documented **run order**, because `notification-dispatch` must follow `subscription-lifecycle` — §23 notifies subscriptions in state `expiring`, which the lifecycle sweep writes, and a cron expression cannot express a dependency. `--once` runs everything and exits, `--list` prints the schedule, resident mode is gated on `ENABLE_CRON` because two schedulers would double-notify and race the renewals. Every task is bounded at ten minutes: a task that never settles otherwise holds its name in `running` and silently stops all its own future ticks |
+| `jobs/tasks/*.js` | 5 files | Four thin adapters over sweeps that already existed and had no caller, plus the backup. Each carries its own schedule and says that the cadence is a choice — §25 declines to invent numeric targets, so nothing in the SRS fixes one |
+| `jobs/tasks/databaseBackup.js` | 212 | SRS §26 / FR-BKP-001, and `npm run db:backup`. Real `mysqldump`, because writing a dump from Sequelize would mean reimplementing dependency ordering and DDL and getting it wrong yields a file that looks like a backup. The password goes through `MYSQL_PWD`, not argv. A part-written dump is deleted rather than kept. Retention prunes only files this task names, judged by mtime. Its first version had a promise that never settled — a complete dump on disk and a process exiting 0 having reported nothing |
+| `lib/settle.js` | 118 | **The suites' first shared helper.** Polls for rows written after the response — `recordActivity` is fired unawaited from `res.on('finish')`, so a trail row lands after the `fetch` that caused it. Returns whatever it last saw on timeout, so it cannot mask a guard that never writes. Its header records which reads actually race (`activity_logs` does, `audit_logs` does not — `recordAudit` is awaited at all 122 call sites) and what it cannot fix (concurrent runs, where the rows are *deleted* by another suite's teardown) |
+| `verify-pdf.js` | 195 | 20 checks on `utils/pdf.js`, separate from §22 because §22 **cannot reach its guards**: the student report fits on one page and four of them are about the second. Asserts **exact** page counts, since the bug it caught added one page to every document while leaving the PDF perfectly valid. Reads the text back by inflating the content streams — `pdf-parse` is a dependency and cannot parse pdfkit output at all |
+| `verify-jobs.js` | 522 | 42 checks on `src/jobs/` in three parts. Its central assertion is end to end rather than structural: a subscription planted as `active`, one ordered run, and a Subscription Expiry notification that can only exist if the two tasks ran in the right order. A real `mysqldump` runs into a sandbox directory the suite creates and removes, and the dump is checked for every one of the 64 model tables plus `sequelize_meta`. Retention is proved by backdating mtimes, with the negative beside the positive. Every child process is spawned with a `timeout`, because a broken `ENABLE_CRON` gate makes one resident and hung the regression harness for ten minutes |
+| `verify-notifications.js` | 1053 | 98 checks on SRS §23 in three parts. Part 3 drives `runNotificationSweep()` **directly** rather than only the five routes, because otherwise eight sweeps and nine types would go unexercised. Every pass has a **negative** beside its positive, and idempotency is asserted by running the whole sweep **twice** and requiring zero new rows — the one assertion that proves all five markers are written and all four reference lookups consulted. The e-mail failure path is produced by the module's own code, `mailService.send` being replaced for exactly one call and restored. **Forty-three** deliberate regressions |
+| `verify-ai.js` | 1020 | 169 checks on SRS §21 in three parts. Pins `AI_DRIVER=mock` in its preamble, so Part 1 can assert the mock's exact output and prove that neither `@anthropic-ai/sdk` nor `pdf-parse` is loaded. Part 3 walks the whole nine-step workflow, tries **every transition out of order as well as in it**, and treats FR-AI-002 as arithmetic: the counter before, after one generation, after three, and — the two that matter — unchanged after a blocked request and unchanged after a generation the provider failed. The failure is forced through the seam itself rather than by adding a test-only driver. **Sixteen** deliberate regressions |
+| `verify-documents.js` | 962 | 120 checks on SRS §20.5 in three parts. Its central fixture is a school subscribed to **Certificates but not ID Cards**, so the per-type gate is proved by the same caller in the same school being allowed one document and refused another — something a single router-level key could not express. All seven payload builders are checked for the values they must carry, against the fixture rows they read. The absence of bytes is asserted **positively**: no file columns, and `storage_limit` usage still zero after the run. **Nineteen** deliberate regressions, of which seven first exposed weaknesses in this suite's own assertions rather than in the module |
+| `verify-library.js` | 1031 | 161 checks on SRS §20.4 in three parts. Written around the counter: every issue and return assertion re-reads `[quantity, available_quantity]` **off the database**, because the response can be right while the row is wrong. The last copy is issued and a further issue refused; a return puts it back; a **lost** copy does not; and a quantity edit moves the available count by the same delta, with a reduction below the copies on loan refused. The fine is checked as arithmetic — 10 days × 0.50 = 5.00 — then part-paid, fully paid and waived, with a payment above the fine refused. The locking reads are asserted at the **source**, since a lock cannot be provoked single-threaded. **Twenty-one** deliberate regressions |
+| `verify-assignments.js` | 1239 | 196 checks on SRS §20.3 in three parts. Its fixture is built around the three things that would break **silently**: two students in the *same class and the same section* both submit, so a submission narrowing written by class instead of by student is visible rather than plausible; both `record_type` lists are asserted for what they must **exclude**, because a missing filter still leaves every ordinary assertion green; and both halves of `returned` are proved — that it re-opens the submit route, and that `submitted`/`reviewed` do not. Posts real multipart bytes on the submit and checks them on disk under `school-<id>/submission/`. **Sixteen** deliberate regressions, each caught by the assertion written for it; the sixteenth was added after a regression showed one of this suite's own assertions was being answered by the wrong guard |
+| `verify-homework.js` | 697 | 98 checks on SRS §20.2 in three parts, and **the first suite in the project that uploads a real file**: it posts actual multipart bytes, then proves the file is on disk under `school-<id>/homework/<random>`, that the row keeps the original filename, and that the stored path never appears in the response. A type outside the profile allowlist is refused with 415, and a body-supplied `attachment_path` with 422. Every self-scope assertion carries a counter-example that must be excluded — a second class with its own homework, and an unpublished draft for the student's own class — and the parent's child is deliberately in a *different* class from the student, so no assertion can pass by conflating the two audiences. Six fixes proved by deliberate regression. Cleans up the bytes it wrote |
+| `verify-timetable.js` | 824 | 112 checks on SRS §20.1 in three parts. Every FR-TT-002 rule is tested **twice** — a refusal and a near-miss — so an assertion cannot pass by exercising only the happy path: the same teacher in the next period is allowed, a different room in the same slot is allowed, and two entries naming no teacher and no room are allowed because they clash with nobody. Three assertions cover the NULL-permissive unique index, in both orders. Asserts that the day ENUM is declared Monday-first, because the week ordering depends on it, and that a `TIME` set as `HH:MM` is stored and returned as `HH:MM:SS`. Ten deliberate regressions, each failing its own assertion |
+| `verify-exams.js` | 1,291 | 206 checks on SRS §19 in three parts. The fixture ledger is hand-computed and reaches every branch: a denominator of 200 for all five students, a **tie** that makes places 1,2,2,4,5, a student who clears every bar **exactly** and still fails on the band, and an **absent** paper that still counts against its student. Asserts the §5a defect-16 guard at the SOURCE, because §5a session 18's fix made the runtime trap unreachable on a gated route — substituting `tenantWhere` into this module fails no HTTP assertion, so the guard has to be read off the code. Seven fixes proved by deliberate regression |
+| `verify-finance.js` | 1,234 | 163 checks on SRS §18 in three parts. Every arithmetic expectation is hand-computed (1750.75 income, 1150.75 expense, 600.00 net). Four schools: A records, B is on a plan without the Finance module, C has no subscription, D exists so every scoping assertion has a counter-example and so a **negative** net balance is exercised. Pins the `Model.sum`-with-a-group trap against the live database; proves a real fee collection moves the balance by exactly zero and leaves `fee_payments.income_id` NULL; refuses a transposed window and a two-currency window; rounds an amount finer than the column scale and checks the stored row agrees; asserts both PATCH routes need `finance.manage`, including as an Organization Admin who holds `finance.view` and reaches the router only because the body names a school. Window inclusivity is tested by landing the bounds **on two existing rows**, so exclusive bounds fail it — proved by regression |
+| `verify-fees.js` | 1,297 | 161 checks on SRS §17 in three parts: the schemas and the pure ledger arithmetic, the route table and the router-level guard, then real HTTP against the real database. Every arithmetic expectation is **hand-computed** — `netOf(0.1, 0, 0.2) === 0.3` offline and the same case end-to-end, 1000 − 5% = 950 on assignment, 950 − 300 = 650 after a partial payment. Four schools: A collects, B is on a plan without the Fees module, C has no subscription, D exists so every scoping assertion has a counter-example to exclude. Asserts the FR-FEE-001 / FR-FEE-002 actor split on both paths (a receptionist may collect and may not define or assign), the per-school receipt series, `isDuplicateNumber()` matching the index but not the column, both `DATEONLY` columns at a flipped `process.env.TZ` re-read off the raw row, that a structure re-priced after assignment leaves the assigned fee alone, and that `discount_given` is recorded and moves nothing. Four deliberate regressions were run against it and each failed the assertion it was meant to: unscoping the receipt series, dropping `tenantWhere` from the ledger, incrementing the balance instead of SUMming it, and removing the cross-school structure check |
+| `verify-attendance.js` | 961 | 79 checks on SRS §16 in three parts: schemas and the period boundaries (27), the route table and router-level guard (11), and 41 over real HTTP. **Built with the four §15 audits' findings already applied**: rows exist outside school A so tenant scoping has a counter-example; an organization-scoped fixture makes `tenantWhere`'s `organization_id` branch actually run; the status list is asserted schema-against-model rather than constant-against-itself; and the entitlement-limit check inspects the router. Asserts the upsert as a correction (re-mark changes the status and leaves one row), the register's membership rules (wrong class, wrong school, duplicate entry), the DATEONLY round-trip at a flipped `process.env.TZ`, and the FR-ATT-002 percentages against **hand-computed** figures — 75% for the day and 80% for the year — since §16 defines no formula and echoing the code's own answer would prove nothing |
+
+### `backend/tests/` — the jest fold (row 6.17)
+
+| File | Purpose |
+|---|---|
+| `globalSetup.js` | Runs all 38 suites serially as child processes before jest evaluates any test file, then writes the parsed results. Proves the target with `SELECT DATABASE()` — `DB_NAME` states an intention, `SELECT DATABASE()` states a fact — and closes its own pool before the loop starts, because a pool left open is one the suites cannot use, and connection exhaustion reaches a suite as "database unreachable", which 19 of them answer by skipping and exiting 0. |
+| `verify.test.js` | Turns the run into named jest cases: one per assertion, carrying the label the suite printed, plus **five per-suite tests** (exited 0, did not time out, printed no FAIL line, ran its database half, ran all N of its assertions) and **six harness-integrity tests**. That is the arithmetic behind the total: 5,162 + (38 × 5) + 6 = **5,358**. Reads the results **synchronously at module scope** — jest builds its test tree by executing the module body, so a `test()` registered from an async callback or a `beforeAll` is never collected, and an `await` here would yield a file with zero tests that reads as "nothing to check". |
+| `setup.js` | `setupFilesAfterEnv`. Its **absence** was Known Issue #4: jest resolves that path during config normalization and threw before discovering any test. Contains guards, not fixtures — it runs once per test *file*. Asserts the timers are real, because `scripts/lib/settle.js` polls with a real `setTimeout` against a `Date.now()` deadline and would hang under `jest.useFakeTimers()`. |
+| `helpers/suiteRunner.js` | Discovery, spawning and parsing, shared by the harness and the baseline recorder so the two cannot disagree about what a suite's output means. Suites are **spawned, never required**: all 38 call `process.exit()` and none guards on `require.main`. Handles `verify-seed.js`'s `PASS (22)` summary explicitly rather than with a tolerant regex — that one format is the entire 21-line gap between 5,112 printed lines and 5,133 assertions, and a magic constant would absorb the next genuine 21-assertion regression. |
+| `baseline.json` | The recorded per-suite assertion count, written by `scripts/record-baseline.js`. Checked **exactly**, not as a floor. Not gitignored — `.last-run.json` is. |
+
+`scripts/record-baseline.js` regenerates the baseline and **refuses to write one from a run in which
+any suite failed, degraded or crashed**, because a baseline taken from a broken run makes the
+breakage permanent. It is never run by `npm test`.
+
+### `backend/storage/`
+`logs/` (with Winston's rotating `combined-*.log` / `error-*.log` and audit files), `uploads/`,
+`backups/` and `tmp/` all exist.
+
+---
+
+## 7. Exact stopping point and next task
+
+### Where I stopped
+
+Session 3 finished the authentication and tenant-isolation half of Phase 3.C. Sequence:
+
+1. Rewrote `sanitize.js`, which contained literal raw control bytes in a regex literal — grep reported it as binary and `Edit` could not byte-match it. The character class is now built from a string so the source stays plain ASCII.
+2. Wrote `errorHandler.js` + `scripts/verify-error-handler.js` → **52 / 52.**
+3. Wrote `validate.js` + `scripts/verify-validate.js` → **23 / 23.** Found and fixed a real defect in the process: the unknown-container guard ran after the "at least one container" guard, so `validate({ bodys: schema })` produced a misleading message.
+4. Wrote `permissionService.js`; verified with 26 ad-hoc checks against the live seeded database.
+5. Wrote `authenticate.js`, `tenantService.js`, `resolveTenant.js`, `enforceTenant.js`, `authorize.js`.
+6. Wrote `scripts/verify-auth-chain.js` and ran it. **First run exposed the route-parameter hole (§5a defect 1) — the exact case the SRS calls critical was returning 200.** Fixed with `collectFromPath()` plus `installTenantParamGuards()`, and created `src/utils/createRouter.js` to make the param guard structural.
+7. Second run exposed `asyncHandler` dropping the param value (§5a defect 2). Fixed by forwarding all arguments.
+8. Third run: **84 / 84 passed.** Re-ran `verify-error-handler.js` (52/52), `verify-validate.js` (23/23) and `verify-seed.js` (counts intact) to confirm the `asyncHandler` change caused no regression.
+9. Confirmed fixture cleanup: 0 `VERIFY-` rows remain; table totals back to 1 user / 0 organizations / 0 schools.
+
+Session 4 finished the entitlement half. Sequence:
+
+10. Wrote `src/services/entitlementService.js` (727 lines) — the §11/§12 precedence chain with a per-school cached snapshot.
+11. Wrote `src/services/usageService.js` (611 lines) — the four measurement kinds, overage, and the `usage_records` mirror.
+12. Wrote `src/middlewares/entitlement.js` (429 lines) — the four guards plus `requireAnyModule` and `attachEntitlement`.
+13. Read all three back in full and fixed one wart found by inspection: `entitlement.js` was passing `{ code: 'SUBSCRIPTION_INACTIVE', … }` as `ApiError.subscriptionInactive`'s `details` argument, which duplicated the code inside the details payload. `ApiError` sets the code itself; the key was removed.
+14. Probed the database to design the fixtures, which changed the plan inherited from session 3 in two ways: the 7 `addons` rows are **already seeded** and `addons.key` is globally unique, so the script must look them up by key and never create or delete them; and `subscription_overrides` has a unique index on `(subscription_id, override_type, target_key)`, so the negative-window cases must use different target keys from the positive ones.
+15. Wrote `scripts/verify-entitlement.js` (1,368 lines) and ran it: **249 / 249 passed on the first run**, no defects found. Evidence and fixture design recorded in §2b.
+16. Confirmed teardown directly against the database: every subscription, plan, usage, student, school and organization table back to 0; `addons` still 7.
+17. Re-ran the other four scripts — 84/84, 52/52, 23/23, seed counts intact. **408 checks green in those four as of session 4** (verify-seed's 22 not included in that figure; see the note under §1's table).
+18. Noted that `storage/uploads`, `storage/backups` and `storage/tmp` now exist, which resolves Known Issues #9.
+
+Session 5 finished Phase 3.C. Sequence:
+
+19. Added `TRUST_PROXY` to `env.js` (`trustProxy()`, accepting a hop count, a boolean or an address list) and `.env.example` — Known Issues #13, which blocked `rateLimit.js`.
+20. Derived the upload allowlists into `constants.js` — `UPLOAD_MIME_EXTENSIONS`, `UPLOAD_MIME_LIST`, `UPLOAD_PROFILES`, `UPLOAD_PROFILE_LIST`, `UPLOAD_RULES` — from what the SRS actually names, per surface rather than globally. Known Issues #14.
+21. Wrote `upload.js` (500), `rateLimit.js` (244), `csrf.js` (183), `activityLog.js` (389) and the `index.js` barrel (141, 44 exports, with the pipeline-order diagram Phase 3.E must follow).
+22. Found by inspection while designing the upload tests: a multipart body is not sanitised, because it does not exist when `sanitizeRequest` runs. Added `sanitizeParsedBody` to the upload chains and made `sanitizeContainers` accumulate onto `req.sanitized` rather than assign it.
+23. Wrote `scripts/verify-middlewares.js` (1,535 lines) and ran it. **First run exposed two real defects** — the missing strict SQL mode (§5a defect 3, a project-wide data-integrity gap, not a middleware bug) and the busboy inclusive/exclusive boundary mismatch (§5a defect 4). Fixed both. Four further failures were wrong expectations of mine, corrected and recorded in §5a.
+24. Final run: **262 / 262 passed**, exit 0. Per-section counts recounted from the run output: upload 109, rateLimit 38, csrf 25, activityLog 90 — summing to 262.
+25. Because the SQL-mode change is global, re-ran all five pre-existing suites under it: **0 FAIL** — 52 + 23 + 84 + 249 assertions plus `verify-seed.js`'s 22. **692 checks green in total across six scripts, every script exit 0.** All six were re-run again while writing this revision, to confirm the figures rather than carry them forward.
+26. Confirmed teardown against both the database (every fixture table back to 0; the 7 seeded `addons` untouched) and the filesystem (`storage/uploads/` empty, `storage/uploads/verify-mw` gone). An earlier check of this was invalid — the `node -e` used did not set `UPLOAD_DIR`, so it inspected the default tree rather than the script's; re-checked directly.
+27. While writing this revision, re-ran all six suites to verify the counts rather than carry them forward. Two corrections came out of it: the per-middleware sub-counts in §2b were an unverified apportionment (upload was 109, not 86; rateLimit 38, not 37; activityLog 90, not 91), and the headline total was 671 because `verify-seed.js`'s single `PASS (22)` line had been counted as one check. **The verified total is 692.**
+28. The teardown check also surfaced one leftover `activity_logs` row with `action: ''` — the footprint of the defect-3 probe, written before the SQL-mode fix. Confirmed unrecreatable under strict mode, then removed. `activity_logs` back to 0.
+
+Session 6 completed Phase 3.E. Sequence:
+
+29. Added `app.jsonBodyLimit` to `env.js` (`str('JSON_BODY_LIMIT', '100kb')` — Express's own default kept) and the matching key to `.env.example`. This satisfies the "body size caps" `docs/ARCHITECTURE.md:170` already required; `MAX_UPLOAD_MB` bounds files, which is a different ceiling.
+30. Wrote `src/modules/system/system.controller.js` (91) and `system.routes.js` (38) — liveness, readiness, `/meta`, and the CSRF bootstrap. Placed under `src/modules/` rather than in an invented `src/routes/`, because `docs/ARCHITECTURE.md:54` documents `src/modules/<name>` with `*.routes.js` / `*.controller.js` as the convention. This is a real working module, not the placeholder scaffolding step 9 of the previous plan barred.
+31. Wrote `src/app.js` (232) — the 11-step pipeline, `corsOptions()`, `requestLogging()`, `createApp()` and `buildApiRouter()`.
+32. Caught a bug in that new code before running it, by grepping `config/logger.js` first: `requestLogging()` used `logger.log('http', …)`, and winston's npm levels put `http` (3) below the configured `info` (2), so every access line would have been discarded while the middleware looked like it worked. Changed to `logger.info` and recorded the reason in the docblock.
+33. Wrote `src/server.js` (149) — `assertRuntimeConfig()` → `assertConnection()` → `initCache()` → `listen`, with all four shutdown triggers routed through one guarded `shutdown()`.
+34. Syntax-checked all five files with `node --check`, then built the app once via `node -e` and printed `app._router.stack` to calibrate the expected layer names rather than guess them.
+35. Wrote `scripts/verify-app.js` (663) and ran it. **The first run hung** on the first authenticated request — §5a defect 5: `enforcePasswordChange` is a factory and `app.js` had mounted it uncalled. Fixed by calling it with its allow-list, and hardened the suite to identify chain layers by function identity so the same class of mistake cannot pass again.
+36. Second run: 108 PASS, 4 FAIL — all four wrong expectations of mine (`notFoundHandler`'s message wording, `TOKEN_MISSING` vs `UNAUTHENTICATED`, the two-value `Vary` header, and draft-7's `RateLimit-Policy` format). Read the real header values off a live app before correcting each, rather than guessing again.
+37. Final run: **116 / 116 passed, exit 0.**
+38. Confirmed the suite wrote nothing: `activity_logs` and `audit_logs` both still 0. Verified `nodemon 3.1.7` is present in `node_modules/.bin`, so `npm run dev` wraps the same working entry point; it was not executed because it never exits.
+
+Session 7 built the first feature module — authentication, SRS §7 — and corrected the project's
+documentation. Sequence:
+
+39. Re-read SRS §7 and §9.3 against `authenticate.js`, `csrf.js`, `tokens.js` and the `users` model, to fix the exact contract before writing anything: which columns each endpoint touches, which of them may ever leave the process, and which endpoints must sit above the authentication boundary.
+40. Wrote `src/services/mailService.js` (163) first, because three §7 endpoints are meaningless without it and its failure semantics decide theirs. `log` driver as the default so a developer with no SMTP server sees the reset link in `storage/logs`; `send()` resolves rather than rejects, so a mail failure cannot 500 a reset whose token is already written.
+41. Added the four auth keys to `env.js` (297) and `.env.example` (124): `PASSWORD_MIN_LENGTH`, `LOGIN_MAX_ATTEMPTS`, `LOGIN_LOCKOUT_MINUTES`, `REFRESH_COOKIE_NAME`. The documented key count went 69 → 73, which independently confirms exactly four were added.
+42. Wrote `auth.validation.js` (165), exporting `email`, `newPassword` and `singleUseToken` as reusable rules rather than inlining them, so the ten modules that will create users cannot each invent a slightly different password policy.
+43. Wrote `auth.service.js` (823) — all nine operations plus `publicUser`, `activityActor` and the two field allow-lists. Then `auth.controller.js` (350) for the HTTP concerns, and `auth.routes.js` (136) as **two** routers so `app.js` can put each on the correct side of the boundary.
+44. Extended `activityLog.js` (389 → 427) with `attributionFrom()`, and `app.js` (232 → 254) with the two mounts. `node --check`ed every file, then printed `app._router.stack` to read the real layer indices off a built app rather than assume them.
+45. Wrote `scripts/verify-auth-module.js` (1,399) and ran it. **The first run found three real defects** — the Joi TLD registry check locking the bootstrap account out of its own password reset (§5a defect 6), 3 KB of unread permissions in every access token (defect 7), and the three most security-relevant events in the system being recorded with no actor (defect 8). Fixed all three.
+46. Later runs surfaced four wrong expectations of mine, each checked against the real behaviour before correcting: the 73-ASCII password firing two Joi rules rather than one, two `password_changed_at` assertions racing the wall-clock second boundary, and two mail assertions written as absolute counts that only pass in isolation. Also re-pinned six `verify-app.js` layer indices, which moved when `/api/v1` grew from five layers to seven, and added an assertion on the layer *count* so the next module that shifts them fails loudly.
+47. Final run: **231 / 231 passed, exit 0.** Confirmed teardown directly: the five `@verify-auth.invalid` users gone, `users` back to 1, `activity_logs` and `audit_logs` back to their baselines.
+48. Re-ran all eight suites end to end before writing any documentation, so that every `Completed` in the checklist rests on a check that passes *today* rather than on a figure carried forward: **1,041 PASS, 0 FAIL, every script exit 0.**
+49. Rewrote `docs/IMPLEMENTATION_CHECKLIST.md` (320 → 441). The previous revision marked essentially every row `Completed` or `Tested`, including 37 SRS requirement IDs against modules that do not exist — it had been written as a plan and was then read as a record. Every status was re-derived from the file system or from a check re-run in step 48, and the legend now defines each word so a row cannot be read generously. Known Issues #1 closed.
+50. Caught two factual errors in my own freshly-written checklist by verifying instead of trusting memory — a wrong `.env.example` key count (70 vs the real 73) and two invented upload-profile names (the real set has six members). Corrected both there, and corrected the "five upload surfaces" miscount that this file's Known Issue #14 had also carried.
+51. Recorded the dangling references found while checking those claims: four `package.json` scripts and one `queue.js` docblock point at files that do not exist. Verified missing individually — Known Issues #16.
+52. Updated this file: new §2d for the auth module, §3 and §4 re-scoped, §5a defects 6–8 and session 7's wrong expectations, Known Issues #1 closed and #16 added, the ≤1-second `password_changed_at` window and the two-endpoint forced-change gate added to the accepted limitations, and every line count in §6 re-measured rather than carried forward.
+53. Re-ran the full eight-script sweep once more while writing this revision, so §1's table is measured rather than carried forward: **1,041 PASS, 0 FAIL, every script exit 0.** Also re-counted `verify-app.js` per section — it is **118**, not the 116 of session 6, because mounting the auth module added two boundary checks (§2c).
+54. Verified §1's new `curl` sign-in example against a live app rather than writing it from memory: 200, seven `data` keys, `must_change_password: true`.
+
+Session 8 built the four SRS §9 platform modules and their verification suite. Sequence:
+
+55. Re-read SRS §9.1, §9.2 and §9.3 and the §29 `organizations` / `schools` / `users` table definitions before writing anything, so the field sets came from the source rather than from what seemed reasonable. §9 never enumerates an organization's fields — FR-SADMIN-002 only states the precondition "Organization exists" — so the `organizations` field set is the §29 table minus the columns a body may never carry, and that reasoning is recorded in the validation module's header rather than left implicit.
+56. Wrote the fifteen files: `platform/` (3), `organizations/` (4), `schools/` (4), `principals/` (4). Mounted all four in `buildApiRouter()` at the marked insertion point, taking `/api/v1` from seven layers to eleven.
+57. Cross-checked the `organization_admin` permission matrix empirically against `DEFAULT_ROLE_PERMISSIONS` — it holds the five §9 read keys and none of the six write keys — rather than trusting the route headers I had just written. That is what settled `requirePlatformScope()` onto all ten writes and off all eight reads.
+58. Probed each Joi schema with `node -e` before asserting anything about it, which is how §5a defect 9 was found: the `website` message override was keyed on `'string.uri'`, a type Joi never raises once a `scheme` list is supplied. Fixed the key to `'string.uriCustomScheme'` and recorded why in a comment, so it is not "corrected" back.
+59. Established how each guard could be asserted before writing the suite, because they are not uniform: `validateRequest`, `activityDeclaration`, `platformGuard` and `csrfGuard` are plain named closures and are detectable by `fn.name`; `requirePermission` is `asyncHandler`-wrapped and is identifiable by **neither** name nor identity, so it had to be asserted behaviourally over HTTP. That is what the `denied_permissions` fixture exists for.
+60. Discovered a guard-ordering consequence while planning the negative tests: `enforceTenant` is a *router-level* layer and therefore runs before any route-level guard, so an organization-scoped caller must reference **its own** organization id to reach `PLATFORM_SCOPE_REQUIRED` — referencing another organization yields `CROSS_TENANT_ACCESS_DENIED` first. Both orderings are now asserted rather than one being mistaken for the other.
+61. Wrote `scripts/verify-platform-modules.js` (1,594) and ran it. First run: 293 PASS, 2 FAIL — both wrong expectations of mine about `usageService`, not defects. Checked `HEADCOUNT_SOURCES` and `getUsage` before correcting either, and rewrote both assertions into stronger ones (see §5a session 8).
+62. Second run: 299 PASS, 1 FAIL — a third wrong expectation about `tracked`, from the same block. Read the four branches of `getUsage` before rewriting it as two separate assertions plus the `allowed: 0` property that actually matters.
+63. Final run: **300 / 300 passed, exit 0.** Confirmed teardown directly against the database rather than trusting the script's own report: 0 organizations, 0 schools, 1 user, `audit_logs` 0, `usage_records` 0, `activity_logs` back to its single pre-existing row, and 0 users matching `%verify-platform.local`.
+64. Re-ran all nine suites end to end: **1,346 PASS, 0 FAIL, every script exit 0.** Found while doing so that `verify-app.js` now reports **123**, not the 118 recorded in §1 and §2c — it asserts the layer *count* of `/api/v1`, so step 56's four mounts changed its total without the script being edited. Corrected in both sections; the eight pre-existing scripts total 1,046, and 1,046 + 300 = 1,346.
+65. Found a real coverage gap while bringing `docs/IMPLEMENTATION_CHECKLIST.md` in line: row 6.15 said `utils/pagination.js` was covered by no route and no script, and that had just stopped being true — the three §9 list endpoints use all three of its functions. Rather than record the gap, closed it: **13 assertions** added to `verify-platform-modules.js` covering page arithmetic, `hasNextPage` / `hasPreviousPage`, offset actually being applied, `sortOrder`, an out-of-range page, an over-`MAX_LIMIT` refusal, and the two §24 ORDER BY cases (an unlisted column dropped, a SQL-shaped one refused on shape). All 13 green on the first run.
+66. Re-ran the full sweep: **1,359 PASS, 0 FAIL, every script exit 0** — `verify-platform-modules.js` is now 313. Confirmed teardown again directly against the database: 0 organizations, 0 schools, 1 user, `audit_logs` 0, `usage_records` 0, `activity_logs` 1, 0 stray `@verify-platform.local` users.
+67. Updated `docs/IMPLEMENTATION_CHECKLIST.md`: 3.D rewritten from nine `Pending` rows to nine `Completed` rows, each naming its endpoint, permission key and the assertion behind it; the two 3.D decisions recorded (no user PATCH/DELETE, no `admin_limit` guard on Principal creation); rows 6.3 and 6.15 re-derived against what the new assertions actually cover; FR-SUB-008's "there are no feature routes" corrected to "the four §9 modules are platform-scoped"; FR-TENANT-002 given its real-module evidence; the script table, the totals, the run command and the fixture-prefix paragraph brought up to date.
+
+Session 9 verified the users and roles modules session 8 had left unverified. Sequence:
+
+68. Re-read `users.validation.js`, `users.service.js`, `users.controller.js` and all four `roles/` files in full before writing a single assertion, plus `tenantWhere`, `enforceTenant`, `activityLog.js` and the `User` model's scopes — so the script's expectations came from the code rather than from what the module names implied. That reading is what caught a design error in my own draft before it ran: a part-4 assertion claimed `users.service.list()` refuses a widening `organization_id` for a school-scoped caller, which it does not (§5a session 9).
+69. Wrote `scripts/verify-users-roles.js` (1,792) in four parts — schemas, route tables, real HTTP, and the service called directly — with `CACHE_TTL=600` pinned before any config read, deliberately, so the two invalidation assertions cannot pass by TTL expiry.
+70. First run: 5 FAIL and an abort. The abort was a `TypeError` from reading JSON columns with `raw: true` on MariaDB; the rest were wrong expectations. Investigated each to root cause in the source before changing anything.
+71. **Found one of my own assertions passing for the wrong reason** — `refresh_token_hash !== null` against a model whose `defaultScope` hides the column, so it compared `undefined !== null` and would have gone on reporting a verified property that was never checked. Fixed with `scope('withSecrets')` and added a positive assertion of the scope itself (§5a session 9). This is the find of the session; the neighbouring failure is the only reason I looked at it.
+72. Second run: 4 FAIL. Third: 1 FAIL — the activity-row expectation, diagnosed by turning a boolean into a list, which named `access_denied /api/v1/users?school_id=369`. Split into two assertions, one of which now positively asserts SRS §31's isolation test case.
+73. Fourth run: **236 / 236 passed, exit 0.** No defect found in shipped code.
+74. Confirmed teardown directly against the database rather than trusting the script's report — including the two seeded rows the run mutates: 0 organizations, 0 schools, 1 user, `audit_logs` 0, `activity_logs` 1, `role_permissions` 353, `permissions` 109, `roles` 11, 0 stray `@verify-users.local` users, and the `librarian` role's labels byte-identical to the seeded pair.
+75. Re-ran all ten suites end to end: **1,599 PASS, 0 FAIL, every script exit 0.** Found §1's table stale again by the mechanism session 8 recorded — it read `verify-app.js` = 123 / total 1,359 when the true figures were **127 / 1,363**, because session 8 wrote its table before mounting these two routers. Corrected, and re-counted `verify-app.js` per section rather than carrying the figures forward.
+76. Updated this file: new §2f for the users/roles pair, §2c's boundary listing and per-section table, §1's table and totals, §3, §4, §5a's session-9 subsection, §6's two new inventories, and this section. Then `docs/IMPLEMENTATION_CHECKLIST.md`: new **3.D-2** section with the nine endpoints, the FR-AUTH-006/007/008/009 rows re-derived, rows 6.9 and 6.17 updated, and the script table, totals and run loop brought to ten scripts.
+77. Re-ran the full ten-script sweep **after** the documentation was written, because this session crossed midnight and both documents now claim a sweep run today: **1,599, 0 FAIL, every script exit 0.** Confirmed the database again directly afterwards — 0 organizations, 0 schools, 1 user, `audit_logs` 0, `activity_logs` 1, `role_permissions` 353, `permissions` 109, `roles` 11, `addons` 7, 0 stray fixture users, `librarian` labels and the `principal` role's 63 grants both back at their seeded values.
+78. That re-run caught a documentation error I had just introduced in §8 about how the `PASS` lines count — see the last item of §5a session 9. Corrected in three places.
+
+Session 10 built the subscription plan catalogue — SRS §10 / §11 — and its verification suite. Sequence:
+
+79. Re-read SRS §10 and §11 in full, plus the §29 definitions of every table the group touches
+    (`subscription_plans`, `plan_prices`, `plan_modules`, `plan_features`, `plan_limits`, and the two
+    that reference prices, `subscriptions` and `quotations`), before writing anything. What the source
+    fixes and what it leaves open is written down in §2g rather than being decided silently — §30 Rule 1
+    governs the whole module, so no plan name, module list or numeric ceiling is hard-coded anywhere in it.
+80. Wrote the four files — `plans.validation.js` (485), `plans.service.js` (828),
+    `plans.controller.js` (231), `plans.routes.js` (202) — and mounted `planRoutes` at the
+    `buildApiRouter()` insertion point, taking `/api/v1` from thirteen layers to **fourteen**.
+81. Checked the referential shape of `plan_prices` before writing the delete path, which is what settled
+    the retire-instead-of-delete rule: all three columns that reference it —
+    `subscriptions.plan_price_id`, `subscriptions.scheduled_plan_price_id` and
+    `quotations.plan_price_id` — are `ON DELETE SET NULL`, so a delete would silently blank a live
+    subscription's price pointer rather than being refused. `DELETE /:id/prices/:priceId` therefore
+    flips `is_active` to false on a price something still points at, and hard-deletes only the
+    unreferenced ones.
+82. Printed the export lists and constants the suite depends on before using any of them —
+    `permissionService`, `entitlementService`, `LIMIT_LIST`'s exact order (storage is index 4),
+    `MODULES`' count, `SUBSCRIPTION_STATES`, `ApiResponse.paginated`'s data shape, the two plan error
+    codes, `catalogue()`'s key names and the `requirePermission` 403 body — rather than writing
+    assertions from memory of them. Also confirmed that `ApiError.expose` defaults true for 4xx and that
+    `errorHandler.js:269` copies `details` into the body, since eleven assertions read
+    `error.details.missing`.
+83. Corrected a wrong expectation in my own draft *before* it ran, by reading `plans.service.duplicate()`
+    instead of assuming: I had written `check('the prices copied', copy.prices.length, 1)`, but
+    `duplicate()` copies the source's entire price table via `COPY_FIELDS.prices`, and by that point in
+    the run the source holds two rows — one active, one retired by step 81's rule. Kept the
+    implementation (copying every price is the honest reading of "duplicate", and no SRS text governs
+    it) and asserted the real shape instead, plus a check that no copied price id appears among the
+    source's price ids.
+84. Found a way to assert `requirePermission` behaviourally despite the fixture Super Admin holding
+    every key: `buildPermissionGuard` has **no super-admin bypass** — it reads `req.getPermissions()` —
+    so setting `denied_permissions: ['plans.pricing.manage']` on the fixture makes `PUT /:id/prices`
+    return 403 while `PUT /:id/limits` still returns 200. That proves the five `plans.*` keys are five
+    distinct keys rather than decoration, and it touches no seeded row.
+85. Pinned the order of the HTTP part so later mutations cannot invalidate earlier expectations: the
+    limits→900 / module-off / rename / price-retirement / duplicate / archive sequence runs before the
+    permission-denial section resets every limit to 100.
+86. Wrote `scripts/verify-plans.js` (1,385) in four parts and ran it: **175 / 175 passed on the first
+    run, exit 0.** No defect found in shipped code.
+87. Re-ran `verify-app.js` *after* the mount rather than before it, per §8's rule, and added two
+    assertions to it for the new boundary. It now reports **129**, up from 127 — the first time the
+    script's own total moved for both reasons at once (a mount and an edit), which is why §8's drift
+    chain records it explicitly.
+88. Re-ran all eleven suites end to end: **1,776 PASS, 0 FAIL, every script exit 0.** Per-script figures
+    re-measured rather than carried forward — 129, 84, 231, 249, 52, 262, 175, 313, 22, 236, 23. A raw
+    `grep -c "^PASS"` across the eleven returns 1,755, and 1,755 − 1 + 22 = **1,776** by the counting
+    rule in §8.
+89. Confirmed teardown directly against the database rather than trusting the script's own report:
+    1 user, 0 organizations, 0 schools, **0 `subscription_plans` including soft-deleted rows** (the
+    table is paranoid, so the fixtures are removed with `force: true`), 0 each of `plan_prices`,
+    `plan_modules`, `plan_features`, `plan_limits`, `subscriptions`, `subscription_addons` and
+    `subscription_overrides`, `audit_logs` 0, `usage_records` 0, `activity_logs` 1, `addons` 7,
+    `roles` 11, `permissions` 109, `role_permissions` 353, the `principal` role back at its seeded 63
+    grants, and 0 users matching `%verify%`.
+90. Updated this file — new §2g, §1's table and totals, the quick-resume loop, the mutated-seeded-row
+    caveat, §2c's boundary block and per-section table, §3, §4, §6's module and script inventories, and
+    this section — then `docs/IMPLEMENTATION_CHECKLIST.md`.
+
+Session 11 built the add-on catalogue — SRS §11.3 / FR-SUB-009 — and **ended without recording any of
+it.** This entry is reconstructed in session 12 from the artefacts and from file mtimes, so it is
+numbered but deliberately thinner than the others: what the session *did* is on disk, what it was
+thinking is not. Sequence:
+
+91. Wrote the four files — `addons.validation.js` (247), `addons.service.js` (446),
+    `addons.controller.js` (141), `addons.routes.js` (124), 958 lines — all timestamped 15:14.
+92. Mounted `addonRoutes` in `src/app.js` (15:20): the require at line 77 and the mount at index 14,
+    taking `/api/v1` from fourteen layers to **fifteen**.
+93. Added two assertions to `scripts/verify-app.js` (15:21) pinning `/addons` past `resolveTenant`,
+    moving its total 129 → **131**.
+94. Wrote `scripts/verify-addons.js` (1,348 lines, 169 checks) at 16:18 — **and never got it to pass.**
+    It aborted at check 76 of 169 on a `TypeError`. No entry was added to this file, so session 12 opened
+    on a project whose log claimed eleven passing suites and 1,776 assertions while twelve suites existed
+    and one of them had never completed a run.
+
+Session 12 made session 11's work verifiable and corrected the log. It wrote no module code. Sequence:
+
+95. Re-ran all twelve suites first, before trusting anything this file said — the rule §8 now carries.
+    That is what exposed both the aborting suite and the unreachable 1,776.
+96. Fixed five classes of defect in `scripts/verify-addons.js`, none of them in shipped code:
+    the `ApiResponse.paginated` shape at six sites plus one pagination site (§5a defect 9), the
+    `messagesOf` helper reading `error.details.errors` instead of the flat `error.details` (defect 10),
+    a `raw: true` read of a JSON column that had turned `changed_fields.includes(...)` into a substring
+    match on JSON text (defect 11), and three assertions expecting a BIGINT as a string (defect 12).
+    Each was diagnosed against the implementation or against an existing suite's idiom, not guessed:
+    `verify-plans.js:971` for the response shape, `ApiError.validation` for the details array, and an
+    empirical `AuditLog` round-trip for the JSON column.
+97. Declined to make `units_per_quantity` serialise as a string to satisfy the third of those. It is a
+    number at every layer, and entitlement arithmetic reads it — changing a contract to suit a test is
+    the inversion this file exists to prevent.
+98. Ran the full twelve-suite loop to exit 0, **twice**, to prove re-runnability rather than a
+    first-run pass: **1,947 PASS, 0 FAIL.**
+99. Confirmed the database is unchanged by all of it, directly rather than from the scripts' reports:
+    65 tables, 109 permissions, 353 grants, 11 roles, 7 add-ons, 0 plans, 0 subscriptions, 1 user.
+100. Wrote §2h, rewrote §3 and §7's next-task section, added the §5a sessions 11–12 entry and Known
+    Issues #17, then re-measured §6 wholesale — which found three more stale line counts and four stale
+    sentences, including two in text written earlier in this same session. All recorded in §5a.
+101. Found that §8 did not actually contain the two rules §5a claimed had been "added to §8", and that
+    §8's own counting bullet still read eleven scripts / 1,755 / 1,776. Added five rules rather than two
+    — the three extra are the lessons from this session's own mistakes: a stale count is usually attached
+    to a stale sentence, attribute a stale figure only from evidence (mtimes, since there is no git), and
+    a passing suite is not evidence for a claim the suite does not make.
+102. Re-ran the full twelve-suite loop *after* every edit, so the headline figure is backed by a run made
+    at the end rather than the start: **1,947 PASS, 0 FAIL, all twelve exit 0.** Per-script:
+    52, 23, 84, 249, 22, 262, 131, 231, 313, 236, 175, 169 — which sums to 1,947 exactly.
+103. Confirmed teardown against the database again after that run: 65 tables, 1 user, 0 organizations,
+    0 schools, 0 plans, 0 `plan_prices`, 0 subscriptions, 0 `subscription_addons`, 0
+    `subscription_overrides`, **7 add-ons**, 0 `addon_prices`, 11 roles, 109 permissions, 353 grants,
+    `audit_logs` 0, `usage_records` 0, `activity_logs` 1, 0 users matching `%verify%`, and the
+    `principal` role back at its seeded **63** grants.
+104. Brought `docs/IMPLEMENTATION_CHECKLIST.md` into line: FR-SUB-009 `In Progress` → **Completed** with
+    its evidence, the verification table re-measured to twelve scripts / 1,947, 3.E rewritten for two
+    modules and nineteen endpoints, the subscription-table split corrected from 5-of-13 to 7-of-13, and
+    3.G given the two inherited obligations so the purchase-copy trap is recorded in both documents.
+
+Session 13 built the subscription lifecycle — SRS §12 / §30 / §33 — and its verification suite.
+Sequence:
+
+105. Re-ran the full twelve-suite loop first, per §8's rule, before trusting anything this file claimed.
+     **1,947 PASS, 0 FAIL, every script exit 0** — the log and the code agreed, which they had not at the
+     start of session 12.
+106. Re-read SRS §12 in full — §12.1 trial, §12.2 grace, §12.3 upgrade, §12.4 downgrade, §12.5 renewal —
+     plus FR-SUB-010 … FR-SUB-015, §33's three override kinds, and the §29 definitions of
+     `subscriptions`, `subscription_addons`, `subscription_overrides` and `subscription_history`. What the
+     source fixes and what it leaves open is written down in §2i rather than decided silently. Two edges
+     are **interpretation** and are marked as such in the code where they are implemented: what happens
+     when a trial ends unpaid (§13 does not exist yet, so the conservative reading — Past Due, a usable
+     state — was taken), and what "Paused" means that "Suspended" does not.
+107. Confirmed the permission catalogue holds exactly six `subscriptions.*` keys before designing any
+     guard, and derived the three guard shapes from the SRS actor lines rather than from symmetry. That is
+     what settled `requireAnyPermission('subscriptions.lifecycle', 'subscriptions.self.manage')` on
+     upgrade/downgrade/renew: `subscriptions.self.manage` is seeded to `principal` and `school_admin`, so
+     requiring `lifecycle` alone would have left a key granted to two roles and reachable by none.
+108. Wrote the four files — `subscriptions.validation.js` (596), `subscriptions.service.js` (2,608),
+     `subscriptions.controller.js` (482), `subscriptions.routes.js` (304) — and mounted
+     `subscriptionRoutes` in `src/app.js` at the `buildApiRouter()` insertion point (require at line 78,
+     mount at line 363, index **15**), taking `/api/v1` from fifteen layers to **sixteen**.
+109. Made the six administrative transitions a **data table** rather than six functions, so §13's payment
+     approval can call `transition(…, 'activate', …)` when it lands instead of reimplementing activation.
+     Activation is administrative today only because Payments do not exist.
+110. Discharged the two obligations §2h stated: `afterWrite()` calls **both**
+     `entitlementService.invalidateSchool` and `tenantService.invalidateSchool` (two caches, because
+     `getSchool()` caches `subscription_state`), and `purchaseAddon()` performs the
+     `quantity × units_per_quantity` multiplication and copies `effect_type` / `effect_target` /
+     `units_granted` onto the purchase row.
+111. Wrote `scripts/verify-subscriptions.js` (3,040 lines) in five parts, dumping every response envelope,
+     error code, guard name, event name, history column and message **from source** before asserting it —
+     per the rule that a green suite is not evidence for a claim the suite does not make. Pinned
+     `CACHE_TTL=600`, and chose `custom_days`/30 for every fixture cycle so the §12.3 proration
+     expectations are constants rather than values re-derived from the function under test.
+112. First complete run: **9 FAIL. All nine were in the suite.** Seven of them were one bug — `makePlan()`
+     sent a single limit to `PUT /plans/:id/limits`, which requires all eight §11.2 keys, took a **422**,
+     and carried on without checking the status; every plan-base assertion in the run then read `0` from
+     `emptyLimits()` and looked like an entitlement defect. Fixed by sending all eight keys **and throwing
+     on a non-200** for both the limits and the modules calls. §5a defect 13, and the finding of the
+     session.
+113. The remaining two: an unpriced add-on purchase whose zero the draft had expected as `'0.00'` (§5a
+     defect 14 — the service was **not** changed; the fallback is what keeps add-ons purchasable against
+     the shipped seed data, so the priced path now names a price and the unpriced path is asserted
+     deliberately), and two `raw: true` serialisation expectations on a TINYINT and a DECIMAL (defect 15,
+     widening session 12's JSON-column rule to booleans).
+114. Corrected three wrong expectations of my own against the real values rather than guessing again:
+     `SORTABLE`'s contents and order, the `super_admin` grant list (`subscriptions.overrides.manage`, not
+     a `subscriptions.view_all` I had invented), and an audit filter written as
+     `startsWith('subscription')` that pulled `subscription_plans` — `verify-plans.js`'s subject — into
+     the audited-table set.
+115. Removed a claim from the suite's own doc-block that it does not assert: that a deferred downgrade
+     proves `tenantService.invalidateSchool()` is skipped while the snapshot refreshes anyway. A cache
+     refresh with no state change is unobservable from outside. Rewritten to the claim part 5 does make.
+     Also added the two extra `governingStateFor()` ↔ snapshot comparisons that make the doc-block's
+     "four times" true rather than aspirational.
+116. Final run: **208 / 208 passed, exit 0**, and green again on an immediate second run to prove
+     re-runnability rather than a first-run pass. **No defect found in shipped subscriptions code.**
+117. Re-ran `verify-app.js` *after* the mount, per §8's rule, and added two assertions for the new
+     boundary: **133**, up from 131 — the layer count moved and the script was edited, both at once.
+118. Re-ran all thirteen suites end to end: **2,157 PASS, 0 FAIL, every script exit 0.** Per-script
+     re-measured rather than carried forward — 169, 133, 84, 231, 249, 52, 262, 175, 313, 22, 208, 236,
+     23. A raw `grep -c "^PASS"` across the thirteen returns **2,136**, and 2,136 − 1 + 22 = **2,157** by
+     §8's counting rule, which the per-script sum matches exactly.
+119. Measured `/api/v1`'s layer list directly off a built app rather than inferring it from the mount
+     index — `0:router 1:router 2:wrappedAsyncHandler 3:passwordChangeGate 4:wrappedAsyncHandler
+     5:wrappedAsyncHandler 6–15:router` — using a throwaway script written *inside* `backend/scripts/`
+     and deleted afterwards, because an inline `node -e` was routed through Node 24's `evalTypeScript`
+     parse path and a script in `/tmp/` could not resolve `./src/app`.
+120. Updated this file: new §2i, §1's table and drift chain, §3 rewritten, §4, §5a's session-13 entry
+     with defects 13–15, Known Issues #4 / #17 / **#18**, §6's module and script inventories, and this
+     section. Corrected the `quotations` scoping error §7 had been carrying — `Quotation` is at
+     `src/models/billing.js:430` and belongs to Phase 3.H, which §1's own table had right and §7 had
+     wrong.
+121. Swept this file for stale *live* figures rather than only editing the sections session 13 touched,
+     because §5a's own lesson is that "a stale count is usually attached to a stale sentence". Five were
+     still carrying twelve-script / 1,947 totals: the header block (lines 6–20, which also did not
+     mention subscriptions at all), the jest paragraph in §6's Phase-6 list, §8's grep-counting rule, the
+     "twelve-script loop" sentence, and §7's phase-completion rule. All five corrected; the per-session
+     history in §5a and §7 was **left alone**, since those record what a session measured at the time.
+     One outright error surfaced while doing it: the phase-completion rule read "Phase 3.E before them:
+     131/131" — 131 was `verify-app.js`'s total, not the plan catalogue's, whose 175 the same sentence
+     already named. It had been wrong for three sessions.
+122. Brought `docs/IMPLEMENTATION_CHECKLIST.md` into line, the last step before ending the session:
+     FR-SUB-010 through FR-SUB-015 all `Pending`/`In Progress` → **`Completed`** with per-row evidence,
+     §33's override row folded in, 3.G rewritten from "Next up" to complete with the nineteen endpoints
+     and the three guard shapes, 3.H given the "Next up" framing and the three inherited obligations,
+     the verification table re-measured to thirteen scripts / **2,157**, the run loop extended with
+     `subscriptions`, the subscription-table split corrected from 7-of-13 to **12-of-13** (the
+     thirteenth, `usage_records`, is `usageService`'s and has no API by design), FR-SUB-008's note
+     rewritten now that both of its preconditions are met, FR-SUB-009 extended with the purchase half
+     and #17/#18, 5.9 extended with `runLifecycleSweep()`, 6.10 `Pending` → **`Tested`** at 208 checks,
+     the two "eleven/twelve script" counts fixed, and the teardown paragraph replaced with the figures
+     measured in step 123. Also corrected a line citation the previous revision carried:
+     `api.length` is asserted at `scripts/verify-app.js:**191**`, not :190 — adding `/subscriptions` to
+     the doc-block above it moved the line.
+123. Ran the full thirteen-suite loop a third time as the close-out confirmation, capturing per-script
+     `PASS`/`FAIL` counts and exit codes rather than eyeballing the tail: 52, 23, 84, 249, 1, 262, 133,
+     231, 313, 236, 175, 169, 208 — **2,136 `PASS` lines, 0 `FAIL`, every script exit 0**, which is 2,157
+     by §8's convention. Then re-measured the database state directly, which is what the teardown
+     paragraph below now reports.
+
+Session 14 mounted, wired and pure-verified the five Phase 3.H billing modules. **MySQL was down for the
+whole session** (`connect ECONNREFUSED 127.0.0.1:3306`), which is the single fact that shapes what could
+and could not be confirmed below. Sequence:
+
+124. Established the starting state from evidence rather than assumption, there being no git history
+     (Known Issues #12): this file and `docs/IMPLEMENTATION_CHECKLIST.md` were last written **2026-08-28**
+     (session 13), and the billing module files carry mtimes *after* that — `taxes/`, `coupons/`, the
+     validation/controller/routes of `invoices/`, `utils/documentNumber.js` and
+     `services/paymentGatewayService.js` on **2026-08-28** (17:50–18:53), and `payments/`, `quotations/`
+     and `invoices/invoices.service.js` on **2026-09-02** (13:11–13:35). The modules were therefore built
+     after session 13's doc update and the two tracking documents never recorded them; the attribution is
+     from file mtimes, not inference.
+125. Mounted the five billing routers in `src/app.js` (requires at lines 82–86, mounts at lines 382–386),
+     below the `authenticate → resolveTenant → enforceTenant` boundary, taking `/api/v1` from sixteen
+     layers to **twenty-one**: `/taxes` (16), `/coupons` (17), `/invoices` (18), `/payments` (19),
+     `/quotations` (20).
+126. Extended `scripts/verify-app.js`: the `api.length` assertion moved 16 → **21**, and a `billingMounts`
+     loop adds two assertions per router (mounted-at-index and past-tenant-resolution), **+10**, taking its
+     total 133 → **143**.
+127. Wrote `scripts/verify-billing.js` (189 assertions, four parts), grounding every expected value in the
+     source before asserting it — each service function read for its exact return shape, each router for
+     its declared table, each Joi schema for its refused and defaulted fields. Part 1 asserts the pure
+     money and the plugin gateway: `taxes.quoteFor` (exclusive adds on top, inclusive is carved out of the
+     base), `invoices.computeTotals` (the §13.1 **discount-then-tax** order — a 10% coupon and a 10% tax on
+     1000 bill 990, not 1000 — the inclusive-tax invariant that leaves the total unchanged, wallet credit,
+     and a fixed coupon larger than the bill clamping to it), `coupons.discountOn`,
+     `quotations.computeTotals`/`normaliseLine`, `payments.refundableAmount`, `documentNumber`'s
+     `PREFIX-YYYYMM-NNNNN` format and month-boundary period, the zero-adapter `paymentGatewayService`
+     (`get()` refuses with `PAYMENT_GATEWAY_NOT_CONFIGURED`, `dispatch()` lets that refusal propagate,
+     `normaliseResult` turns an unusable reply into a recordable `failed`/`ADAPTER_CONTRACT`), and the
+     upload wiring. Part 2 pins all five route tables and the `platformGuard` matrix — every management
+     write carries it, the three school-reachable writes (`POST /coupons/validate`,
+     `POST /invoices/:id/coupon`, `POST /payments`) deliberately do not, and no read does. Part 3
+     exercises the request schemas (system-owned fields refused as 422s, the tax-rate and
+     percentage-coupon ceilings, the fixed-coupon currency rule, `online_gateway` refused on submit but
+     accepted on record). Part 4 is database-gated.
+128. Built `verify-billing.js` to degrade cleanly against the down database: Parts 1–3 are pure and run
+     first, and Part 4 calls `sequelize.authenticate()` and prints a loud `SKIP` when it fails, so the
+     suite still exits 0 with the skip **clearly labelled** rather than a skipped run passing silently.
+     Ran it — **186 PASS, 0 FAIL, exit 0**; Part 4's 3 checks skipped. Confirmed by `grep -c`: 186 `PASS`,
+     0 `FAIL`, 1 `SKIP`.
+129. Ran `verify-app.js` under the same down database as a cross-check: **122 PASS**, then the
+     boot/readiness section failed on the refused connection (the three readiness probes returning
+     503 / `degraded` / `database:down`) and aborted. Confirmed the ten new billing assertions and the
+     `api.length == 21` assertion were **among the 122 that passed** — the only failures are the
+     DB-dependent boot/readiness checks, so the edit itself is sound and its full 143 awaits a live
+     database.
+130. Updated this file: §1's script table (`verify-app.js` 133 → 143, a new `verify-billing.js` row at 189,
+     total 2,157 → 2,356, all three carrying a **†** note that only the 186 pure billing checks were
+     executed this session and the rest await a live database), the counting paragraph, the `coupon_usages`
+     typo in §7 (it read `coupon_redemptions`, which is not a table — the model is `coupon_usages`,
+     `src/models/billing.js:418`), this step log, and §3 / §4 / §7 to record billing as
+     **implemented, mounted and pure-verified**, with its DB-backed and end-to-end verification pending.
+131. Brought `docs/IMPLEMENTATION_CHECKLIST.md` into line with the same distinction — implemented and
+     pure-verified, not yet end-to-end verified — and its script table and totals updated to fourteen
+     scripts / 2,356.
+
+**Stopping point:** immediately after step 131. Nothing is mid-edit. The five billing modules are
+implemented, mounted and **pure-verified** (`verify-billing.js` Parts 1–3, 186 checks, and the ten new
+`verify-app.js` mount assertions all pass). What did **not** run this session is anything needing a
+database — `verify-billing.js` Part 4 (3 checks) and the DB-backed tail of `verify-app.js` — because MySQL
+was down (`127.0.0.1:3306` refused). **The first task of the next session is to start MySQL/MariaDB and run
+the full fourteen-script sweep**, which re-confirms the twelve DB-backed suites, `verify-billing.js` Part 4,
+and `verify-app.js`'s full 143; the second is an end-to-end billing suite (issue → coupon → tax → pay →
+approve → refund over HTTP), which cannot be written to a passing state while the database is down. Both
+tracking documents record this state explicitly.
+
+Session 15 (2026-09-02) picked up that stop. Sequence:
+
+132. Confirmed XAMPP MariaDB already listening on `127.0.0.1:3306` from the previous continue (`mysqld --standalone`).
+133. Thirteen of the fourteen suites exited 0. `coupons.expireLapsed()` crashed with `SequelizeValidationError: Percentage discount_value must be between 0 and 100` even when **zero rows matched**: Sequelize 6 `Model.update` defaults `validate: true` and builds a skeleton from the payload (`status`) plus model defaults (`discount_type: percentage`, `discount_value: 0`). Fixed with `validate: false` on that bulk status flip in `coupons.service.js` and the same trap on `quotations.expireLapsed()`. Re-ran Part 4: `{expired: 0}` / `{scanned:0,flagged:0}` / `{expired: 0}`.
+134. Wrote `verify-billing.js` Part 5 — HTTP issue → coupon → tax → pay → approve → refund against `createApp().listen(0)`. Fixture helpers throw on a non-2xx. Money compared with `Number()` so DECIMAL `"990.00"` still has to equal 990. A principal is refused `POST /invoices/generate` and `POST /payments/record` with `PLATFORM_SCOPE_REQUIRED`; the school applies the coupon and submits the multipart payment.
+135. First Part 5 run: the money path passed, but `recordAudit` on approve logged `Data truncated for column 'event'` — `audit_logs.event` is only `create|update|delete|restore` (SRS §29) and the service was writing `approve` / `reject`. Same bug on quotations `send` / `reject` / `accept`. Fixed to `update` with a `before` snapshot so the row actually records the status change. Added two assertions that the approval audit exists and is `update`.
+136. Re-ran `verify-billing.js`: **216 / 216, exit 0**, including the audit assertions and no truncation warning. Then the full fourteen-script loop in one process: **2,383 assertions, 0 FAIL, every script exit 0.** Per-script: 52, 23, 84, 249, 22, 262, 143, 231, 313, 236, 175, 169, 208, 216.
+137. Updated this file, `docs/IMPLEMENTATION_CHECKLIST.md` 3.H, and the progress-tree canvas seed.
+
+**Stopping point:** immediately after step 137. Nothing is mid-edit. Phase 3.H is implemented, mounted
+and **verified over HTTP against the live database**. Two leftovers are recorded rather than silently
+passed: Known Issues #18 (unpriced add-on bills as a zero line) and #19 (`wallet_balance` is never
+debited). **The next task is Phase 3.I school setup.**
+
+The database is migrated and seeded, and carries no leftover fixture data. **Confirmed directly after
+session 13's final sweep, not from the scripts' own reports:** `users` 1 (the seeded bootstrap Super
+Admin, still `must_change_password = true`), 0 organizations, 0 schools, 0 `subscription_plans`, 0
+`plan_prices`, **0 subscriptions**, 0 `subscription_addons`, 0 `subscription_overrides`, 0
+`subscription_history`, **7 add-ons with `units_per_quantity` back at 1 and all seven active**, **0
+`addon_prices`**, 11 roles, 109 permissions, 353 grants, `audit_logs` 0, `usage_records` 0,
+`activity_logs` 1, 0 users matching `%verify%`, and the `principal` role back at its seeded **63**
+grants. The seeded rows the suites mutate — the `principal` role's grants, the two `librarian` labels
+session 9's suite touches, and the add-on catalogue both session 12's and session 13's suites edit —
+were confirmed restored after the run, not assumed. §1 now lists **four** mutating scripts rather than
+three: `verify-subscriptions.js` raises `addons.units_per_quantity` on `extra_students` from 1 to 50 and
+creates three `addon_prices` rows, restoring the first by column and the second by deleting above a
+captured baseline.
+
+`activity_logs` holds exactly **one** row, and it is deliberately left there: the real sign-in from
+step 54, recorded as `login` with `user_id = 4`, `user_email = superadmin@msms.local` and
+`role_slug = super_admin`. That is a genuine record of a genuine event rather than fixture debris, and
+it is also live proof outside the test suite that §5a defect 8 is fixed — before session 7 those three
+columns would all have been `NULL`. Deleting an audit row to make this paragraph tidier would be the
+wrong instinct.
+
+**Phases 3.A, 3.B, 3.C and 3.E are complete and verified, the application boots and serves, and six
+Phase 3.D module groups are complete and verified: authentication (SRS §7), the Super Admin platform
+surface (SRS §9), accounts and access (SRS §33 / §29), the subscription plan catalogue
+(SRS §10 / §11), the add-on catalogue (SRS §11.3), and the subscription lifecycle
+(SRS §12 / §30 / §33).** A Super Admin can now sign in, create an
+organization, create a school, create its Principal, assign them, **correct or suspend that
+Principal's account, give them per-account permission exceptions, and change what a role grants
+platform-wide**, suspend and reactivate the school, archive or delete it, read its usage,
+**build a priced plan from nothing — modules, features, all eight limits and a price book — activate it,
+publish it to the tenant-facing catalogue, duplicate it as the basis of the next tier, and archive it
+without disturbing the schools already on it**, and **configure the seven SRS §11.3 add-ons — set each
+one's block size, price it across the §10.3 cycles, restrict a price to a single plan, and withdraw one
+from sale without touching a school that already owns it** — all over HTTP, all audited.
+
+**And the catalogue can now be sold from.** A Super Admin can **subscribe a school to a plan, run it
+through a trial, activate it, configure its trial and grace durations, suspend and reactivate it, pause
+and resume it, attach and withdraw add-ons, write and revoke §33 feature, limit and price overrides, and
+cancel it** — and a school's own Principal can **upgrade with §12.3 proration credited against the
+remaining cycle, downgrade either immediately or at the next billing boundary, and renew** — every one of
+those writing a `subscription_history` row, refreshing `schools.subscription_state`, and invalidating both
+the entitlement and the tenant cache. The date-driven half runs as `runLifecycleSweep()`: trials that
+lapse, cycles that renew automatically, periods that end unpaid, grace periods that run out, and renewal
+notices, all five passes verified against hand-built fixtures.
+
+**What still cannot happen: a school cannot configure itself.** Billing is closed. There is no API for
+school settings, academic sessions, classes, sections or subjects. That is the whole of the next task.
+
+Session 16 (2026-09-02, same calendar day) opened on that stop and found it already taken. Sequence:
+
+138. Ran the fifteen-script loop as the **first** action of the session, per §8. Fourteen scripts matched
+     the recorded figures exactly; a fifteenth, `scripts/verify-school-setup.js`, existed and was not in
+     this file at all. That is what surfaced the unrecorded Phase 3.I work — four modules, one new
+     utility, and `src/app.js` carrying four extra mounts. `verify-app.js` read **151**, not the
+     recorded 143, which independently confirmed the mounts were real and had been re-run by whoever
+     made them.
+139. Established provenance from file mtimes, which is the only evidence available (no git history,
+     Known Issues #12): modules at 16:21–16:27, this file last written at 16:16. **Whether that was
+     session 15 continuing past its own log entry or a separate unrecorded session is not knowable**,
+     and is recorded as unknown rather than guessed — the correction §8 already carries from session 12.
+140. Confirmed the ground truth before trusting any of it: 15 scripts, **2,502** assertions at that
+     point, 0 FAIL, every script exit 0, and the database back to 0 fixture rows with the seeded
+     11 / 109 / 353 / 7 intact.
+141. Audited the 2,116 lines against SRS §14 and the per-module contract rather than accepting the green
+     run — the §8 rule that a passing suite is not evidence for a claim it does not make. Settled two
+     contract questions with evidence instead of assumption: SRS §11.2's eight plan limits contain no
+     class/section/subject/session limit, and `MODULES` has no school-setup module, so the absent
+     `enforceLimit` and `requireModule` are correct rather than forgotten.
+142. **Found five defects in shipped code** — §5a defects 16–20 — none of which any HTTP test could have
+     caught, and one of which (16) is unreachable through the seeded role grants entirely. Proved each
+     against the live database or the live schema before fixing it: the `organization_id` column error
+     by running the query, the cascade blast radius by reading
+     `information_schema.REFERENTIAL_CONSTRAINTS`, the timezone shift by formatting the same `Date` at
+     five offsets.
+143. Fixed all four. Confirmed the fixes are load-bearing by **deliberately regressing `childScope()`
+     and watching the suite go red**, then restoring the file and diffing it byte-for-byte against a
+     copy taken before the regression — an assertion that has never been seen to fail is not yet known
+     to work (§8, session 9).
+144. Took the suite from 111 to **157**: closed the audit gap (nineteen `recordAudit()` calls and
+     eighteen `logActivity()` declarations were entirely unasserted), closed the route gap (six declared
+     routes were asserted as shapes in Part 2 but never requested — measured from the run's own access
+     log, not estimated), and added the organization-scope regression.
+145. Corrected one wrong expectation of my own before believing it — a `school_settings` audit row with
+     `event: 'update'` that could not exist because the suite PATCHed once and the service upserts.
+     Fixing it properly surfaced that the update branch of `settings.update()` had never run.
+146. Re-ran the whole loop: **2,633 / 0 FAIL / every script exit 0**, and re-confirmed teardown
+     directly against the database.
+147. Deliberately did **not** fix Known Issues #20 (the `DATEONLY` timezone coercion). It is real and
+     measured, but it spans 28 columns in seven model files including the already-verified billing
+     modules; a one-module patch would leave the codebase inconsistent and billing still wrong.
+148. Updated this file and `docs/IMPLEMENTATION_CHECKLIST.md`. Found three stale artefacts in §6 while
+     doing so, exactly as §8 predicts: `verify-app.js` still read "133 checks" and "**sixteen** layers",
+     `documentNumber.js` was recorded at 297 lines against a real 244, and **`verify-billing.js` had no
+     row in §6 at all** — §1 listed fourteen scripts while §6 inventoried thirteen.
+149. Resolved Known Issues #20 rather than carrying it, because §15 was about to write six more
+     `DATEONLY` columns and fixing it afterwards would have meant re-verifying §15 too. **Checking the
+     service layer rather than stopping at the validation layer corrected the diagnosis**: the first
+     write-up called it project-wide and named billing, but `invoices.service.js:559-565` and
+     `quotations.service.js:275,326` already normalise through `dates.toDateOnly()` — only `sessions/`
+     bypassed it. A shared symptom at one layer is not a shared defect.
+150. Built the **teachers module** (SRS §15.3, §2k) — four files, six endpoints, mounted at index 25.
+     It is the first route in the project behind `requireModule`, and the first caller of
+     `enforceLimit` — closing the gap FR-SUB-008 has recorded since session 4.
+151. Wrote `scripts/verify-teachers.js`. First run: 3 FAIL, **all three wrong expectations of mine**,
+     each checked against the real behaviour before correcting — `subscriptionInactive` is **402** not
+     403, and two assertions read `.used` on a column named `used_value`, where `Number(undefined)` is
+     `NaN` and `JSON.stringify(NaN)` is `"null"`, so a found row looked like a missing one. Diagnosed
+     by instrumenting the service rather than by guessing at the query.
+152. Audited the module I had just written, on the principle that new-and-mine is not evidence of
+     correct. **Five defects, §5a 21–25** — a `PATCH` that bypassed the ceiling, an entitlement guard
+     and a record resolved from different schools, an unenforced one-teacher-per-account rule, a schema
+     wider than its column, and a confidently wrong sentence in my own documentation.
+153. Proved defect 21 before fixing it, by writing the assertion first and watching it fail: the PATCH
+     returned 200 and `usage_records` recorded 3 used against an allowance of 2.
+154. Took the suite from 67 to **82** and re-ran the whole loop: **2,633 / 0 FAIL / every script exit
+     0**, teardown confirmed clean against the database.
+155. Built the **students module** (SRS §15.1, §2l) — seven endpoints, the FR-STUDENT-002 state
+     machine as a transition table, and the first module whose permission split is dictated by the
+     SRS's own actor lists rather than chosen.
+156. Wrote `scripts/verify-students.js`. First run: 5 FAIL, all of them **ordering** — school A was at
+     its `student_limit` of 2 by the time the service-level negatives ran, so `enforceLimit` refused
+     first and four assertions were reaching nothing they claimed to test. Moved them ahead of the
+     second admission.
+157. **MariaDB stopped mid-session** (Known Issues #2) and Part 3 silently became a SKIP. Restarted it
+     with `mysqld --standalone` and waited for the port before continuing — the skip is announced, but
+     it is the failure mode session 14 shipped a half-verified suite on.
+158. Audited the module. **Five defects, §5a 26–30**, plus two defects in the suite itself: seven
+     assertions that passed on `.min(1)` rather than on `forbidden()`, and the four masked negatives.
+     Two of the five I found by reading before the audit returned; it found the other three.
+159. Proved defects 26 and 27 by regression — restoring the lexicographic sort crashes the suite on
+     `STUDENT_ID_TAKEN`; restoring the inherited section fails the minimal promotion with a 422 naming
+     a field the caller never sent.
+160. Took the suite from 95 to **111** and re-ran the whole loop: **2,747 / 0 FAIL / every script exit
+     0**, teardown confirmed clean.
+161. Built the **parents module** (SRS §15.2, §2m) — eight endpoints, and the first module since
+     `principals/` to create a `users` row. Followed that module's shape deliberately rather than
+     inventing a second account-creation path, down to reusing `usersService.rethrowUniqueViolation`.
+162. Wrote `scripts/verify-parents.js`. First run: 6 FAIL. **Five were the suite's own** — a 1-character
+     name against the model's `min(2)`, `must_change_password` read at `data.must_change_password`
+     when it nests under `data.user`, and `/auth/change-password` called with `newPassword` when the
+     schema takes `password`. Each was checked against the real behaviour before being corrected.
+163. **One was a real defect, and it was mine.** `rethrow` matched the unique index with
+     `name.includes('user')` — which also matches `users_username_unique` and `users_email_unique`, so
+     a duplicate account email came back as `PARENT_USER_TAKEN`, a code about an entirely different
+     constraint. Fixed by reading the four index names off the live schema and matching by **prefix**.
+     Substring matching in a namespace where one name contains another is a coin flip.
+164. Proved the `parent_students` scoping is load-bearing by regressing `childScope()` to
+     `tenantWhere()`: `GET /parents/:id/children` returns a 500 from `ParentStudent.findAll`, the exact
+     `Unknown column 'organization_id'` shape §5a defect 16 records.
+165. Re-ran the whole loop: **2,838 / 0 FAIL / every script exit 0**, teardown confirmed clean —
+     including that the parent accounts the *module* created were removed, not just the suite's own.
+166. Audited the parents module on the same terms as its siblings, rather than stopping because the
+     suite was green. **One real defect (§5a 31) and three assertions that proved nothing** — the
+     orphan-account proof, the entitlement-limit check and an entirely unsent `PATCH`.
+167. Proved the transaction fix is load-bearing by removing `{ transaction: t }` from the parent
+     insert: the run now fails, where before every assertion stayed green.
+168. Took the suite from 88 to **112** and re-ran the whole loop: **2,862 / 0 FAIL / every script exit
+     0**, teardown confirmed clean.
+169. Built the **staff module** (SRS §15.4, §2n) — four endpoints, the smallest of the phase, written
+     last on purpose so the four defects `teachers/` had to be fixed for could be avoided by
+     construction rather than rediscovered. It carries the re-activation ceiling from the start.
+170. `verify-staff.js` was **green on its first run**, which §8 treats as a warning rather than a
+     result — so the re-activation guard was regressed deliberately: four assertions go red with the
+     predicted values (a 200 where a 403 belongs, a headcount of 3 against a limit of 2).
+171. Re-ran the whole loop: **2,939 / 0 FAIL / every script exit 0**, teardown confirmed clean.
+172. Audited the staff module anyway. **No defect in the code — the first of the four §15 modules with
+     none** — but **four assertions in its suite that could not fail**, three of them shapes already
+     recorded once this session (§5a session 16, fifth part). The most serious: `list()`'s tenant
+     scoping had no counter-example to find, so deleting it left the suite green while every school's
+     staff leaked into every list.
+173. Proved both fixes by regression, and corrected two figures in this file that were wrong —
+     `verify-staff.js`'s per-part split (26/10/38 stated, 23/8/43 real, now 23/8/55) and "four defects"
+     where §5a 21–25 is five.
+174. Took the suite from 74 to **86** and re-ran the whole loop: **2,951 / 0 FAIL / every script exit
+     0**, teardown confirmed clean. **SRS §15 is closed** — all seven of its requirements are
+     implemented and verified.
+175. Built the **attendance module** (SRS §16, Phase 3.K, §2o) — five endpoints across two tables, the
+     first module that consumes students and teachers rather than creating them, and the first whose
+     write is naturally bulk. Checked both tables for the `organization_id` column before writing a
+     query (they have it, so `tenantWhere` is safe) and both unique indexes before designing the
+     upsert (both over NOT NULL pairs, so no NULL-distinct hole).
+176. Named two things §16 leaves open rather than resolving them silently: the **percentage formula**,
+     which §16 lists but does not define, and **FR-ATT-003's actor list**, which includes Teacher while
+     the seeded catalogue gives a teacher only `attendance.self.view`. Both readings are recorded in
+     §2o with the reason each is the safer one.
+177. Wrote `scripts/verify-attendance.js` with all four §15 audit findings applied from the start.
+     First run: 2 FAIL, **both mine** — an arithmetic slip in the expected status counts (I forgot the
+     late child stays late), and an expectation that an organization admin could list across schools,
+     which `requireModule` refuses by design with 400 `SCHOOL_CONTEXT_REQUIRED`. The second became a
+     better assertion than the one it replaced.
+178. Re-ran the whole loop: **3,033 / 0 FAIL / every script exit 0**, teardown confirmed clean.
+     **SRS §16 is closed.**
+
+179. Built the **fees module** (SRS §17, Phase 3.L, §2p) — eight endpoints across three tables, and the
+     first school-side module that moves money. Gathered the facts first: all three tables' columns, the
+     four `FEE_COMPONENTS`, the fine and discount enums, `STUDENT_FEE_STATUS`, `PAYMENT_METHOD_LIST`,
+     every unique index, the `fees.*` grants, and `invoices.applyPayment()` as the settle pattern to
+     mirror rather than reinvent.
+180. Verified two assumptions against the live database instead of trusting recall: `bulkCreate` **does**
+     back-fill auto-increment ids on MariaDB (an assignment whose response carried `id: undefined` would
+     give the collector nothing to pay against), and a DECIMAL crosses the wire as a **number** because
+     `config/database.js:59` sets `decimalNumbers: true`.
+181. Gave `documentNumber.nextNumber()` an optional `scope`, because `fee_payments`' unique index is
+     `(school_id, receipt_number)` and not the column alone — the four billing callers pass nothing and
+     are unaffected. Added the `FEE_RECEIPT: 'RCP'` prefix; `verify-billing.js` asserts the four billing
+     prefixes individually rather than the key set, so it stayed green.
+182. Mounted `/fees` at `/api/v1` index 30 and took `verify-app.js` from 166 to **169** (`/api/v1` is now
+     31 layers).
+183. Wrote `scripts/verify-fees.js` with the §15/§16 audit lessons applied from the start. First run:
+     5 FAIL, **all five my expectation being wrong about the codebase**, none a code defect — each was
+     replaced with what is actually true and four of the five are recorded in §5a as facts a later module
+     will need.
+184. Audited the module adversarially and found **two defects, both mine** (§5a defects 32 and 33): a
+     double-clicked assignment charged a family twice, because `student_fees` has no unique index and
+     nothing else said no; and `fine_paid` could exceed the payment its own column comment calls it a
+     portion of. Also wrote down `discount_given`'s inertness, which was correct but undocumented and so
+     indistinguishable from a bug.
+185. Proved the fixes and the four load-bearing assertions by **deliberate regression** — disabling the
+     double-bill guard, unscoping the receipt series, dropping `tenantWhere` from the ledger, replacing
+     the balance SUM with an increment, and removing the cross-school structure check. Each failed the
+     assertion it was meant to; one assertion crashed rather than failing and was made defensive.
+186. Re-ran the whole loop: **3,197 / 0 FAIL / every script exit 0**, teardown confirmed clean (every
+     fixture table 0, `users` 1, `activity_logs` 1, seed 11/109/353/7). **SRS §17 is closed.**
+
+187. Built the **finance module** (SRS §18, Phase 3.M, §2q) — nine endpoints across two tables, closing
+     the last section of the school-side money surface. Before writing a line, put the three open design
+     questions to independent reviews with different lenses (source fidelity, functional correctness,
+     schema intent): whether fee collections post into `incomes`, what shape a "Financial Report" takes,
+     and whether a correction path exists. Unanimous on the first two, 2–1 on the third; all three
+     readings are recorded in §2q with the dissent.
+188. Verified the two decisive claims myself rather than taking them on trust: **SRS §22 is a separate
+     "Reports" section** naming Expense and Fee Reports with PDF/Excel/Print export, which is what
+     settles §18 having no period taxonomy; and **`Model.sum(col, {group})` really does return only the
+     first group** — three expenses returned `150` instead of the breakdown. The second would have
+     shipped a plausible wrong figure on a financial report.
+189. Mounted `/finance` at `/api/v1` index 31 and took `verify-app.js` from 169 to **172** (`/api/v1` is
+     now 32 layers). Wrote `scripts/verify-finance.js`; first run 5 FAIL, **all five my expectation being
+     wrong about the codebase**, none a code defect.
+190. Audited the module adversarially with six lenses. The two defects that mattered were **not in
+     finance**: the entitlement gate and the data scope read the same request through two different
+     parsers (§5a defect 34), and `!isPlatform` discarded a Super Admin's named school (defect 35).
+     Both were project-wide.
+191. Proved the bypass on the live database before fixing it — `?schoolId=<A>` returned school B's rows
+     on **all six** module-gated routers an Organization Admin can reach, including from a school whose
+     plan excludes the module and which answered 403 to the canonical spelling. Fixed it centrally in
+     `loadSnapshot()` rather than in six services, and removed the `!isPlatform` exclusion from all six.
+192. Re-ran the probe: all six scoped correctly, and the platform show/PATCH case moved from 200-with-
+     another-school's-row to 404. Added the middleware assertions to `verify-entitlement.js` (249 → 261)
+     and proved them load-bearing — reverting the one-line fix fails four of them and re-leaks all six
+     modules.
+193. Read the **28 audit findings that no verifier ever saw** — 85 of the workflow's agents died on a
+     session quota and the harness had bucketed zero-vote findings as "refuted". Defects 37–40 and four
+     of the six unfailable assertions came out of that list. A finding nobody verified is not a refuted
+     finding.
+194. Fixed five more defects in the new module (36–40: the fold's lost total, missing money scale, the
+     transposed window, the leaked constraint name, the ignored `?q=`), corrected **two confidently wrong
+     sentences** in shipped headers, and repaired **six assertions across four suites that could not
+     fail** — including the entitlement-limit check that compared against a handler name nothing in this
+     codebase has.
+195. Re-ran the whole loop: **3,379 / 0 FAIL / every script exit 0**, teardown confirmed clean (every
+     fixture table 0, `users` 1, `activity_logs` 1, `audit_logs` 0, seed 11/109/353/7). **SRS §18 is
+     closed**, and with it the whole of §15–§18.
+
+196. Built the **exams module** (SRS §19, Phase 3.N, §2r) — nineteen endpoints over five tables, the largest
+     module in the project and the first whose recompute is **cohort-wide**: one student's mark moves every
+     other student's position.
+197. Adjudicated four genuinely open design questions with three independent lenses each before writing a
+     line: how Total/Percentage/Grade/Pass-Fail are computed, what Position means, whether FR-EXAM-005's PDF
+     belongs here, and whether §19 is one module or two. Three were unanimous; Position and the export split
+     2-1 and are recorded with the dissent.
+198. Established the module-shape rule the project had never stated: **one router per subscribable `MODULES`
+     key, not one per SRS section** — §14 and §15 became four routers each because §11.1 defines four keys
+     for each, and §16 is one module with a wider permission seam than §19 has.
+199. Wrote `scripts/verify-exams.js` around a hand-computed fixture ledger that reaches every branch of the
+     calculation — a tie, a student clearing every bar exactly and still failing on the band, and an absent
+     paper that still counts against its student.
+200. Audited the module adversarially: six lenses, 47 candidates, **31 confirmed** by three verifiers each,
+     16 never examined because the run hit a session limit. Deduplicated to **thirteen distinct defects**,
+     every one mine, none found by a failing check — including a departed student who could take **first
+     place** on a published merit list, and a published exam that could be silently re-graded.
+201. Fixed all thirteen, plus two false claims in my own headers and six unfailable assertions in my own
+     suite. Proved seven of the fixes by **deliberate regression**, reverting each in turn and watching the
+     assertion written for it fail.
+202. **Corrected a diagnosis I got wrong**: I wrote that `verify-plans.js` was "genuinely flaky" and
+     "pre-existing" after it failed about one run in six. It is neither — my own background audit agents were
+     running `verify-exams.js` against the same database, and the suites assert over a `max(id)` baseline.
+     Recorded as Known Issues #25. A clean serial loop returns it to 175/175.
+203. Re-ran the whole loop **serially**: **3,588 / 0 FAIL / 0 SKIP / every script exit 0**, teardown confirmed
+     clean (every fixture table 0, `users` 1, `activity_logs` 1, seed 11/109/353/7). Removed three rows an
+     audit subagent's own probe had left behind. **SRS §19.1–19.3 are closed; FR-EXAM-005 is half-delivered
+     and marked In Progress, not Completed.**
+
+204. Scouted **SRS §20** in full and found the largest section in the document: **seven FRs** across five
+     sub-sections (Timetable, Homework, Assignment, Library, Documents) over six tables. By the rule §19
+     settled it is **five modules**, because §11.1 defines a key for each — `TIMETABLE`, `HOMEWORK`,
+     `ASSIGNMENTS`, `LIBRARY`, and Documents under `CERTIFICATES`/`ID_CARDS`.
+205. Read all six §20 tables before writing anything. All carry `organization_id` and a NOT NULL
+     `school_id`, so §5a defect 16's trap does not apply anywhere in §20 — which is worth knowing
+     because it has now been checked rather than assumed three sections running.
+206. Measured two facts about column types no previous module needed. A `TIME` column **does not
+     round-trip**: `'09:30'` comes back `'09:30'` from a create and `'09:30:00'` on re-read, which is
+     §5a defect 37's response-versus-row divergence in a different type. And **MySQL accepts `24:00`**,
+     because `TIME` is a duration type with a ±838-hour range — so the column refuses no out-of-clock
+     time and the Joi pattern is the only guard.
+207. Built the **timetable module** (SRS §20.1, Phase 3.O, §2s) — six endpoints, mounted at index 33,
+     taking `verify-app.js` from 175 to **178** (`/api/v1` is now 34 layers).
+208. **Adjudicated §20.1's three open questions solo**, because the API returned `529 Overloaded` for
+     twenty-two consecutive agents across two attempts. The reasoning is recorded at panel length and
+     each counterargument is named, but the provenance differs from §17–§19 and §2s says so.
+209. Decided FR-TT-002's "flagged/prevented" as **prevented**, on a schema argument rather than a
+     preference: §35 forbids adding a column, so there is nowhere to store a flag — "flagged" is not
+     implementable against the fixed schema while "prevented" is. The colliding row is returned in the
+     409's `details` so a client can render a flag from it.
+210. Handled the NULL-permissive unique index — **§5a defect 19's third sighting**. A null `section_id`
+     means the whole class sits the period, so two class-wide rows collide and a class-wide row collides
+     with a section row of that class, in both orders. The alternative (requiring a section) was rejected
+     because `sections` may be empty and a school that had not divided its classes could then not build a
+     timetable at all.
+211. Wrote `scripts/verify-timetable.js` so every FR-TT-002 rule is tested **twice** — a refusal and a
+     near-miss — because an assertion that only exercises the refusal proves the happy path and nothing
+     else. First run: 2 FAIL, both my expectations, one of them informative: the **period** check fires
+     before the teacher check, so the row I had chosen to move already had a period clash at its
+     destination and the teacher rule was never reached.
+212. Ran ten deliberate regressions; each failed the assertion written for it. Two of the suite's own
+     assertions reported as **crashes rather than failures**, because they used the throwing `expectOk()`
+     on a path a regression makes fail — both converted to explicit status assertions, which is the §5a
+     lesson applied to the suite rather than to the code.
+213. Re-ran the whole loop **serially**: **3,703 / 0 FAIL / 0 SKIP / every script exit 0**, teardown
+     confirmed clean (every fixture table 0, `users` 1, `activity_logs` 1, seed 11/109/353/7).
+     **SRS §20.1 is closed.**
+
+214. **Re-established ground truth before planning anything.** This session opened intending to build
+     §20.1, from a stale reading of my own next-task note — but §20.1 was already built, verified and
+     recorded. A gathering agent reported the module existed; rather than take that on trust I listed
+     the directory and read the log, then ran the whole loop and matched **3,703 / 0 FAIL** against
+     what the log claimed. The session id had changed, which is the visible sign that the project had
+     moved on without this context.
+215. Fixed **§5a defect 54** in the freshly-shipped §20.1 module: `assertNoConflict()` ran its three
+     conflict queries with a transaction and **no locking read**, which is the weaker
+     `fees.alreadyAssigned()` posture and the wrong precedent for a NULL-permissive index.
+     `subjects.service.js` had already settled the identical shape and says a locking read is "the only
+     backstop available while the key stays nullable". All three queries now take `LOCK.UPDATE`, the
+     guard refuses to run without a transaction, and a comment that understated the remedy was
+     corrected. Asserted at the source, because a lock cannot be provoked from a single-threaded suite.
+216. Proved empirically, rather than assuming MySQL semantics, that the hole is real: two class-wide
+     rows with the same class/day/period are **accepted**, while two section rows are refused.
+217. Moved `relativeUploadPath()` from `payments.service.js` into `middlewares/upload.js`, because §20.2
+     became its second caller and a school-side module reaching into a billing service for a path helper
+     is the wrong dependency. `payments` re-exports it; `verify-billing.js` stayed at 216/216.
+218. Built the **homework module** (SRS §20.2, Phase 3.P, §2t) — four endpoints, and the first module in
+     the application that actually performs an upload. The `homework` multer profile had existed since
+     `upload.js` was written, citing FR-HW-001 by name, with no caller.
+219. Implemented the self-scoped view the fixed catalogue forces: `homework.view` reaches students and
+     parents with no `homework.self.view` to tell them apart, so the service narrows a student to their
+     own class's published homework and a parent to their children's — on the read-by-id as well as the
+     list, since a list-only narrowing is one an id guess steps around.
+220. Wrote `scripts/verify-homework.js` — 98 checks, **the first suite that uploads real bytes** and
+     verifies them on disk, then cleans them up. Two fixture errors of mine on the first run: due dates
+     in the past relative to the system clock, so the defaulted `assigned_date` overtook them; and an
+     assumption that an Organization Admin can read homework, which the catalogue does not allow at all.
+221. Ran six deliberate regressions; each failed the assertion written for it. One found a guard with no
+     assertion behind it — the changed-class/kept-section check — which now has one.
+222. Re-ran the whole loop **serially**: **3,807 / 0 FAIL / 0 SKIP / every script exit 0**, teardown
+     confirmed clean (every fixture table 0, `users` 1, `activity_logs` 1, seed 11/109/353/7) and **zero
+     uploaded files left on disk**. **SRS §20.2 is closed.**
+
+223. Built the **assignments module** (SRS §20.3, Phase 3.Q, §2u) — eight endpoints covering the whole
+     of FR-ASG-001, and the first module in the application where a **student's own request writes a
+     row**. One table holds both shapes, because §29 lists no submissions table.
+224. Settled the two questions the single-table design forces before writing any of it. The two
+     `record_type` shapes get **separate lists** (`GET /` and `GET /submissions`), because a shared list
+     would leak each into the other while every ordinary assertion stayed green. And a submission is
+     narrowed by **`student_id`**, not by `class_id` — the obvious copy of §20.2 would have shown one
+     child every classmate's answer.
+225. Recorded that `assignments_submission_unique (parent_assignment_id, student_id)` is the **fourth**
+     sighting of that index shape and **the first that is not a defect**: both columns are non-null on
+     every row it constrains, so MySQL's NULL-distinct rule cannot swallow a duplicate, while the same
+     rule lets any number of assignment rows coexist. Stated explicitly, because the previous three were
+     holes and a reader will assume this one is too.
+226. Implemented `returned` as the value that re-opens the submit route — a returned submission is
+     replaced in place, losing the mark it was given, and a `submitted` or `reviewed` one is refused.
+     The route answers 201 on a first submission and 200 on a replacement.
+227. Used the `submission` upload profile, which had cited FR-ASG-001 by name since `upload.js` was
+     written and had no caller, rather than adding a seventh. The file sits on the **submit** and on
+     nothing else: FR-ASG-001 names no upload for the teacher's assignment, and there is no assignment
+     profile beside the submission one — two independent readings agreeing.
+228. Fixed **§5a defect 55** in the model layer: `Assignment.belongsTo(Assignment, { as: 'assignment' })`
+     could never be included, because MySQL compares table aliases case-insensitively and it collided
+     with Sequelize's own `Assignment` alias. Renamed `parentAssignment`. It had been unexercised since
+     §20.3's model was written.
+229. Fixed **§5a defect 56** in this session's own schema: `review` spread the shared `owned` map last,
+     which silently overwrote `marks_obtained` and `feedback` with their `forbidden()` versions and made
+     the review route reject every review. Fixed by lifting the two keys out of the map, not by
+     reordering it.
+230. Wrote `scripts/verify-assignments.js` — 196 checks, with a fixture built so the three failures that
+     would otherwise be silent are visible: two students in the **same class and section**, both
+     `record_type` lists asserted for what they must **exclude**, and both halves of `returned`.
+231. Ran **sixteen** deliberate regressions. Fifteen were caught immediately; the sixteenth exists
+     because R15 exposed a flaw in the suite rather than in the module — deleting the class check left
+     the suite green, because the *section* guard was answering that request with the same code. The
+     assertion was rewritten to isolate the class check, and a regression was added for the section one.
+232. Rebuilt §1's script table **from measurement**. Four figures disagreed with what the scripts print
+     and one row was duplicated with a line count in the checks column; which session introduced each is
+     unknown, and the log now says so. Re-ran the whole loop **serially**: **4,007 / 0 FAIL / 0 SKIP /
+     every script exit 0** — 169, 185, 196, 80, 84, 231, 216, 261, 52, 206, 163, 163, 98, 262, 113, 175,
+     313, 157, 22, 86, 111, 208, 82, 115, 236, 23 — teardown confirmed clean (every fixture table 0,
+     `users` 1, `activity_logs` 1, `audit_logs` 0, seed 11/109/353/7) and **zero uploaded files left on
+     disk**. **SRS §20.3 is closed.**
+
+233. Built the **library module** (SRS §20.4, Phase 3.R, §2v) — nine endpoints over **two** tables,
+     covering FR-LIB-001's catalogue and FR-LIB-002's issue / return / fine.
+234. Handled the project's **first shared counter**. `books.available_quantity` is one number two
+     writers contend for, so `issue()`, `returnLoan()` and the quantity branch of `updateBook()` each
+     run in a transaction with a locking read on the book row. All three lock the same single row, so
+     nothing can deadlock. The invariant `quantity − available_quantity === copies on loan` is what the
+     module maintains and what the suite asserts.
+235. Made `available_quantity` and `cover_path` `forbidden()` on both book routes. The first would let a
+     caller make a book look available while every copy was out; the second would have made this module
+     **Known Issues #26's sixth** caller-supplied filesystem path, which is the opposite of the direction
+     that issue is meant to move in.
+236. Decided, and recorded, that **overdue is derived and never stored**. The enum carries the value and
+     nothing writes it: storing it needs a scheduled sweep §20.4 does not ask for, and a stored flag is
+     wrong every day between the due date and the next sweep. Asserted both ways — the filter finds an
+     open overdue loan, and the row it finds still says `issued`.
+237. Implemented the fine as **calculated, not entered**, because FR-LIB-002 says the system calculates
+     it: `fine_per_day` × whole days past the due date, in integer minor units through `utils/money.js`.
+     Calculating and settling are separate routes, because a fine that could only be recorded at the
+     moment of payment could not be recorded at all for a borrower who has not paid.
+238. Kept the SRS's own precondition as the *only* gate on issuing — *"Book exists in catalog and is
+     available"* — rather than inventing a one-copy-per-borrower rule §20.4 never states. Recorded so
+     the absence reads as a decision.
+239. Fixed **§5a defect 57**, which is defect 56 repeated in a different module: `returnBook` spread the
+     shared `transactionOwned` map last, silently forbidding `return_date`, the one column that route
+     writes. The doctrine is now written down — a schema spreading a shared `forbidden()` map needs a
+     **positive** assertion per route for the columns that route writes.
+240. Wrote `scripts/verify-library.js` — 161 checks, every issue/return assertion re-reading
+     `[quantity, available_quantity]` off the database rather than out of the response, and the locking
+     reads asserted at the source because a lock cannot be provoked single-threaded. Ran **twenty-one**
+     deliberate regressions; L15 exposed a flaw in the suite rather than the module — a `cover_path`
+     assertion that was true on a create response whether or not the suppression existed — which was
+     rewritten to write a real path first and assert against the read-back.
+241. Re-ran the whole loop **serially**: **4,171 / 0 FAIL / 0 SKIP / every script exit 0** — 169, 188,
+     196, 80, 84, 231, 216, 261, 52, 206, 163, 163, 98, 161, 262, 113, 175, 313, 157, 22, 86, 111, 208,
+     82, 115, 236, 23 — teardown confirmed clean (every fixture table 0, `users` 1, `activity_logs` 1,
+     `audit_logs` 0, seed 11/109/353/7) and zero files left on disk. **SRS §20.4 is closed.**
+
+242. Built the **documents module** (SRS §20.5, Phase 3.S, §2w) — three endpoints covering all seven of
+     FR-DOC-001's documents. **SRS §20 is now closed in full.**
+243. Solved the entitlement shape §20.5 forces, which no other module has had. `DOCUMENT_TYPE_MODULE`
+     maps the seven types onto **four** subscribable modules, so the key is not known until the request
+     names a type. The router mounts `requireActiveSubscription()` — the state half `requireModule`
+     checks first anyway — and `assertModuleForType()` does the module half per request, in the same
+     order. This is the **only module router in the application without a `requireModule()`**, asserted
+     as such by scanning every router on disk.
+244. Proved it with the fixture that matters: a school subscribed to **Certificates but not ID Cards**
+     issues a leaving certificate and is refused a student ID card — the same caller, the same school.
+     A single router-level key could only have been wrong in one direction or the other.
+245. Made `generation_payload` a real reproduction rather than a marker: seven builders that read the
+     underlying records, naming a student's class and section rather than leaving ids a template cannot
+     print, and reporting §19's stored result columns rather than recomputing them.
+246. Derived `owner_type` from the document type and refused it from the body, the doctrine §20.3
+     applies to `record_type`. Enforced FR-DOC-001's precondition — *"Relevant underlying record
+     exists"* — **in the caller's school**, without which a certificate could carry another school's
+     student under this letterhead.
+247. Recorded, and asserted **positively**, what §20.5 does not deliver: no bytes (rendering is Phase
+     5.4), so every file column stays null and `storage_limit` is not incremented; and still no download
+     route anywhere in the application. `present()` already suppresses `file_path`, so the response
+     shape will not change when Phase 5.4 arrives.
+248. Corrected a **false claim of mine in three files**: that the two document permissions are uniquely
+     declared with `module: null`. **59 of the 109** seeded permissions are, and `app.js` already said
+     the field is metadata nothing reads. Removed rather than softened.
+249. Fixed a defect the first run surfaced: the result-card builder named §19's columns by guess —
+     `total_marks`, `obtained_marks`, `grade`, `is_pass`, none of which exist — and produced a payload of
+     nulls. The suite now pins the payload's **key set**, so a guessed name shows up as an unexpected key.
+250. Wrote `scripts/verify-documents.js` — 120 checks — and ran **nineteen** deliberate regressions.
+     **Seven went unnoticed on the first pass**, every one a weakness in an assertion rather than in the
+     module: an `indexOf` ordering probe that a deletion satisfied; an ordering unreachable through its
+     own route; the create-response trap for the **third** time in this session; two assertions that
+     crashed instead of failing; a pair that had to be one; a negative test with a non-existent id
+     instead of a real cross-school one; and a guard covered only by a crash. All seven are written up
+     in §5a, because four are distinct failure modes worth not repeating.
+251. Re-ran the whole loop **serially**: **4,294 / 0 FAIL / 0 SKIP / every script exit 0** — 169, 191,
+     196, 80, 84, 231, 216, 120, 261, 52, 206, 163, 163, 98, 161, 262, 113, 175, 313, 157, 22, 86, 111,
+     208, 82, 115, 236, 23 — teardown confirmed clean (every fixture table 0, `users` 1, `activity_logs`
+     1, `audit_logs` 0, seed 11/109/353/7) and zero files left on disk.
+252. **SRS §20 is closed in full** — §20.1 FR-TT-001/002, §20.2 FR-HW-001, §20.3 FR-ASG-001, §20.4
+     FR-LIB-001/002, §20.5 FR-DOC-001. With §14–§19 already closed, the school-side functional surface
+     of the SRS is complete.
+
+253. **Closed Known Issues #26** (§2x) — the six columns that accepted a caller-supplied filesystem
+     path. It was the last open defect standing between this project and a file-serving route, and the
+     §7 brief said to do it before building one.
+254. Corrected the issue's own headline: it said **five** columns; there are **six**. `photo_path` on
+     `students`, `teachers`, `staff` and `parents`, plus `logo_path` and `favicon_path` on
+     `school_settings`.
+255. Established, by reading `docs/SRS-extracted.md:700-806` rather than assuming, that the remedy the
+     issue prescribed — *"refuse all six and write them only from an upload"* — is right about the
+     refusal and wrong about the writer. §15.1 names "Student Photo"; **§15.2, §15.3 and §15.4 name no
+     photo at all**; §14.1 names Logo and Favicon as configuration beside Website. One issue, three
+     different correct answers.
+256. Gave `students.photo_path` its first real writer: `POST /students/:id/photo`, using the
+     `PERSON_PHOTO` profile that had cited §15.1 / FR-STUDENT-001 since `upload.js` was written and had
+     never been called. Two of the six profiles remain uncalled — `ai_source` and `student_document`.
+257. Refused `photo_path` on teachers, staff and parents with **no writer at all**, because giving them
+     an upload route would be inventing a requirement. Recorded in each schema, so a reader who finds a
+     column nothing writes does not assume it was forgotten.
+258. Made `school_settings.logo_path` / `favicon_path` absolute http(s) URLs, **stored normalised**.
+     Measured first: `Joi.uri({ scheme })` alone accepts `https://a.test/../../../etc/passwd`, which
+     `path.join` then resolves outside the uploads root, and the `..`-pattern guard the design panel
+     proposed both rejects a legitimate `logo..png` and misses `%2e%2e`. `new URL()` handles all three.
+259. Corrected a **false comment** in `organizations.validation.js` claiming `logo_path` is "written by
+     the upload middleware": nothing writes it, there is no such route, and the column is protected by
+     `stripUnknown`. The conclusion held for a different mechanism than the one stated.
+260. Fixed three more assertions that were **true for the wrong reason** — a `javascript:` refusal that
+     was really the XSS sanitiser, a `.min(1)` update schema swallowing a forbidden-only body, and a
+     positionally fragile audit lookup. The running count is twelve across four modules, all found by
+     deliberate regression.
+261. Ran **thirteen** deliberate regressions; all thirteen caught. Four initially reported MISSED because
+     the *harness* left a dangling `.messages()` chain — a SyntaxError reads exactly like an untested
+     guard in a regression report, so the harness now says which it is.
+262. Re-ran the whole loop **serially**: **4,339 / 0 FAIL / 0 SKIP / every script exit 0** — 169, 191,
+     196, 80, 84, 231, 216, 120, 261, 52, 206, 163, 163, 98, 161, 262, 116, 175, 313, 168, 22, 89, 136,
+     208, 85, 115, 236, 23 — teardown clean (fixture tables 0, `users` 1, `activity_logs` 1,
+     `audit_logs` 0, seed 11/109/353/7) and **zero files and zero directories** left in
+     `storage/uploads`, the directory half being a leak all three upload-writing suites had.
+
+263. Built the **AI module** (SRS §21, Phase 3.T, §2y) — ten endpoints covering FR-AI-001's nine-step
+     workflow and FR-AI-002's usage limit. **§21 is closed on its own terms**; §21 itself says twice
+     that nothing beyond its workflow is documented.
+264. Brought four things alive that had never run: `usageService.recordUsage` (**zero call sites in
+     `src/`** since it was written), `question_banks` and `questions` (registered, associated, never
+     read or written), `aiLimiter`, and the `ai_source` upload profile.
+265. Made the workflow a **state machine on `workflow_stage`**, `forbidden()` in every schema. A body
+     that could set it could jump to `approved` and put unreviewed questions in the Question Bank, which
+     is what FR-AI-001's preview-and-approve half exists to prevent. Every transition is asserted out of
+     order as well as in it.
+266. Metered **exactly one route**. §21's own example is "Plan: 1000 AI Requests"; had extract and
+     analyze counted too, that plan would buy 333 question sets. The generation carries
+     `enforceLimit(LIMITS.AI_LIMIT)` and is the only caller of `recordUsage`.
+267. Put the increment **after the commit, awaited, unswallowed**, and proved all three: a blocked
+     request leaves the counter at 3; a failed generation leaves it unmoved, the bank retryable and no
+     questions written; and the retry charges exactly one. The failure was forced **through the seam
+     itself** — pointing the driver at a name no adapter answers to — rather than by adding a test-only
+     driver to `src/`.
+268. Built `src/ai/` as a flat driver switch in `mailService.js`'s shape, with each adapter **lazily
+     required**, and asserted that under `AI_DRIVER=mock` neither `@anthropic-ai/sdk` nor `pdf-parse` is
+     in `require.cache`. Both are declared in `package.json` and neither had been required anywhere.
+269. Wrote the `anthropic` adapter against the contract and said in its own header, before anything
+     else, that **it has never been executed**. Checklist row 5.2 stays open, and what *is* verified —
+     the seam, the unknown-driver refusal, the contract-method check — is stated exactly.
+270. Resolved a disagreement between the SRS and the schema rather than picking a side: SRS:1140/:1160
+     put "Select Difficulty" after generation, while `requested_difficulty`'s own comment calls it an
+     input to generation. The generation takes a hint; the separate transition is SRS:1160's step.
+271. Fixed a defect the model itself caused: `db.Question.update()` raises the MCQ validator against a
+     partial instance. `{ validate: false }` would silence a real safeguard, so both write paths load
+     rows and save instances.
+272. Ran **sixteen** deliberate regressions. Six went unnoticed on the first pass and **all six were the
+     suite's fault** — including `indexOf(a) < indexOf(b)` being satisfied by deleting `a`, which is
+     verbatim a §5a session-22 finding repeated three sessions later in a new file. Writing the lesson
+     down did not prevent repeating it; the regression pass caught it.
+273. Raised without changing: `.env.example:92` ships `AI_DRIVER=anthropic` while `.env:77` says `mock`,
+     and `env.js` refuses to boot with the former unless `ANTHROPIC_API_KEY` is set — so a developer
+     copying the example gets a boot failure. And `env.js` validates the key but never the driver name.
+274. Re-ran the whole loop **serially**: **4,511 / 0 FAIL / 0 SKIP / every script exit 0** — 169, 169,
+     194, 196, 80, 84, 231, 216, 120, 261, 52, 206, 163, 163, 98, 161, 262, 116, 175, 313, 168, 22, 89,
+     136, 208, 85, 115, 236, 23 — teardown clean (fixture tables 0, `users` 1, `activity_logs` 1,
+     `audit_logs` 0, seed 11/109/353/7) and zero files and zero directories in `storage/uploads`.
+
+275. Built the **reports module** (SRS §22, Phase 3.U, §2z) — seven endpoints for §22's seven reports.
+     The **first read-only module** in the application, because §29 gives §22 no table: a report is a
+     read across tables other modules own.
+276. Delegated two of the seven rather than reimplementing them. The Attendance Report calls
+     `attendanceService.report()` and the Expense Report calls `financeService.report()`, inheriting
+     §16's percentage convention and §18's multi-currency refusal instead of re-deciding either.
+277. Made the delegation structural, not just a call: both routes **validate against the owning
+     module's own schema**, so the paired endpoints cannot drift apart in what they accept. And the
+     suite compares the payloads **field for field**, so §22 cannot start recomputing without breaking.
+278. Required **two permissions per report** — `reports.view` plus the owning module's read. Measured
+     first: `reports.view` reaches Teacher and Librarian, whom `finance.view` and `fees.view` do not, so
+     one key alone would have made the report a way around the permission on the data it reports.
+279. Mounted **no router-level guard**, alone among the fifteen entitlement-aware routers, because
+     `reports.subscription.view` carries `module: null` and belongs to the two scopes with no single
+     school. The six school reports name both modules per route instead.
+280. Delivered **FR-REPORT-002 in Excel**. `exceljs` had been installed and unused since `package.json`
+     was written; `writeBuffer()` returns a Buffer, so nothing is written to disk. What was actually
+     missing was a **non-JSON response** — `ApiResponse` emits only `res.status().json()` — which is a
+     Content-Type and a Buffer, not a renderer. PDF stays with Phase 5.4 and Print is a client concern;
+     both are **refused with 422** rather than silently answered with JSON.
+281. Gave `REPORT_TYPES` and `REPORT_FORMATS` their first consumers, both having had none.
+282. Corrected a **false claim of mine** in two files: that `/reports` is the only module router without
+     a router-level guard. Nineteen others have none; the true claim is about the fifteen
+     entitlement-aware ones. Its own assertion refuted it on the first run.
+283. Ran **twenty-three** deliberate regressions. Three showed the fixture could not provoke a guard at
+     all — an over-payment, a second currency and an exam nobody sat were added because of them.
+284. Measured one guard to a conclusion instead of asserting it: removing the empty-set branch on
+     `pass_rate` yields NaN, which serialises to `null` in JSON *and* as an empty cell in exceljs, so
+     the guard is defensive only and no assertion can prove it. Its sibling on `average_percentage` IS
+     observable — SQL `AVG` over no rows is NULL and `Number(null)` is 0 — and the regression was
+     retargeted there. The service now says which half is load-bearing.
+285. Corrected stale documentation found while counting: `FR-PARENT-001` still read **Next** and
+     `FR-PARENT-002` **Pending** though the module shipped in §2m, and §6's script inventory still
+     carried pre-#26 figures for five suites. Both from measurement; the cause of each drift is unknown.
+286. Re-ran the whole loop **serially**: **4,613 / 0 FAIL / 0 SKIP / every script exit 0** — 169, 169,
+     198, 196, 80, 84, 231, 216, 120, 261, 52, 206, 163, 163, 98, 161, 262, 116, 175, 313, 98, 168, 22,
+     89, 136, 208, 85, 115, 236, 23 — teardown clean (fixture tables 0, `users` 1, `activity_logs` 1,
+     `audit_logs` 0, seed 11/109/353/7) and zero files and directories in `storage/uploads`.
+
+287. Built the **notification engine** (SRS §23, Phase 3.V, §2aa) — FR-NOTIF-001, the **last SRS
+     requirement of the backend**. Nine types, five routes, and **no route that sends anything**.
+288. Let **§29 settle the architecture** rather than choosing one. Five tables carry a marker column
+     whose own comment names a *cron* or says *"dispatched"*, and `homework` and `exams` already
+     refuse theirs with *"stamped by the §23 notification job"*. A marker column answers *"have I
+     already sent this?"* — a question only a job asks. So §23 is eight sweeps with no route, in the
+     shape `runLifecycleSweep()` and `markOverdue()` already have.
+289. Therefore changed **not one line of the seven owning modules**. §23 reads their tables and stamps
+     their markers; it never touches their write paths. The 4,613 assertions standing over them
+     describe the same code afterwards, and the loop moved only by this section's own additions.
+290. Made the four markerless types idempotent through the `notifications` table itself, over §29's
+     `(reference_type, reference_id)` index — one grouped query per sweep, never one per candidate.
+291. Measured three absences instead of assuming them: there is **no `MODULES.NOTIFICATIONS`**, **no
+     limit key** that counts a notification, and **no SMS channel** (§35 leaves further channels
+     unspecified). So this is the first module since §14 that gates and meters nothing, and the count
+     of entitlement-aware routers stays at fifteen — which `verify-app.js`'s existing assertion of
+     that number is what proves.
+292. Separated the two channels into two different things: an `in_app` row **is** the delivery and is
+     born `sent`; an `email` row is a delivery **attempt** and is the only thing a retry can repair.
+     A failing transport is recorded on the row and never thrown, because the in-app copy has already
+     been received.
+293. Kept `tenantWhere()` out of the one module where it is unsafe by design — `notifications.school_id`
+     is nullable, and §29 says a null one *is* a platform notification. Every read is scoped by
+     `user_id`, which is narrower than any tenant filter.
+294. Gave `notifications.send` the retry and wrote down why: §23 names no human sender, so the
+     narrowest thing that key can guard without inventing a compose-and-send feature is re-sending a
+     notification the engine itself authored.
+295. Ran **forty-three** deliberate regressions. Three missed, for three different reasons — an
+     assertion that pinned a status code but not which guard produced it, a fixture that could not
+     provoke a per-type lookup, and a guard pair that is defence in depth and therefore unprovable one
+     half at a time. All three are in §5a.
+296. Corrected **two wrong predictions in the previous session's own brief** — `LIMITS.SMS_LIMIT` and
+     `MODULES.NOTIFICATIONS` do not exist — within minutes of reading `constants.js` instead of
+     remembering it.
+297. Re-ran the whole loop **serially**: **4,715 / 0 FAIL / 0 SKIP / every script exit 0** — 169, 169,
+     202, 196, 80, 84, 231, 216, 120, 261, 52, 206, 163, 163, 98, 161, 262, 98, 116, 175, 313, 98,
+     168, 22, 89, 136, 208, 85, 115, 236, 23 — teardown clean (fixture tables 0, `users` 1,
+     `activity_logs` 1, `audit_logs` 0, seed 11/109/353/7) and zero files and directories in
+     `storage/uploads`.
+
+298. Built **`src/jobs/`** (SRS §25, §26, §27; Phase 5, §2ab) — the scheduler `package.json` had
+     named since it was written, and the caller **four routeless sweeps** had been waiting for.
+     Everything it needed was already decided: the three entry points in `package.json`, `node-cron`
+     as an unused dependency, and four `config/env.js` settings nothing had ever read.
+299. Encoded the **run order as a dependency**, not a preference. `notification-dispatch` must follow
+     `subscription-lifecycle`, because §23 notifies subscriptions in state `expiring` and the
+     lifecycle sweep is what writes that state. A cron expression cannot express that, so ordering
+     lives in `ORDER` and anything depending on it uses `--once`.
+300. Proved that ordering **end to end** rather than structurally: a subscription planted as `active`,
+     one ordered run, and a notification that can only exist if the two tasks ran in sequence.
+     Comparing array positions would have been the `indexOf` trap §5a has already caught twice.
+301. Found a **defect in §23 that neither module's suite could see.** The lifecycle sweep pre-stamped
+     `expiry_notified_at` — the exact column §23's sweep uses to decide it has not notified yet — so
+     that notification had never fired for any subscription reaching `expiring` normally. §29 says
+     the column belongs to *"the expiry-notice cron"*; the stamp is removed, and `renew()`'s existing
+     reset is what keeps "once per cycle" true.
+302. Shipped **FR-BKP-001** — `mysqldump` plus retention, into `BACKUP_DIR`, pruning only files this
+     task names and only by mtime, deleting a part-written dump rather than keeping it. The suite
+     asserts the dump is restorable: all 64 model tables plus `sequelize_meta`, the migration ledger,
+     which is not a 65th table.
+303. Fixed a bug in that task that **reported success while doing nothing** — a promise that never
+     settled, a complete 222 KB dump on disk, and Node exiting 0 with an empty event loop. Then made
+     the class survivable rather than merely fixed: every task is now bounded, because a hung task
+     holds its name in `running` and silently stops all its own future ticks.
+304. Ran **fifteen** deliberate regressions. Two missed and one hung the harness for ten minutes;
+     each produced a change to the code or the suite, and all three are in §5a.
+305. Corrected a claim of my own before it reached a document: `cron.js`'s first header said a queue
+     needed a table §29 forbids and implied none existed. `src/config/queue.js` has existed since
+     August and its own header already gave both the constraint and the resolution.
+306. Re-ran the whole loop **serially**: **4,757 / 0 FAIL / 0 SKIP / every script exit 0** — 169, 169,
+     202, 196, 80, 84, 231, 216, 120, 261, 52, 206, 163, 163, 98, 42, 161, 262, 98, 116, 175, 313,
+     98, 168, 22, 89, 136, 208, 85, 115, 236, 23.
+
+307. Built **`src/utils/pdf.js`** (Phase 5.4, §2ac) — the table engine `reports.service.js` had
+     named as the reason `pdfkit` stayed unused. One shape, returning a Buffer, so an export still
+     needs no file on disk and none of the file-serving infrastructure this application lacks.
+308. Shipped **FR-REPORT-002's PDF half**. All seven §22 reports gained it at once, because `toPdf()`
+     is fed by the **same `toRows()` walk** `toExcel()` uses — the suite asserts every key that walk
+     produces reaches the page, so the two exports cannot disagree about what a report contains.
+     `print` is still refused with 422: §22 names it, and there is no view engine here.
+309. Fixed a rendering bug that produced a **valid but wrong** document — the footer paginated,
+     adding a blank page to every PDF, because `doc.text()` adds a page when its y passes the bottom
+     margin. Nothing in the bytes is malformed, so only an exact page count can see it.
+310. Ran **ten** deliberate regressions. **Four missed**, all for one cause: §22's report fits on a
+     single page and all four guards are about the second. `verify-pdf.js` exists because of that,
+     and all four are now detected — as is reattaching the settle listeners after `doc.end()`, the
+     same trap the backup task shipped with earlier this session.
+311. Recorded that **`pdf-parse` cannot parse pdfkit output** — it fails with "Illegal character" on
+     a document that has been through none of my code. Both suites inflate the content streams
+     instead. Worth knowing before §21's extraction is wired to it.
+312. Re-ran the whole loop **serially**: **4,785 / 0 FAIL / 0 SKIP / every script exit 0** across
+     thirty-three scripts, and `verify-pdf.js` fourteen times at 20 every time.
+
+313. Shipped **FR-EXAM-005's PDF half** (§2ac) — `?format=pdf` on the result card, rendered from the
+     same payload the JSON returns. §19.3 names PDF and Print and **no Excel**, so a spreadsheet is
+     refused there even though §22 offers one. `result_card_path` stays null: the Buffer is streamed.
+314. Shipped **FR-DOC-001's PDF half** — all seven of §20.5's documents, in three shapes. The engine
+     gained a **prose block** for the two certificates, which are letters rather than tables.
+315. Decided, and wrote down, that a Character Certificate **characterises nothing**. Nothing in §29
+     records conduct and §20.5 fixes no wording, so asserting good character would be this system
+     making a claim on the school's behalf that no column supports. It states what is on file and
+     ends in a signature block. The suite asserts the absence of the conduct phrases, so the decision
+     cannot quietly change.
+316. Rendered every document from **`generation_payload`**, not the live record — which is what
+     storing the snapshot was for. Asserted by renaming the student and requiring a reissued
+     certificate to still carry the old name.
+317. Consolidated §19's absence rule into a shared **`subjectRows()`**, after a deliberate regression
+     showed two renderers had each grown a private copy of it. `0` for an absent paper reports a mark
+     the student never received; that rule now has one owner.
+318. Ran **twenty-nine** deliberate regressions across Phase 5.4 in total. Seven missed, and every one
+     changed the code or the suite rather than the expectation.
+319. Re-ran the whole loop **serially**: **4,811 / 0 FAIL / 0 SKIP / every script exit 0** across
+     thirty-three scripts.
+
+320. Registered **§25's queue handlers** (§2ad) — `src/jobs/handlers/index.js`, the file
+     `config/queue.js` has named since August and never had. Four of the eight `JOB_NAMES` are
+     registered; the other four are refused **with a reason**, because a job whose result nobody can
+     collect has not been processed.
+321. Gave the queue its **first caller**, and fixed a defect doing it: §7's password-reset and
+     verification mails were awaited in the request path, so a failing SMTP server failed the reset.
+     Both are enqueued now — the token is stored first, the response never depended on the send, and
+     a failure costs three retries instead of a user's password reset.
+322. Built **`src/jobs/worker.js`** and made it honest. A separate process cannot consume an
+     in-memory queue; `queue.js`'s header promised otherwise and the promise cannot be kept without a
+     jobs table §29 forbids. The worker therefore runs **one job now** from a shell, and says why.
+323. Made the auth suite's mail assertion wait on `waitUntilIdle()` rather than on scheduling luck.
+324. Ran **seven** deliberate regressions, all caught on the first pass.
+325. Re-ran the whole loop **serially**: **4,828 / 0 FAIL / 0 SKIP / every script exit 0**.
+
+### Next task — what the backend still owes
+
+**All ninety of the SRS's functional requirements are Completed.** The checklist tracked only
+seventy-nine of them by name; the eleven cross-cutting requirements of §§24–28 were added in session
+26. FR-APIDOC-001 shipped in §2af and FR-DEPLOY-001 — the last one with nothing written — in §2ag.
+Phase 7 now stands at **12 of 13**; the only row left is 7.13, the final SRS re-read, which cannot
+start while Phase 4 is unfinished.
+
+**The work has moved to Phase 4, and that is now the whole of what remains.** §2ah built its
+foundation: `frontend/` scaffolds, builds and typechecks, and the three files every screen depends on
+— `apiClient.ts`, `auth.tsx`, `entitlements.tsx` — are done and verified by `verify-frontend.js`.
+Two of §33's thirty-three screens exist. **Thirty-one do not**, nor do the four role dashboards.
+
+**Read that with one qualification, which the row itself carries.** FR-DEPLOY-001 is complete *as
+configuration* and has never been **run**. nginx, pm2, mysql and logrotate are absent from this
+machine, so no file was validated by the tool that will consume it; `verify-deploy.js` checks that
+each agrees with the application, which is a different claim and a weaker one. The first real deploy
+is where that gap closes, and the likeliest thing to break there is the backup user's privileges —
+`mysqldump --single-transaction --routines --triggers` needs the global `PROCESS` grant.
+
+FR-SEC-003 is Completed but its two Phase 6 rows (6.3, 6.4) are still In Progress, because XSS
+coverage is spread across seven suites and SQL-injection coverage sits in one.
+
+What is left, in the order it is worth doing:
+
+- ~~**A file-serving route.**~~ **Done** (§2ae). `src/utils/fileResponse.js` plus three
+  sub-resources. What it did **not** unblock, and this is worth knowing before picking it up: the two
+  queue jobs still cannot be registered, because `generate_report` and `generate_document` would need
+  somewhere to **write** a rendered Buffer, and this route only **reads** what an upload already
+  stored. Persisting a generated artefact is a separate decision nobody has made — `documents.file_path`
+  and `results.result_card_path` are still null by design, since §22's pattern streams instead.
+- **5.2 — the Anthropic adapter's round trip.** Everything but the network hop is now exercised and
+  regressed (§2af): the prompt, the reply extraction, the JSON recovery, both parse failures, the
+  missing-key refusal. What is left needs a real key and a real request, which this environment does
+  not have — a stub agreeing with itself is not evidence about the service. When it is attempted,
+  **start with `extract()`'s PDF path**: it calls `pdf-parse`, which fails with "Illegal character"
+  on an untouched pdfkit document, and is the likeliest thing to break first.
+- ~~**Scoped suite teardowns.**~~ **Largely done** — `X-Request-Id` tagging landed in part 3 and cut
+  a full loop's residue from 32/25 rows to 13/9. What is left is not a teardown problem:
+  `verify-plans` and `verify-subscriptions` assert *global* database state on purpose, so they
+  must stay serial whatever the teardown does, and the last 13/9 rows come from sweeps driven as
+  functions, whose audit rows carry no run context at all. Row 6.17's jest suite can now run the
+  other thirty-one in parallel.
+
+Then Phase 4 (frontend, 0%), the rest of Phase 6, and Phase 7 (deployment, 2/13).
+
+Standing practice, unchanged except where this session added to it:
+
+- **Run the loop serially** (Known Issues #25, largely fixed).
+- **Restart MariaDB as a *tracked* background process.**
+- **A module suite verifies a module.** §23's dead notification survived two green suites.
+- **Bound anything that can hang**, and give every spawned child a `timeout`.
+- **`includes()` on a label is almost always too weak.** Compare wrapped prose with whitespace
+  squashed on both sides, and everything else literally.
+- **Wait on the thing, not on the scheduler.** `settle()` for the trail, `waitUntilIdle()` for the
+  queue — anything written after a response needs one.
+- **Run the deliberate regressions, and treat a MISS as a defect in the test, in the fixture, or in
+  the design.** A MISS caused by a thin fixture once turned out to mean a rule had been copied into
+  two places.
+
+
+## 8. Log maintenance
+
+Update this file after any major piece of work and before ending a session, so the project can
+always resume from an exact point. Specifically:
+
+- Move items between "completed" / "in progress" / "remains" as the truth changes.
+- Record the **verification evidence**, not just the claim — the command run and its result.
+- **Re-run the whole verification loop at the *start* of a session, before trusting anything this file
+  claims.** Session 12 opened on a log asserting eleven passing suites and 1,776 assertions; twelve
+  suites existed, and the twelfth had never completed a run. The stale figure was not merely old, it was
+  **unreachable** — no combination of passing suites produced it — and nothing short of running them all
+  would have shown that. This costs one command and it is the only check that catches a session which
+  ended without recording itself.
+- **Count assertions, not output lines.** `verify-seed.js` prints one `PASS (22)` summary line followed
+  by 22 `  + …` sub-bullets; every other script prints one line per assertion. A `grep -c "^PASS"`
+  across all thirteen therefore returns **2,136** and undercounts the real figure by 21 — that is exactly how
+  an earlier revision of §1 came to report 671 instead of 692, and how a sweep during session 8 briefly
+  read `verify-seed` as a single check. The convention this file uses is 22, giving 2,157. **Measure
+  this rather than reasoning about it:** session 9 first wrote the opposite here (that the grep
+  *over*counts by 1) from memory of the output format, and only caught it by running the grep and
+  reading the actual lines.
+- **Re-count a script after changing what it mounts, not just after changing the script.**
+  `verify-app.js` asserts the *number* of layers in `/api/v1` as well as their order, so mounting a
+  router in `src/app.js` changes its total with no edit to the script. It has moved 116 → 118 → 123 →
+  127 → 129 → 131 → 133. Session 8 mounted four routers and left §1 and §2c reading 118 when the real figure was 123;
+  session 9 then found §1 reading 123 / 1,359 when the real figures were 127 / 1,363, because session 8
+  wrote its table before mounting the users and roles routers. **Two consecutive sessions, the same
+  mistake** — so re-run and re-count `verify-app.js` *after* the mount, never before. Session 10 is the
+  first step in that chain where the script was *also* edited (+2 boundary assertions for
+  `/plans`), so 127 → 129 is one mount plus one edit and neither figure can be derived from the other;
+  129 → 131 is the same pair again for `/addons`, and 131 → 133 for `/subscriptions`.
+- **Re-measure §6's line counts wholesale, not just the rows the session touched.** Session 10 did that
+  for the first time and found **eight** stale figures, some of them several sessions old — `constants.js`
+  was 101 lines out. Session 12 repeated it and found three more. One command covers it:
+  `find src scripts -name '*.js' | sort | xargs wc -l`. §6 claims "line counts are actual", so a figure
+  carried forward makes that sentence false rather than merely imprecise.
+- **A stale count is usually attached to a stale sentence.** Correcting §6's `app.js` row in session 12
+  surfaced three prose claims a line-count sweep cannot see — "fourteen layers", "129 checks" in the §6
+  cell, and "129 checks" again in §2e's heading — plus a §5a title still reading "sessions 3–10". So
+  re-read the cell you just corrected, and the headings that quote the same number.
+- **Sweep the whole file for the superseded total; do not trust the edits you just made to have caught
+  it.** Session 13 wrote a new §2i and updated §1, §3, §4, §5, §5a, §6 and §7 — and a
+  `grep -n '1,947\|twelve scripts'` afterwards still found **five** live passages carrying the old figure,
+  including the document's own header block, which described the project without mentioning subscriptions
+  four sections after subscriptions had been documented. The sweep is one grep for the number you just
+  replaced. Skip only the per-session history in §5a and §7, which records what each session measured at
+  the time.
+- **A stale label attached to a correct number survives every re-measurement.** §7's phase-completion
+  rule read "Phase 3.E before them: 131/131" for three sessions. The *number* was re-measured three
+  times, correctly; the *label* was wrong — 131 was `verify-app.js`, and 3.E's suite is the 175 named two
+  clauses earlier in the same sentence. A grep for a stale figure cannot find this. When re-measuring a
+  figure, re-read what the sentence says the figure *is*.
+- **A line citation is as perishable as a count.** `api.length` is asserted at `verify-app.js:191`; the
+  checklist cited `:190`, which was true until a doc-block comment above the assertion grew by one line.
+  Cite line numbers where they help, and re-check them in the same sweep as the counts.
+- **A fixture that does not assert its own success can manufacture a false defect report.** Session 13's
+  `makePlan()` sent one limit key to `PUT /plans/:id/limits`, which requires all eight, took a 422 and did
+  not check the status. Every plan-base assertion in the run then read `0` from `emptyLimits()` — **seven
+  of the nine first-run failures**, all of them pointing at the entitlement engine rather than at the
+  helper. Nothing in the output distinguished them: the messages were about entitlement, the stack traces
+  were in the entitlement service, and the plan rows existed with the right names. **Throw on a non-2xx
+  inside every fixture helper**, and when a failure implicates shipped code, read the setup response
+  before believing it.
+- **Attribute a stale figure only from evidence.** This project has no git history (Known Issues #12), so
+  "which session changed this" is not knowable by default. Session 12's first draft blamed all three of
+  its stale counts on session 11; file mtimes showed one of them predated session 11 by fourteen hours.
+  `ls -l --time-style=long-iso` is the available evidence — use it, or say the cause is unknown.
+- **Read the real value before asserting it.** Four of session 6's first-run failures, four of
+  session 5's and four of session 9's were expectations written from memory of a library's behaviour.
+  Building the object and printing it costs one `node -e` and removes the whole class of error.
+- **Never assert against a `raw: true` row when the assertion is about a value's *type*.** Sequelize
+  applies its type layer only through the model, so under `raw: true` MariaDB returns `JSON` as a
+  **string**, `TINYINT(1)` as **0/1** rather than `false`/`true`, and `DECIMAL` as a number rather than a
+  fixed-2 string. The JSON case is the dangerous one:
+  `row.changed_fields.includes('units_per_quantity')` silently becomes a substring match on JSON text —
+  which passes for the wrong reason and would also pass for `units_per_quantity_2`. Session 9 found this
+  and documented it at `verify-users-roles.js:1500`; session 11 reintroduced it anyway; session 13 hit the
+  same class twice more on `is_recurring` (TINYINT) and `unit_amount` (DECIMAL). Load the row as a model
+  instance, or compare through `Boolean(...)` / `money.toNumber(...)` deliberately.
+- **Distrust an assertion that passes on the first try against code you have not probed.** Session 9's
+  worst find was a green check that compared `undefined !== null` — it asserted nothing, and only failed
+  to be noticed because it passed. When an assertion reads a column, confirm the read returns the column
+  at all before trusting the comparison.
+- **A passing suite is not evidence for a claim the suite does not make.** Session 12 wrote, in §2h, that
+  a school sees only the prices it can buy — inferred from a green run. Reading `detailInclude()` showed
+  the filter is `is_active` only. Before writing a behavioural claim in this file, find the assertion
+  that proves it or read the code; if neither exists, record it as a known issue instead.
+- Keep "known issues" honest, including issues in my own earlier output.
+- Always leave section 7 pointing at a concrete next action.
+- Never mark something complete without having actually verified it.
