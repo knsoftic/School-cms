@@ -57,6 +57,7 @@ const express = require('express');
 const cookieParser = require('cookie-parser');
 
 const db = require('../src/models');
+const { sweepResidue } = require('./lib/residue');
 const config = require('../src/config/env');
 const { cache } = require('../src/config/cache');
 const ApiError = require('../src/utils/ApiError');
@@ -187,6 +188,24 @@ async function makePlan(spec) {
 }
 
 async function buildFixtures() {
+  /* What a killed earlier run of this suite left behind — see scripts/lib/residue.js. */
+  let residueCleared = await sweepResidue(db, { codes: ['VERIFY-MW-'], domains: ['verify-mw.invalid'] });
+  /*
+   * And the log rows the sweep cannot reach. It finds rows through a fixture's user or school, but
+   * recordAudit is also exercised the way a job calls it, with no request — that row has no tenant and
+   * no user, so nothing on it points back at a fixture. Such rows are found by what this suite alone
+   * writes: the table name it invented, and the `verify-mw-` request ids — numbered from 001 on every
+   * run, so a rerun asks for the very ids a killed run already used. Measured: the rerun read the killed
+   * run's four audit rows as its own and failed twenty assertions, with every fixture table already
+   * clean. The upload tree is not the cause; this run's teardown removes it whole.
+   */
+  const ownRequestIds = { request_id: { [db.Op.like]: 'verify-mw-%' } };
+  residueCleared += await db.AuditLog.destroy({ where: { table_name: AUDIT_TABLE }, force: true });
+  residueCleared += await db.AuditLog.destroy({ where: ownRequestIds, force: true });
+  residueCleared += await db.ActivityLog.destroy({ where: ownRequestIds, force: true });
+  if (residueCleared) {
+    console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+  }
   const roles = await db.Role.findAll({ attributes: ['id', 'slug'], raw: true });
   const roleId = Object.fromEntries(roles.map((r) => [r.slug, r.id]));
 

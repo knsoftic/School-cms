@@ -93,6 +93,7 @@ process.env.CACHE_TTL = '600';
  */
 
 const db = require('../src/models');
+const { sweepResidue, readJournal, writeJournal, clearJournal } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -121,6 +122,8 @@ const { settle, settleDistinct } = require('./lib/settle');
 
 const PREFIX = config.app.apiPrefix;
 const DOMAIN = 'verify-plans.local';
+/** The journal this suite writes its seeded-grant capture to — see scripts/lib/residue.js. */
+const JOURNAL = 'verify-plans';
 const PASSWORD = 'Verify@Plans123';
 
 let failures = 0;
@@ -675,14 +678,7 @@ async function removeFixtures() {
   }
 
   /* The seeded row this run mutates, put back whether or not the run reached the restore. */
-  if (seeded.principalGrants) {
-    const roleId = fixtures.roles[ROLES.PRINCIPAL].id;
-    await db.RolePermission.destroy({ where: { role_id: roleId } });
-    await db.RolePermission.bulkCreate(
-      seeded.principalGrants.map((permission_id) => ({ role_id: roleId, permission_id }))
-    );
-    await permissionService.invalidateRole(roleId);
-  }
+  await restoreGrants();
 
   if (created.subscriptions.length) {
     await db.Subscription.destroy({ where: { id: created.subscriptions } });
@@ -706,6 +702,43 @@ async function removeFixtures() {
   }
 
   await entitlementService.invalidateAll();
+  /* The grants are back, so the journal that would have restored them is no longer owed. */
+  clearJournal(JOURNAL);
+}
+
+/**
+ * Put the principal role's grants back exactly as captured. Shared by `removeFixtures()` and the
+ * recovery below; the role is looked up rather than read from `fixtures`, which the recovery path has
+ * not built yet.
+ */
+async function restoreGrants() {
+  if (!seeded.principalGrants) return;
+  const principal = await db.Role.findOne({ where: { slug: ROLES.PRINCIPAL } });
+  await db.RolePermission.destroy({ where: { role_id: principal.id } });
+  await db.RolePermission.bulkCreate(
+    seeded.principalGrants.map((permission_id) => ({ role_id: principal.id, permission_id }))
+  );
+  await permissionService.invalidateRole(principal.id);
+}
+
+/**
+ * Recover from a run killed before its `finally`. A dead run leaves the principal holding `plans.view`,
+ * and without this the next run would capture that as the seeded grant set and restore it for ever —
+ * see `scripts/lib/residue.js`. The journal predates the mutation, so it is the set to put back.
+ */
+async function recoverFromDeadRun() {
+  const pending = readJournal(JOURNAL);
+  if (pending) {
+    Object.assign(seeded, pending);
+    await restoreGrants();
+    clearJournal(JOURNAL);
+    delete seeded.principalGrants;
+    console.log('(restored the principal grants a killed earlier run left mutated)');
+  }
+  const residueCleared = await sweepResidue(db, { codes: ['VPL-'], domains: [DOMAIN] });
+  if (residueCleared) {
+    console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+  }
 }
 
 /** Grant one extra key to the seeded `principal` role, live. */
@@ -1405,8 +1438,11 @@ async function main() {
   verifyServiceScope();
 
   console.log('\n--- fixtures ---');
+  await recoverFromDeadRun();
   check('the log tables are baselined before anything is written', await captureBaseline(), true);
   check('two users, one organization and one school created', await createFixtures(), 2);
+  /* The grant set is captured and not yet mutated — the moment the journal is true. */
+  writeJournal(JOURNAL, seeded);
   check(
     'and the seeded role this run mutates was captured for restoration',
     seeded.principalGrants.length,

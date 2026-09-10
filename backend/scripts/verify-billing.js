@@ -85,6 +85,7 @@ process.env.CACHE_TTL = '600';
  */
 
 const db = require('../src/models');
+const { sweepResidue } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -930,6 +931,19 @@ async function verifyHttp() {
   }
 
   try {
+    /*
+     * What a killed earlier run of this suite left behind — see scripts/lib/residue.js.
+     *
+     * Before `teardown()`, not after. At this point `created` is empty, so teardown's log clause
+     * matches nothing and its prefix sweep deletes the dead run's users with their log rows still in
+     * place — and `user_id` is SET NULL, so those rows lose the only key that pointed back at this
+     * suite. Measured: every killed run left eleven activity and ten audit rows that no later run
+     * could reach. The sweep deletes a user's log rows before the user.
+     */
+    const residueCleared = await sweepResidue(db, { codes: ['VBL'], domains: ['verify-billing.local'], also: [{ table: 'coupons', column: 'code', prefix: 'VBL' }, { table: 'taxes', column: 'code', prefix: 'VBL' }] });
+    if (residueCleared) {
+      console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+    }
     /* Clear a previous crash's unique-code rows before this run writes its own. */
     await teardown();
 

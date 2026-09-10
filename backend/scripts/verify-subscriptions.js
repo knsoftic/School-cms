@@ -136,6 +136,7 @@ process.env.CACHE_TTL = '600';
  */
 
 const db = require('../src/models');
+const { sweepResidue, readJournal, writeJournal, clearJournal } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -183,6 +184,8 @@ const {
 
 const PREFIX = config.app.apiPrefix;
 const DOMAIN = 'verify-subs.local';
+/** The journal this suite writes its seeded-row capture to — see scripts/lib/residue.js. */
+const JOURNAL = 'verify-subscriptions';
 const PASSWORD = 'Verify@Subs123';
 
 const DAY = 24 * 3600 * 1000;
@@ -1186,6 +1189,37 @@ async function removeFixtures() {
 
   await entitlementService.invalidateAll();
   await tenantService.invalidateAll();
+  /* The seeded add-on and the price table are back, so the journal is no longer owed. */
+  clearJournal(JOURNAL);
+}
+
+/**
+ * Recover from a run killed before its `finally`, which this suite needs more than most: both of its
+ * restores are defined **relative to a capture taken at the start**, and a dead run poisons both.
+ * `addon_prices` is cleaned by deleting everything above a high-water mark — so after a killed run the
+ * next run's mark sits *above* the dead run's prices, and they are never deleted. And `extra_students`
+ * is restored column by column from `seeded.addons` — so the next run would capture the dead run's
+ * `units_per_quantity = 50` as the seeded value. The journal holds the mark and the columns from before
+ * either was touched; see `scripts/lib/residue.js`.
+ */
+async function recoverFromDeadRun() {
+  const pending = readJournal(JOURNAL);
+  if (pending) {
+    await db.AddonPrice.destroy({ where: { id: { [db.Op.gt]: pending.addonPrice } } });
+    for (const row of pending.addons) {
+      // eslint-disable-next-line no-await-in-loop
+      await db.Addon.update(
+        ADDON_COLUMNS.reduce((acc, column) => ({ ...acc, [column]: row[column] }), {}),
+        { where: { id: row.id } }
+      );
+    }
+    clearJournal(JOURNAL);
+    console.log('(restored the seeded add-ons and price table a killed earlier run left mutated)');
+  }
+  const residueCleared = await sweepResidue(db, { codes: ['VSB-'], domains: [DOMAIN] });
+  if (residueCleared) {
+    console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+  }
 }
 
 /* ═══════════════════════════ part 4 — over HTTP ═══════════════════════════ */
@@ -3107,7 +3141,10 @@ async function main() {
   verifyDerived();
 
   console.log('\n--- fixtures ---');
+  await recoverFromDeadRun();
   const addonCount = await captureBaseline();
+  /* The mark and the add-on columns are captured and not yet touched — the moment the journal is true. */
+  writeJournal(JOURNAL, { addons: seeded.addons, addonPrice: baseline.addonPrice });
   check('the seven §11.3 add-ons are seeded and captured for restoration', addonCount, 7);
   check(
     'the database holds no subscription before this run, so the sweep counts can be exact',

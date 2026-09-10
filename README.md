@@ -95,6 +95,9 @@ know before relying on it:
   fixtures and fail suites that are fine. A lock file enforces this.
 - **When a suite legitimately gains assertions**, re-record the baseline deliberately with
   `npm run test:baseline`. It refuses to record a run with any failure in it.
+- **A killed run does not poison the next one**: each suite clears what a dead run of itself left
+  before it builds anything. A new suite has to as well — `node scripts/kill-test.js <suite>` kills it
+  partway, reruns it and diffs every table.
 
 Both halves lint (`npm run lint`) and the frontend typechecks (`npm run typecheck`).
 

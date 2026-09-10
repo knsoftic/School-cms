@@ -33,6 +33,7 @@
  */
 
 const db = require('../src/models');
+const { sweepResidue } = require('./lib/residue');
 const entitlementService = require('../src/services/entitlementService');
 const { getSort } = require('../src/utils/pagination');
 const { commonSchemas } = require('../src/middlewares/validate');
@@ -76,18 +77,26 @@ async function indexesOf(tableName) {
 
 async function main() {
   /*
-   * Residue check first, before anything is created.
+   * Leftovers from a killed earlier run are cleared here, before anything is created — and the leak
+   * check that used to sit here now runs after teardown instead.
    *
    * `verify-security.js` once crashed mid-run and left a `VSEC-XSS2` organization behind, which then
    * broke `verify-platform-modules.js` four assertions deep — a list ordered by `code` returned an
    * extra row, and the failure pointed at sorting rather than at the suite that had leaked. The
-   * fixtures here are named `VPERF-*`, which sorts into the same neighbourhood, so this suite owes
-   * the same guard: if a previous run left anything behind, say so *here*, where the cause is legible.
+   * fixtures here are named `VPERF-*`, which sorts into the same neighbourhood, so this suite owes the
+   * same guard.
+   *
+   * It asserted *"no fixture is left over from a previous run"* at this point, and that punished the
+   * wrong run: a leak from a buggy teardown and a leftover from a killed process look identical here,
+   * and only the first is a defect. Measured — a run killed at 15 of 16 assertions made the next one
+   * fail this check with nothing wrong in the code. So the sweep clears what a dead run left, and the
+   * same count is asserted after `dropFixtures()` below, where it tests the teardown of the run that
+   * actually executed and fails in the run that leaked rather than the one after it.
    */
-  const residue = await db.Organization.count({
-    where: { code: { [db.Sequelize.Op.like]: 'VPERF-%' } },
-  });
-  check('no fixture is left over from a previous run', residue, 0);
+  const residueCleared = await sweepResidue(db, { codes: ['VPERF-'] });
+  if (residueCleared) {
+    console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+  }
 
   console.log('');
   console.log('── every tenant-scoped table can be filtered by an index ──');
@@ -326,6 +335,12 @@ main()
   .finally(async () => {
     try {
       await dropFixtures();
+      /* The leak check, where it tests this run's own teardown — see the note at the top of main(). */
+      const left = await db.Organization.count({
+        where: { code: { [db.Sequelize.Op.like]: 'VPERF-%' } },
+        paranoid: false,
+      });
+      check('this run leaves no fixture behind for the next one', left, 0);
     } catch (cleanupError) {
       failures += 1;
       console.error('teardown failed:', cleanupError.message);

@@ -59,6 +59,7 @@ process.env.RATE_LIMIT_MAX = '100000';
 const { execFileSync } = require('child_process');
 
 const db = require('../src/models');
+const { sweepResidue } = require('./lib/residue');
 const config = require('../src/config/env');
 const cronModule = require('../src/jobs/cron');
 const backupTask = require('../src/jobs/tasks/databaseBackup');
@@ -339,6 +340,11 @@ async function verifyExecution() {
 
     const at = new Date('2026-06-15T09:00:00Z');
 
+    /* What a killed earlier run of this suite left behind — see scripts/lib/residue.js. */
+    const residueCleared = await sweepResidue(db, { codes: ['VJB-'], domains: ['verify-jobs.local'] });
+    if (residueCleared) {
+      console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+    }
     const org = await db.Organization.create({ name: 'Verify Jobs Org', code: `${CODE_PREFIX}ORG` });
     created.organizations.push(org.id);
     const school = await db.School.create({

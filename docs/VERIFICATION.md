@@ -76,14 +76,15 @@ gap recorded in the checklist row it belongs to rather than only in the triage f
 
 ## 3. What was measured, on 2026-09-09, and again on 2026-09-10
 
-**Re-measured at the end of session 28, and the loop re-run from cold on 2026-09-10** — after a session restart that killed a run mid-suite and took MariaDB down with it. That run's leftover fixture rows broke the next two runs until `verify-finance.js` was given a sweep for its own residue; see `IMPLEMENTATION_PROGRESS.md` §7, steps 409–411. The figures below are the second set; the first is kept
+**Re-measured at the end of session 28, and the loop re-run from cold on 2026-09-10** — after a session restart that killed a run mid-suite and took MariaDB down with it. That run's leftover fixture rows broke the next two runs until `verify-finance.js` was given a sweep for its own residue; see `IMPLEMENTATION_PROGRESS.md` §7, steps 409–411. **Measured a third time later that day**, after Known Issues #34 made every suite recover from being killed (steps 413–430): the `npm test`, baseline and kill-recovery rows are from that run; `verify-frontend.js`, both lints, `tsc`, `next build`, the schema and the catalogue were re-run with it and did not move; the write-route count was not re-run. The figures below are the latest set; the first is kept
 beneath each one where it differed, because a verification record that quietly overwrites its own
 numbers is the thing it exists to prevent.
 
 | Check | Result |
 |---|---|
-| `npm test` (backend) | **5,683 jest cases, 0 failures**, wrapping **39 suites / 5,478 assertions / 0 skips**, spawned serially against live MariaDB. *(First recorded: 5,512 cases over 38 suites — see the correction below.)* |
-| Recorded baseline | **5,478 assertions across 39 suites** (`tests/baseline.json`). *(Was 5,312 / 38.)* |
+| `npm test` (backend) | **5,705 jest cases, 0 failures**, wrapping **40 suites / 5,495 assertions / 0 skips**, spawned serially against live MariaDB — re-run after Known Issues #34. *(Earlier on 2026-09-10 this row read 5,683 cases over 39 suites and 5,478 assertions, and was not updated when two later commits grew the loop; first recorded: 5,512 cases over 38 suites — see the correction below.)* |
+| Recorded baseline | **5,495 assertions across 40 suites** (`tests/baseline.json`). *(5,478 / 39 when this row was first written on 2026-09-10; 5,484 after `verify-deploy.js` part 7 asserted the `.gitignore` patterns; 5,495 / 40 with `verify-quotations.js`. Each read from `git show <commit>:backend/tests/baseline.json`. Before that, 5,312 / 38.)* |
+| Killed-run recovery | **39 of 40 suites SAFE** under `scripts/kill-test.js` — SIGKILLed partway (at 85% of their assertions, or 60% / 95% when that kill left nothing), rerun green, every non-log table back at its starting count. The fortieth, `verify-seed.js`, prints its assertions only at the end, so no kill lands inside it; its recovery was proved by planting the worst case. *(Before Known Issues #34: 11 of 40.)* |
 | `scripts/verify-frontend.js` | **284 assertions**, 43 deliberate regressions all caught. *(Was 170.)* |
 | Write routes with a frontend caller | **149 of 150** — see §5 |
 | `npm run lint` (backend) | exit 0 |
@@ -245,8 +246,8 @@ part 43 alongside the measurement above.
 
 ## 6. Known issues still open
 
-`IMPLEMENTATION_PROGRESS.md` §5 is the register. **Session 28 closed the last three rows a patch could
-close** — 17, 21, 31, 32 and 33 — the last of them found while re-measuring, and closed the same day.
+`IMPLEMENTATION_PROGRESS.md` §5 is the register. **Session 28 closed every row a patch could close**
+— 17, 21, 31, 32, 33 and 34 — the last two found while re-measuring, and closed the same day.
 What is open is six rows — 2, 11, 15, 18, 19 and 25 — none of them waiting on engineering:
 
 | # | Issue | Note |
@@ -261,6 +262,7 @@ What is open is six rows — 2, 11, 15, 18, 19 and 25 — none of them waiting o
 | 25 | The `verify-*.js` suites are not safe to run concurrently | Procedural, and it bit during this session: overlapping runs produced two failures in a suite that passed twelve times alone. The harness holds `tests/.suite-run.lock` and says so. |
 | ~~33~~ | ~~Runtime logs and an uploaded file were committed, and are still in the history~~ | **Half fixed.** `.gitignore`'s `storage/logs/` was anchored to the repository root and never matched `backend/storage/logs/`, so eleven files were tracked. Patterns fixed, files untracked, and `verify-deploy.js` part 7 now asserts both the patterns and `git ls-files`. `.env` was never among them. The history was rewritten too, on the owner's instruction: `filter-branch` over all 23 commits, verified by `HEAD^{tree}` being byte-identical to the pre-rewrite tree. The pack fell from 17 MB to 3.3 MB. |
 | ~~31~~ | ~~Fabricated SRS quotations, and the class is not cleanly assertable~~ | **Closed.** `verify-quotations.js` — a quotation must be traceable to something this repository can point at, so the haystack is the SRS plus every `.js` file with quotation spans stripped out. 45 untraceable to 8, no invented convention. It found two more fabrications on its first run, both in `verify-subscriptions.js`, one of which was this application's own response message quoted back as the source. | 207 backticked quotations sit next to an SRS reference and 45 are not verbatim in the source — almost all legitimately, because the same convention quotes model comments and MySQL error strings. A check failing on 45 correct lines is worse than no check. |
+| ~~34~~ | ~~A killed verification run poisoned the run after it~~ | **Closed.** Found when a session restart killed `npm test`; measured by hard-killing each suite partway and diffing every table — 29 of 40 could not recover. Each suite now clears what a dead run of itself left, by markers only it uses (`scripts/lib/residue.js`), and the five that mutate seeded rows journal them first. Two needed more than that, both in the log tables. `scripts/kill-test.js` repeats the measurement. |
 
 ## 7. What would close row 7.13
 

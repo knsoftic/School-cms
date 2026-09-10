@@ -10,6 +10,7 @@
 
 const db = require('../src/models');
 const seed = require('../src/database/seed');
+const { restoreSeededCatalogue, readJournal, writeJournal, clearJournal } = require('./lib/residue');
 
 const pass = [];
 const fail = [];
@@ -35,12 +36,67 @@ async function reseed() {
   }
 }
 
+/** The journal this suite writes its capture to — see scripts/lib/residue.js. */
+const JOURNAL = 'verify-seed';
+const SUPER_ADMIN_FIELDS = ['password_hash', 'must_change_password', 'status'];
+const ADDON_FIELDS = ['units_per_quantity', 'is_active', 'display_order'];
+
+/** The Super Admin's and `ai_credits`' fields as they are now, before any case touches them. */
+async function captureUnrepairable() {
+  const email = require('../src/config/env').superAdmin.email.toLowerCase();
+  const superAdmin = await db.User.findOne({
+    where: { email }, attributes: ['id', ...SUPER_ADMIN_FIELDS], raw: true, paranoid: false,
+  });
+  const aiCredits = await db.Addon.findOne({
+    where: { key: 'ai_credits' }, attributes: ['id', ...ADDON_FIELDS], raw: true,
+  });
+  return { superAdmin, aiCredits };
+}
+
+async function restoreUnrepairable(captured) {
+  if (captured.superAdmin) {
+    const { id, ...fields } = captured.superAdmin;
+    await db.User.update(fields, { where: { id }, paranoid: false, hooks: false });
+  }
+  if (captured.aiCredits) {
+    const { id, ...fields } = captured.aiCredits;
+    await db.Addon.update(fields, { where: { id } });
+  }
+}
+
+/** A journal found at start is a capture from before a dead run touched either row. */
+async function recoverFromDeadRun() {
+  const pending = readJournal(JOURNAL);
+  if (!pending) return;
+  await restoreUnrepairable(pending);
+  clearJournal(JOURNAL);
+  console.log('(restored the Super Admin and ai_credits rows a killed earlier run left mutated)');
+}
+
 async function main() {
   const permissionId = async (key) =>
     (await one(`SELECT id FROM permissions WHERE \`key\` = '${key}'`)).id;
   const roleId = async (slug) => (await one(`SELECT id FROM roles WHERE slug = '${slug}'`)).id;
   const grantCount = async (id) =>
     (await one(`SELECT COUNT(*) n FROM role_permissions WHERE role_id = ${id}`)).n;
+
+  /*
+   * Start from the seeded definition, not from whatever the last run left. Every case below damages
+   * the catalogue deliberately and repairs it before the next, and the final restore is inline — so a
+   * run killed partway leaves the `parent` role deleted, or `teacher` short a grant, for the next one.
+   * Case 5 then captures `librarianDefaults` from a librarian that is not at its defaults. See
+   * `restoreSeededCatalogue()` in scripts/lib/residue.js, which the harness also runs before the loop.
+   */
+  await recoverFromDeadRun();
+  await restoreSeededCatalogue(db);
+  /*
+   * Two more rows this suite damages that the seeder will never repair, because it is not supposed to:
+   * case 6 sets the seeded Super Admin to `suspended` with a sentinel password hash — the seeder never
+   * rewrites that account, by design — and case 7 deactivates `ai_credits`, whose operator-configurable
+   * columns the seeder leaves alone. Both are restored inline, so a kill inside either case would leave
+   * the real Super Admin locked out, or an add-on off sale. Captured here, before either case runs.
+   */
+  writeJournal(JOURNAL, await captureUnrepairable());
 
   /* 1. Role descriptive drift is repaired; identity is not touched. */
   const teacherBefore = await one("SELECT id, description FROM roles WHERE slug = 'teacher'");
@@ -219,6 +275,9 @@ async function main() {
   check('353 default grants', (await one('SELECT COUNT(*) n FROM role_permissions')).n === 353);
   check('1 user', (await one('SELECT COUNT(*) n FROM users')).n === 1);
 
+  /* Every case restored what it damaged, so the journal is no longer owed. */
+  clearJournal(JOURNAL);
+
   console.log(`\nPASS (${pass.length})`);
   pass.forEach((p) => console.log(`  + ${p}`));
   if (fail.length) {
@@ -235,6 +294,10 @@ main()
   })
   .catch(async (err) => {
     console.error(err);
+    /* A throw mid-run skips the inline restores; do not leave the catalogue or those rows behind it. */
+    const pending = readJournal(JOURNAL);
+    if (pending) await restoreUnrepairable(pending).then(() => clearJournal(JOURNAL)).catch(() => {});
+    await restoreSeededCatalogue(db).catch(() => {});
     await db.sequelize.close().catch(() => {});
     process.exit(1);
   });

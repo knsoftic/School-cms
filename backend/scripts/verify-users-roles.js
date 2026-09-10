@@ -84,6 +84,7 @@ process.env.CACHE_TTL = '600';
  */
 
 const db = require('../src/models');
+const { sweepResidue, readJournal, writeJournal, clearJournal } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -100,6 +101,8 @@ const roleSchemas = require('../src/modules/roles/roles.validation').schemas;
 
 const PREFIX = config.app.apiPrefix;
 const DOMAIN = 'verify-users.local';
+/** The journal this suite writes its seeded-row capture to — see scripts/lib/residue.js. */
+const JOURNAL = 'verify-users-roles';
 const PASSWORD = 'Verify@Users123';
 
 /**
@@ -586,24 +589,56 @@ async function removeFixtures() {
   }
 
   /* The two seeded rows this run mutates, put back whether or not the run reached the restore. */
-  if (seeded.principalGrants) {
-    const roleId = fixtures.roles[ROLES.PRINCIPAL].id;
-    await db.RolePermission.destroy({ where: { role_id: roleId } });
-    await db.RolePermission.bulkCreate(
-      seeded.principalGrants.map((permission_id) => ({ role_id: roleId, permission_id }))
-    );
-    await permissionService.invalidateRole(roleId);
-  }
-  if (seeded.librarianLabels) {
-    await db.Role.update(seeded.librarianLabels, {
-      where: { id: fixtures.roles[ROLES.LIBRARIAN].id },
-    });
-  }
+  await restoreSeeded();
 
   if (created.users.length) await db.User.destroy({ where: { id: created.users }, force: true });
   if (created.schools.length) await db.School.destroy({ where: { id: created.schools }, force: true });
   if (created.organizations.length) {
     await db.Organization.destroy({ where: { id: created.organizations }, force: true });
+  }
+  /* Both seeded rows are back, so the journal that would have restored them is no longer owed. */
+  clearJournal(JOURNAL);
+}
+
+/**
+ * Put the principal's grants and the librarian's labels back exactly as captured. Shared by
+ * `removeFixtures()` and the recovery below; both roles are looked up rather than read from `fixtures`,
+ * which the recovery path has not built yet.
+ */
+async function restoreSeeded() {
+  if (seeded.principalGrants) {
+    const principal = await db.Role.findOne({ where: { slug: ROLES.PRINCIPAL } });
+    await db.RolePermission.destroy({ where: { role_id: principal.id } });
+    await db.RolePermission.bulkCreate(
+      seeded.principalGrants.map((permission_id) => ({ role_id: principal.id, permission_id }))
+    );
+    await permissionService.invalidateRole(principal.id);
+  }
+  if (seeded.librarianLabels) {
+    const librarian = await db.Role.findOne({ where: { slug: ROLES.LIBRARIAN } });
+    await db.Role.update(seeded.librarianLabels, { where: { id: librarian.id } });
+  }
+}
+
+/**
+ * Recover from a run killed before its `finally`. Measured: a killed run left the principal **three
+ * grants short**, and the rerun captured that as the seeded set and preserved the loss. The librarian's
+ * labels are subject to the same capture and would not show up in any row count at all. The journal
+ * predates both mutations — see `scripts/lib/residue.js`.
+ */
+async function recoverFromDeadRun() {
+  const pending = readJournal(JOURNAL);
+  if (pending) {
+    Object.assign(seeded, pending);
+    await restoreSeeded();
+    clearJournal(JOURNAL);
+    seeded.principalGrants = null;
+    seeded.librarianLabels = null;
+    console.log('(restored the principal grants and librarian labels a killed earlier run left mutated)');
+  }
+  const residueCleared = await sweepResidue(db, { codes: ['VUR-'], domains: [DOMAIN] });
+  if (residueCleared) {
+    console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
   }
 }
 
@@ -1777,8 +1812,11 @@ async function main() {
   verifyRouting();
 
   console.log('\n--- fixtures ---');
+  await recoverFromDeadRun();
   check('the log tables are baselined before anything is written', await captureBaseline(), true);
   check('five users, two organizations and two schools created', await createFixtures(), 5);
+  /* Both seeded rows are captured and not yet mutated — the moment the journal is true. */
+  writeJournal(JOURNAL, seeded);
   check(
     'and the seeded rows this run mutates were captured for restoration',
     [seeded.principalGrants.length, typeof seeded.librarianLabels.name],

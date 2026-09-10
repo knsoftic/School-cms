@@ -51,6 +51,7 @@ const fs = require('fs');
 
 const config = require('../src/config/env');
 const db = require('../src/models');
+const { sweepResidue } = require('./lib/residue');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
 const { ROLES, USER_STATUS } = require('../src/config/constants');
@@ -99,6 +100,11 @@ const SCRIPT_PAYLOADS = [
 ];
 
 async function buildFixtures() {
+  /* What a killed earlier run of this suite left behind — see scripts/lib/residue.js. */
+  const residueCleared = await sweepResidue(db, { codes: ['VSEC-'], domains: ['verify-security.local'] });
+  if (residueCleared) {
+    console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+  }
   const roleRows = await db.Role.findAll({ where: { slug: ROLES.SUPER_ADMIN } });
   if (!roleRows.length) throw new Error('The super_admin role is missing — run the seeders first.');
 
@@ -181,7 +187,7 @@ async function main() {
   }
 
   /*
-   * **The residue check, asserted first.**
+   * **The leak check moved to the end of the run, and why it had to.**
    *
    * A previous run of this suite left one organization behind — created during a deliberate
    * regression that disabled the sanitiser, so a request expected to fail with 422 succeeded
@@ -189,15 +195,14 @@ async function main() {
    * four assertions deep, in a suite this one never touches, because that suite counts
    * organizations globally.
    *
-   * The teardown now sweeps by code prefix and cannot miss a row for want of an id. This asserts
-   * that the sweep actually worked, at the start of the *next* run — the earliest moment a leak can
-   * be observed, and long before it can be mistaken for a defect somewhere else.
+   * The teardown sweeps by code prefix and cannot miss a row for want of an id, and this suite used
+   * to assert that here, at the start of the *next* run. That punished the wrong run: a leak from a
+   * buggy teardown and a leftover from a killed process look identical at this point, and only the
+   * first is a defect. Measured — a run killed at 24 of 28 assertions made the next one fail with
+   * nothing wrong in the code. `buildFixtures()` now clears what a dead run left, which would make a
+   * check here vacuous, so the same count is asserted after `dropFixtures()` instead: it tests the
+   * teardown of the run that actually executed, and a real leak fails in the run that caused it.
    */
-  const residue = await db.Organization.count({
-    where: { code: { [db.Sequelize.Op.like]: 'VSEC-%' } },
-    paranoid: false,
-  });
-  check('no organization leaked from a previous run of this suite', residue, 0);
 
   const login = await call('/auth/login', {
     method: 'POST',
@@ -572,6 +577,12 @@ async function main() {
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await dropFixtures();
+    /* The leak check, where it tests this run's own teardown — see the note where it used to sit. */
+    const left = await db.Organization.count({
+      where: { code: { [db.Sequelize.Op.like]: 'VSEC-%' } },
+      paranoid: false,
+    });
+    check('this run leaves no organization behind for the next one', left, 0);
   }
 }
 

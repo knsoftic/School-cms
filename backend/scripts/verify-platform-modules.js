@@ -77,6 +77,7 @@ process.env.MAIL_DRIVER = 'log';
  */
 
 const db = require('../src/models');
+const { sweepResidue } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -562,6 +563,11 @@ async function captureBaseline() {
 }
 
 async function createFixtures() {
+  /* What a killed earlier run of this suite left behind — see scripts/lib/residue.js. */
+  const residueCleared = await sweepResidue(db, { codes: ['VPM-'], domains: ['verify-platform.local'] });
+  if (residueCleared) {
+    console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+  }
   const roles = {};
   for (const slug of [ROLES.SUPER_ADMIN, ROLES.ORGANIZATION_ADMIN, ROLES.PRINCIPAL]) {
     roles[slug] = await db.Role.findOne({ where: { slug } });

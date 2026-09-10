@@ -39,6 +39,7 @@
 const express = require('express');
 
 const db = require('../src/models');
+const { sweepResidue } = require('./lib/residue');
 const { cache } = require('../src/config/cache');
 const { requestContext } = require('../src/middlewares/requestContext');
 const { sanitizeRequest } = require('../src/middlewares/sanitize');
@@ -152,6 +153,11 @@ async function makePlan(spec) {
 }
 
 async function buildFixtures() {
+  /* What a killed earlier run of this suite left behind — see scripts/lib/residue.js. */
+  const residueCleared = await sweepResidue(db, { codes: ['VERIFY-E', 'VERIFY-BASIC', 'VERIFY-PREMIUM'], domains: ['verify-ent.invalid'] });
+  if (residueCleared) {
+    console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+  }
   const roles = await db.Role.findAll({ attributes: ['id', 'slug'], raw: true });
   const roleId = Object.fromEntries(roles.map((r) => [r.slug, r.id]));
 

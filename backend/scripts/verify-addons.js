@@ -94,6 +94,7 @@ process.env.CACHE_TTL = '600';
  */
 
 const db = require('../src/models');
+const { sweepResidue, readJournal, writeJournal, clearJournal } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -124,6 +125,8 @@ const { settle } = require('./lib/settle');
 
 const PREFIX = config.app.apiPrefix;
 const DOMAIN = 'verify-addons.local';
+/** The journal this suite writes its seeded-row capture to — see scripts/lib/residue.js. */
+const JOURNAL = 'verify-addons';
 const PASSWORD = 'Verify@Addons123';
 
 let failures = 0;
@@ -623,6 +626,33 @@ async function removeFixtures() {
     await db.Subscription.destroy({ where: { id: created.subscriptions } });
   }
 
+  await restoreSeeded();
+
+  /* The plan the run created through /plans. `force: true` because subscription_plans is paranoid. */
+  await db.SubscriptionPlan.destroy({
+    where: { code: { [db.Op.like]: 'VAD-%' } },
+    force: true,
+    paranoid: false,
+  });
+
+  if (created.users.length) await db.User.destroy({ where: { id: created.users }, force: true });
+  if (created.schools.length) await db.School.destroy({ where: { id: created.schools }, force: true });
+  if (created.organizations.length) {
+    await db.Organization.destroy({ where: { id: created.organizations }, force: true });
+  }
+  /* The seeded rows are back, so the journal that would have restored them is no longer owed. */
+  clearJournal(JOURNAL);
+}
+
+/**
+ * Put the seeded rows back exactly as captured — the seven add-ons, every `addon_prices` row, and the
+ * principal role's grants. Pulled out of `removeFixtures()` so the start of a run can call it too, from
+ * a journal a killed run left behind.
+ *
+ * The principal's role id is looked up rather than taken from `fixtures.roles`, because on the recovery
+ * path nothing has built `fixtures` yet.
+ */
+async function restoreSeeded() {
   /*
    * The seeded catalogue, put back column by column. This suite has to write these rows — SRS §11.3
    * fixes the set, so there is no fixture add-on to create instead — which makes the restore part of the
@@ -656,16 +686,10 @@ async function removeFixtures() {
     }
   }
 
-  /* The plan the run created through /plans. `force: true` because subscription_plans is paranoid. */
-  await db.SubscriptionPlan.destroy({
-    where: { code: { [db.Op.like]: 'VAD-%' } },
-    force: true,
-    paranoid: false,
-  });
-
   /* The seeded role this run mutates, put back whether or not the run reached the restore. */
   if (seeded.principalGrants) {
-    const roleId = fixtures.roles[ROLES.PRINCIPAL].id;
+    const principal = await db.Role.findOne({ where: { slug: ROLES.PRINCIPAL } });
+    const roleId = principal.id;
     await db.RolePermission.destroy({ where: { role_id: roleId } });
     await db.RolePermission.bulkCreate(
       seeded.principalGrants.map((permission_id) => ({ role_id: roleId, permission_id }))
@@ -673,13 +697,29 @@ async function removeFixtures() {
     await permissionService.invalidateRole(roleId);
   }
 
-  if (created.users.length) await db.User.destroy({ where: { id: created.users }, force: true });
-  if (created.schools.length) await db.School.destroy({ where: { id: created.schools }, force: true });
-  if (created.organizations.length) {
-    await db.Organization.destroy({ where: { id: created.organizations }, force: true });
-  }
-
   await entitlementService.invalidateAll();
+}
+
+/**
+ * Recover from a run that was killed before its `finally` — the journal half of Known Issues #25's
+ * killed-run problem. See `scripts/lib/residue.js` for why a runtime snapshot alone is not enough: a
+ * dead run leaves the seeded rows mutated, and the next run would capture the damage as "seeded" and
+ * then faithfully restore it. The journal was written before anything was mutated, so it is the state
+ * to put back.
+ */
+async function recoverFromDeadRun() {
+  const pending = readJournal(JOURNAL);
+  if (pending) {
+    Object.assign(seeded, pending);
+    await restoreSeeded();
+    clearJournal(JOURNAL);
+    for (const key of Object.keys(seeded)) delete seeded[key];
+    console.log('(restored the seeded add-ons, prices and grants a killed earlier run left mutated)');
+  }
+  const residueCleared = await sweepResidue(db, { codes: ['VAD-'], domains: [DOMAIN] });
+  if (residueCleared) {
+    console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+  }
 }
 
 /** Grant one extra key to the seeded `principal` role, live. */
@@ -1413,8 +1453,15 @@ async function main() {
   verifyService();
 
   console.log('\n--- fixtures ---');
+  await recoverFromDeadRun();
   check('the seven seeded add-ons are captured before anything writes them', await captureBaseline(), 7);
   check('two users, one organization and one school created', await createFixtures(), 2);
+  /*
+   * All three seeded captures now exist and nothing has mutated them yet, so this is the moment the
+   * journal is true. Written to disk as well as memory; `removeFixtures()` deletes it once it has put
+   * everything back, so a journal found at the next start means this run never got that far.
+   */
+  writeJournal(JOURNAL, seeded);
   check(
     'and the seeded role this run mutates was captured for restoration',
     seeded.principalGrants.length,

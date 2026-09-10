@@ -52,6 +52,7 @@ const fs = require('fs');
 const path = require('path');
 
 const db = require('../src/models');
+const { sweepResidue } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -513,47 +514,14 @@ async function verifyHttp() {
     });
   }
 
-  /**
-   * Clear what a KILLED earlier run left behind, before building anything.
-   *
-   * `teardown()` deletes by the ids **this** run created, which is right for a run that finishes and
-   * useless for one that does not. When a session restart killed a loop partway through this suite,
-   * the next run died on `SubscriptionPlan.create` with `code must be unique`: the previous run's
-   * `VFN-WITH` and `VFN-WITHOUT` plans and its `verify-finance.local` user were still there, and
-   * nothing would ever remove them. It also broke `verify-seed.js`, which counts users.
-   *
-   * So the leftovers are found by this suite's **own** markers — the `VFN-` code prefix and the
-   * `verify-finance.local` domain — loaded into `created`, and handed to the same `teardown()`, which
-   * already knows the deletion order. Scoped to those markers only, so it can never remove a row
-   * belonging to another suite (Known Issues #25).
-   */
-  async function sweepResidue() {
-    const byCode = { code: { [db.Op.like]: `${CODE_PREFIX}%` } };
-    const [plans, users, schools, orgs] = await Promise.all([
-      db.SubscriptionPlan.findAll({ where: byCode, attributes: ['id'], paranoid: false }),
-      db.User.findAll({ where: { email: { [db.Op.like]: `%@${DOMAIN}` } }, attributes: ['id'], paranoid: false }),
-      db.School.findAll({ where: byCode, attributes: ['id'], paranoid: false }),
-      db.Organization.findAll({ where: byCode, attributes: ['id'], paranoid: false }),
-    ]);
-    const schoolIds = schools.map((row) => row.id);
-    const subscriptions = schoolIds.length
-      ? await db.Subscription.findAll({ where: { school_id: schoolIds }, attributes: ['id'], paranoid: false })
-      : [];
-
-    created.plans.push(...plans.map((row) => row.id));
-    created.users.push(...users.map((row) => row.id));
-    created.schools.push(...schoolIds);
-    created.organizations.push(...orgs.map((row) => row.id));
-    created.subscriptions.push(...subscriptions.map((row) => row.id));
-
-    const found = plans.length + users.length + schools.length + orgs.length + subscriptions.length;
-    if (found) await teardown();
-    for (const key of Object.keys(created)) created[key].length = 0;
-    return found;
-  }
-
   try {
-    const residue = await sweepResidue();
+    /*
+     * What a killed earlier run left behind — see scripts/lib/residue.js. This suite is where the
+     * problem was found: a session restart killed a loop inside it, and the next run died on
+     * `code must be unique` over its own `VFN-WITH` plan. It had a hand-written version of this sweep
+     * first, replaced by the shared one so the mechanism exists in one place.
+     */
+    const residue = await sweepResidue(db, { codes: [CODE_PREFIX], domains: [DOMAIN] });
     if (residue) console.log(`(cleared ${residue} row(s) left behind by an earlier run that did not finish)`);
 
     const roles = {};

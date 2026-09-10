@@ -57,6 +57,19 @@ async function assertTargetDatabase() {
           'Create it with: NODE_ENV=test npm run db:create && npm run db:migrate && npm run db:seed'
       );
     }
+
+    /*
+     * Put the seeded roles and permissions back to their definition before the first suite runs.
+     *
+     * Only here, after the database has been proven to be `msms_test` — never before. `verify-seed.js`
+     * damages the catalogue on purpose and repairs it as it goes, so a run killed partway can leave the
+     * `parent` role deleted or `teacher` short a grant. It heals itself at its own start, but it runs
+     * thirty-third: the thirty-two suites before it would meet the damage first and one loop would go red
+     * for nothing wrong in the code. Idempotent, and a no-op on a catalogue that is already right; see
+     * `restoreSeededCatalogue()` in scripts/lib/residue.js.
+     */
+    // eslint-disable-next-line global-require
+    await require('../scripts/lib/residue').restoreSeededCatalogue(db);
   } finally {
     /*
      * Closed before the suites start. Each suite opens its own pool of up to 15 connections; a pool

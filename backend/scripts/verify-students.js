@@ -48,6 +48,7 @@ const fs = require('fs');
 const path = require('path');
 
 const db = require('../src/models');
+const { sweepResidue } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -542,6 +543,11 @@ async function verifyHttp() {
       roles[slug] = role;
     }
 
+    /* What a killed earlier run of this suite left behind — see scripts/lib/residue.js. */
+    const residueCleared = await sweepResidue(db, { codes: ['VST-'], domains: ['verify-students.local'], uploadsDir: config.uploads.dir });
+    if (residueCleared) {
+      console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+    }
     const org = await db.Organization.create({ name: 'Verify Students Org', code: `${CODE_PREFIX}ORG` });
     created.organizations.push(org.id);
 

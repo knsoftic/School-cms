@@ -35,6 +35,7 @@ process.env.CACHE_TTL = '600';
  */
 
 const db = require('../src/models');
+const { sweepResidue } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -407,6 +408,11 @@ async function verifyHttp() {
       roles[slug] = role;
     }
 
+    /* What a killed earlier run of this suite left behind — see scripts/lib/residue.js. */
+    const residueCleared = await sweepResidue(db, { codes: ['VSS-'], domains: ['verify-school-setup.local'] });
+    if (residueCleared) {
+      console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+    }
     const org = await db.Organization.create({
       name: 'Verify School Setup Org',
       code: 'VSS-ORG',
