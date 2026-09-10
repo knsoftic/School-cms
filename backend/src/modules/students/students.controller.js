@@ -137,4 +137,64 @@ async function photo(req, res) {
   });
 }
 
-module.exports = { list, show, create, update, setPhoto, photo, promote, transfer, leave };
+/** FR-STUDENT-001 "Documents" — the owner's decision D13. */
+async function addDocuments(req, res) {
+  const { student, documents } = await service.addDocuments(req, req.params.id);
+  describeActivity(req, {
+    entityId: student.id,
+    description: `Uploaded ${documents.length} document(s) to student ${label(student)}`,
+    metadata: {
+      school_id: student.school_id,
+      student_id: student.student_id,
+      document_ids: documents.map((doc) => doc.id),
+    },
+  });
+  return ApiResponse.created(
+    res,
+    { documents },
+    { message: `${documents.length} document(s) added to the student's record` }
+  );
+}
+
+async function documents(req, res) {
+  const result = await service.listDocuments(req, req.params.id, req.query && req.query.school_id);
+  return ApiResponse.ok(res, { documents: result.documents });
+}
+
+/**
+ * Served as an attachment under its own file name — a certificate is a thing to save, unlike the
+ * photo, which belongs beside the record. A read, so it is described rather than logged as a change.
+ */
+async function documentFile(req, res) {
+  const { student, document } = await service.findDocument(
+    req,
+    req.params.id,
+    req.params.documentId,
+    req.query && req.query.school_id
+  );
+  describeActivity(req, {
+    entityId: student.id,
+    description: `Viewed document "${document.title}" of student ${label(student)}`,
+    metadata: { school_id: student.school_id, student_id: student.student_id, document_id: document.id },
+  });
+  return sendStoredFile(res, document.file_path, {
+    filename: document.file_name || `student-document-${document.id}`,
+    inline: false,
+    schoolId: student.school_id,
+  });
+}
+
+module.exports = {
+  list,
+  show,
+  create,
+  update,
+  setPhoto,
+  photo,
+  addDocuments,
+  documents,
+  documentFile,
+  promote,
+  transfer,
+  leave,
+};

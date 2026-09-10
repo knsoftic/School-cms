@@ -97,7 +97,14 @@ const list = listQuery(
     document_type: fields.document_type,
     owner_type: Joi.string().valid(...Object.values(DOCUMENT_OWNER_TYPES)),
     owner_id: fields.owner_id,
-    is_generated: Joi.boolean(),
+    /*
+     * Only `true` is accepted: this module lists generated documents alone, and an upload is read on
+     * its student's record (owner decision D13). `false` is refused rather than silently answered with
+     * generated rows, so a caller asking for uploads learns where they are.
+     */
+    is_generated: Joi.boolean().valid(true).messages({
+      'any.only': 'Uploaded documents are listed on their student\'s record (GET /students/:id/documents), not here',
+    }),
   })
 );
 

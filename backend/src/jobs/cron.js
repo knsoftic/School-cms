@@ -15,6 +15,7 @@
  * | Task | Waiting since | Why it has no route |
  * |---|---|---|
  * | `subscription-lifecycle` | §12.5 | FR-SUB-015's renewals are date-driven, not user-driven |
+ * | `invoice-issue` | FR-BILL-001 | its actor is `System`; owner decision D6 made "a billing event" a period starting |
  * | `invoice-overdue` | §13.1 | an invoice goes overdue by the clock |
  * | `coupon-expiry` | §13.2 | so does a coupon |
  * | `notification-dispatch` | §23 | FR-NOTIF-001's actor is `System`; §29 gave five tables a marker column whose comments name a *cron* |
@@ -71,6 +72,8 @@ const logger = require('../config/logger');
  */
 const ORDER = Object.freeze([
   require('./tasks/subscriptionLifecycle'),
+  /* After the lifecycle sweep: a renewal is what opens the period this invoices. */
+  require('./tasks/invoiceIssue'),
   require('./tasks/notificationDispatch'),
   require('./tasks/invoiceOverdue'),
   require('./tasks/couponExpiry'),

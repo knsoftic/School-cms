@@ -42,7 +42,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 
-import { ApiError, api } from '@/lib/apiClient';
+import { ApiError, api, saveFile } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { EXPLAINED_CODES } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
@@ -143,6 +143,25 @@ interface Student {
   notes: string | null;
   status: string;
   has_photo: boolean;
+}
+
+/** An uploaded document, as `students.service.presentDocument()` leaves it — never the stored path. */
+interface StudentDocument {
+  id: number;
+  title: string;
+  file_name: string | null;
+  mime_type: string | null;
+  file_size_bytes: number | null;
+  description: string | null;
+  created_at: string;
+}
+
+/** Bytes for a person: the one unit a file size needs to be read at a glance. */
+function formatSize(bytes: number | null): string {
+  if (!bytes && bytes !== 0) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 interface SessionOption {
@@ -456,6 +475,76 @@ export default function StudentDetailPage() {
       errorToast('Could not store that photo', caught.message);
     } finally {
       setUploading(false);
+    }
+  }
+
+  /*
+   * ── the documents — FR-STUDENT-001 "System captures Student Photo and Documents" ──
+   *
+   * The owner's decision D13 (`docs/OWNER-DECISIONS.md`): certificates and other admission paperwork
+   * are uploaded to the student's own record, on the student permissions. One file per upload here —
+   * `FileField` is single-file on purpose, and a title belongs to one document — although the endpoint
+   * would take several. Downloaded through the authenticated client, for the reason the photo is.
+   */
+  const [documents, setDocuments] = useState<
+    { state: 'loading' } | { state: 'ready'; rows: StudentDocument[] } | { state: 'failed'; message: string }
+  >({ state: 'loading' });
+  const [documentsVersion, setDocumentsVersion] = useState(0);
+  const [docFile, setDocFile] = useState<File | null>(null);
+  const [docTitle, setDocTitle] = useState('');
+  const [docUploading, setDocUploading] = useState(false);
+  const [docError, setDocError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const body = await api.get<{ documents: StudentDocument[] }>(`/students/${studentId}/documents`);
+        if (!cancelled) setDocuments({ state: 'ready', rows: body.documents });
+      } catch (caught) {
+        if (cancelled) return;
+        setDocuments({
+          state: 'failed',
+          message: caught instanceof ApiError ? caught.message : 'Could not reach the server.',
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [studentId, documentsVersion]);
+
+  async function uploadDocument() {
+    if (!docFile) return;
+    setDocUploading(true);
+    setDocError(null);
+    try {
+      /* The field is `documents` — what `uploadArray(UPLOAD_PROFILES.STUDENT_DOCUMENT, 'documents')` reads. */
+      const form = new FormData();
+      form.append('documents', docFile);
+      if (docTitle.trim()) form.append('title', docTitle.trim());
+      await api.post(`/students/${studentId}/documents`, undefined, { formData: form });
+      setDocFile(null);
+      setDocTitle('');
+      setDocumentsVersion((n) => n + 1);
+      success('Document added to the record');
+    } catch (caught) {
+      const message = caught instanceof ApiError ? caught.message : 'Could not reach the server. Check your connection and try again.';
+      setDocError(message);
+      errorToast('Could not store that document', message);
+    } finally {
+      setDocUploading(false);
+    }
+  }
+
+  async function downloadDocument(doc: StudentDocument) {
+    try {
+      saveFile(await api.download(`/students/${studentId}/documents/${doc.id}`, undefined, doc.file_name ?? 'document'));
+    } catch (caught) {
+      errorToast(
+        'Could not download that document',
+        caught instanceof ApiError ? caught.message : 'Could not reach the server.'
+      );
     }
   }
 
@@ -908,6 +997,87 @@ export default function StudentDetailPage() {
             className="btn btn-primary"
           >
             {uploading ? 'Storing…' : 'Store photo'}
+          </button>
+        </div>
+      </section>
+
+      {/* ─────────────── the documents, outside the form ─────────────── */}
+
+      <section aria-labelledby="documents-heading" className="mt-12 border-t border-border-soft pt-8">
+        <div className="mb-4 max-w-2xl">
+          <h2 id="documents-heading" className="text-base font-semibold tracking-tight text-ink">
+            Documents
+          </h2>
+          <p className="mt-1 text-sm leading-relaxed text-muted">
+            Admission paperwork kept on the student&apos;s record — a birth certificate, a transfer
+            certificate, anything the school needs to hold. Anyone who can view students can download
+            them.
+          </p>
+        </div>
+
+        {documents.state === 'loading' && <LoadingBlock rows={2} />}
+        {documents.state === 'failed' && (
+          <Notice tone="error">
+            The documents could not be loaded: {documents.message}{' '}
+            <button type="button" className="underline" onClick={() => setDocumentsVersion((n) => n + 1)}>
+              Try again
+            </button>
+          </Notice>
+        )}
+        {documents.state === 'ready' && documents.rows.length === 0 && (
+          <p className="text-sm text-muted">No documents are on file for this student yet.</p>
+        )}
+        {documents.state === 'ready' && documents.rows.length > 0 && (
+          <ul className="divide-y divide-border-soft rounded-md border border-border-soft">
+            {documents.rows.map((doc) => (
+              <li key={doc.id} className="flex items-center justify-between gap-4 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-ink" title={doc.title}>
+                    {doc.title}
+                  </p>
+                  <p className="text-xs text-muted">
+                    {doc.file_name ?? 'file'} · {formatSize(doc.file_size_bytes)} · added{' '}
+                    {new Date(doc.created_at).toLocaleDateString()}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary shrink-0"
+                  onClick={() => void downloadDocument(doc)}
+                >
+                  Download
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div className="mt-6 max-w-2xl space-y-4">
+          <FileField
+            id="document"
+            label="Add a document"
+            file={docFile}
+            onChange={setDocFile}
+            busy={docUploading}
+            error={docError}
+            hint="PDFs, images and office documents. The size ceiling is your plan's file upload limit, so it is not checked here."
+          />
+          <Field
+            id="document-title"
+            label="Title"
+            maxLength={200}
+            value={docTitle}
+            onChange={(event) => setDocTitle(event.target.value)}
+            hint="Optional — left blank, the document is listed under its file name."
+          />
+          <button
+            type="button"
+            onClick={() => void uploadDocument()}
+            disabled={!docFile || docUploading}
+            aria-busy={docUploading}
+            className="btn btn-primary"
+          >
+            {docUploading ? 'Storing…' : 'Store document'}
           </button>
         </div>
       </section>

@@ -285,6 +285,77 @@ async function schoolAdminUserIds(schoolId) {
   return users.map((user) => user.id);
 }
 
+/**
+ * The teachers of a class — §23's *"teacher"* recipient, which the owner's decision D15 defined as the
+ * teachers of the classes an exam or a result is about.
+ *
+ * FR-NOTIF-001 names teachers among the five recipient classes and §23 never says for which type, so
+ * for a long time no pass reached a teacher at all (triage finding 63). A teacher "teaches" a class by
+ * any of the four ways the schema records it: as its class teacher or a section's, through a class
+ * subject or a teacher-subject assignment, or on its timetable. Narrowed to the section when the event
+ * names one, with the class-wide rows (no section) kept, because a class teacher teaches every section.
+ * Only active teachers with a login — a teacher with no `user_id` has nowhere to be notified (D1 is how
+ * they get one).
+ *
+ * @param {number} schoolId
+ * @param {number|null} classId
+ * @param {number|null} [sectionId]
+ * @returns {Promise<number[]>} user ids
+ */
+async function teacherUserIdsForClass(schoolId, classId, sectionId) {
+  if (!classId) return [];
+  const scoped = { school_id: schoolId, class_id: classId, is_active: true };
+  const inSection = sectionId ? { [Op.or]: [{ section_id: sectionId }, { section_id: null }] } : {};
+
+  const [klass, sections, classSubjects, teacherSubjects, periods] = await Promise.all([
+    db.Class.findOne({ where: { id: classId, school_id: schoolId }, attributes: ['class_teacher_id'] }),
+    db.Section.findAll({
+      where: { ...scoped, ...(sectionId ? { id: sectionId } : {}) },
+      attributes: ['class_teacher_id'],
+    }),
+    db.ClassSubject.findAll({ where: { ...scoped, ...inSection }, attributes: ['teacher_id'] }),
+    db.TeacherSubject.findAll({ where: { ...scoped, ...inSection }, attributes: ['teacher_id'] }),
+    db.Timetable.findAll({ where: { ...scoped, ...inSection }, attributes: ['teacher_id'] }),
+  ]);
+
+  const teacherIds = [
+    klass && klass.class_teacher_id,
+    ...sections.map((row) => row.class_teacher_id),
+    ...classSubjects.map((row) => row.teacher_id),
+    ...teacherSubjects.map((row) => row.teacher_id),
+    ...periods.map((row) => row.teacher_id),
+  ].filter((id) => Number.isInteger(id) && id > 0);
+  if (!teacherIds.length) return [];
+
+  const teachers = await db.Teacher.findAll({
+    where: {
+      id: { [Op.in]: [...new Set(teacherIds)] },
+      school_id: schoolId,
+      is_active: true,
+      user_id: { [Op.ne]: null },
+    },
+    attributes: ['user_id'],
+  });
+  return teachers.map((teacher) => teacher.user_id);
+}
+
+/**
+ * The Super Admins — §23's *"Super Admin"* recipient, for the platform notifications the owner's
+ * decision D15 gave them: payment received, payment failed and subscription expiry. Written with a
+ * **null `school_id`**, which is §29's own convention for a platform notification (`models/other.js`).
+ *
+ * @returns {Promise<number[]>} user ids
+ */
+async function platformAdminUserIds() {
+  const role = await db.Role.findOne({ where: { slug: ROLES.SUPER_ADMIN }, attributes: ['id'] });
+  if (!role) return [];
+  const users = await db.User.findAll({
+    where: { role_id: role.id, school_id: null, status: USER_STATUS.ACTIVE },
+    attributes: ['id'],
+  });
+  return users.map((user) => user.id);
+}
+
 /* ────────────────────────────────── Delivery ────────────────────────────────── */
 
 /**
@@ -660,7 +731,12 @@ async function sweepExamAnnouncements(report, options) {
   await forEachCandidate(rows, report, 'examAnnouncements', async (row) => {
     const studentIds = await studentIdsForClass(row.school_id, row.class_id, row.section_id);
     const byStudent = await recipientsForStudents(studentIds);
-    const recipients = await recipientsForUsers([...byStudent.values()].flatMap((set) => [...set]));
+    /* And the class's teachers — the owner's decision D15. */
+    const teacherIds = await teacherUserIdsForClass(row.school_id, row.class_id, row.section_id);
+    const recipients = await recipientsForUsers([
+      ...[...byStudent.values()].flatMap((set) => [...set]),
+      ...teacherIds,
+    ]);
 
     await notify({
       type: NOTIFICATION_TYPES.EXAM_ANNOUNCEMENT,
@@ -715,6 +791,50 @@ async function sweepResults(report, options) {
       referenceType: 'result',
       referenceId: row.id,
       metadata: { exam_id: row.exam_id, percentage: row.percentage, outcome: row.outcome },
+    });
+    return true;
+  });
+}
+
+/**
+ * §23 Result Published, to the teachers — the owner's decision D15.
+ *
+ * The pass above tells each student and their parents about their own result. A teacher is told once
+ * per **exam**, not once per student: forty result rows for one class would otherwise be forty notices
+ * saying the same thing. So the reference is the exam (`reference_type: 'exam'`), which also keeps it
+ * apart from the per-student rows for idempotency — a different `(type, reference_type)` pair, asked
+ * of the same `notifications` index. Candidates are exams with at least one published result that no
+ * teacher has yet been told about; the audience is the exam's class, through `teacherUserIdsForClass()`.
+ */
+async function sweepResultsForTeachers(report, options) {
+  const pending = await db.Exam.findAll({
+    where: {
+      [Op.and]: [
+        { id: { [Op.in]: db.sequelize.literal('(SELECT DISTINCT r.exam_id FROM results r WHERE r.is_published = 1)') } },
+        { id: notYetNotified(NOTIFICATION_TYPES.RESULT_PUBLISHED, 'exam') },
+      ],
+    },
+    order: [['id', 'ASC']],
+    limit: options.limit,
+  });
+
+  await forEachCandidate(pending, report, 'resultsForTeachers', async (row) => {
+    const recipients = await recipientsForUsers(
+      await teacherUserIdsForClass(row.school_id, row.class_id, row.section_id)
+    );
+    if (!recipients.length) return false;
+
+    await notify({
+      type: NOTIFICATION_TYPES.RESULT_PUBLISHED,
+      recipients,
+      schoolId: row.school_id,
+      organizationId: row.organization_id,
+      title: `Results published: ${row.name}`,
+      message: `Results for the exam "${row.name}" have been published.`,
+      actionUrl: `/exams/${row.id}`,
+      referenceType: 'exam',
+      referenceId: row.id,
+      metadata: { exam_id: row.id, audience: 'teachers' },
     });
     return true;
   });
@@ -860,6 +980,22 @@ async function sweepSubscriptionExpiry(report, options) {
       metadata: { state: row.state, current_period_end: row.current_period_end },
     });
 
+    /* And the platform's copy, to the Super Admins — the owner's decision D15. */
+    await notify({
+      type: NOTIFICATION_TYPES.SUBSCRIPTION_EXPIRY,
+      recipients: await recipientsForUsers(await platformAdminUserIds()),
+      schoolId: null,
+      organizationId: null,
+      title: 'A school subscription is expiring',
+      message: row.current_period_end
+        ? `Subscription ${row.id} (school ${row.school_id}) ends on ${dates.toDateOnly(row.current_period_end)}.`
+        : `Subscription ${row.id} (school ${row.school_id}) is expiring.`,
+      actionUrl: `/super-admin/subscriptions/${row.id}`,
+      referenceType: 'subscription',
+      referenceId: row.id,
+      metadata: { school_id: row.school_id, state: row.state, current_period_end: row.current_period_end },
+    });
+
     await row.update({ expiry_notified_at: options.at });
     return true;
   });
@@ -901,7 +1037,9 @@ async function sweepPayments(report, options) {
     const userIds = await schoolAdminUserIds(row.school_id);
     if (row.submitted_by) userIds.push(row.submitted_by);
     const recipients = await recipientsForUsers(userIds);
-    if (!recipients.length) return false;
+    /* The platform's copy goes to the Super Admins — the owner's decision D15. */
+    const platformRecipients = await recipientsForUsers(await platformAdminUserIds());
+    if (!recipients.length && !platformRecipients.length) return false;
 
     const received = type === NOTIFICATION_TYPES.PAYMENT_RECEIVED;
     await notify({
@@ -917,6 +1055,20 @@ async function sweepPayments(report, options) {
       referenceType: 'payment',
       referenceId: row.id,
       metadata: { payment_number: row.payment_number, status: row.status },
+    });
+    await notify({
+      type,
+      recipients: platformRecipients,
+      schoolId: null,
+      organizationId: null,
+      title: received ? 'Payment received from a school' : 'A school payment failed',
+      message: received
+        ? `Payment ${row.payment_number} of ${row.currency} ${row.amount} (school ${row.school_id}) was received.`
+        : `Payment ${row.payment_number} of ${row.currency} ${row.amount} (school ${row.school_id}) was not accepted.`,
+      actionUrl: '/super-admin/payments',
+      referenceType: 'payment',
+      referenceId: row.id,
+      metadata: { school_id: row.school_id, payment_number: row.payment_number, status: row.status },
     });
     return true;
   });
@@ -946,6 +1098,7 @@ async function runNotificationSweep(options = {}) {
     ['homework', sweepHomework],
     ['examAnnouncements', sweepExamAnnouncements],
     ['results', sweepResults],
+    ['resultsForTeachers', sweepResultsForTeachers],
     ['attendanceAlerts', sweepAttendanceAlerts],
     ['feeReminders', sweepFeeReminders],
     ['feePaid', sweepFeePaid],
@@ -980,6 +1133,8 @@ module.exports = {
   recipientsForStudents,
   studentIdsForClass,
   schoolAdminUserIds,
+  teacherUserIdsForClass,
+  platformAdminUserIds,
   alreadyNotified,
   SORTABLE,
   SWEEP_LIMIT,

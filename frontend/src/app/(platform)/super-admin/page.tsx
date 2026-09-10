@@ -7,6 +7,7 @@
  * derived figures the service already exposes (archived schools, pending amount).
  */
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
@@ -123,6 +124,12 @@ export default function PlatformDashboard() {
       <PageHeader
         title="Platform overview"
         description={`Signed in as ${profile?.user.name ?? 'administrator'}. Live figures from across every organization.`}
+        action={
+          /* The platform notifications of the owner's decision D15 — payments and expiring subscriptions. */
+          <Link href="/super-admin/notifications" className="btn btn-secondary">
+            Notifications
+          </Link>
+        }
       />
 
       {refusal ? (

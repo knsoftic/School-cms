@@ -43,6 +43,16 @@ function describe(key) {
   return `Unlocks the "${effect.target}" feature for the subscription.`;
 }
 
+/*
+ * Seeded switched off, so a fresh install cannot sell it — the owner's decision D16 in
+ * `docs/OWNER-DECISIONS.md`. Serving a school on its own domain is DNS and hosting work this
+ * application does not do, so `custom_domain` unlocks a feature nothing reads; selling it would
+ * charge for nothing. It stays one of the seven, and the Super Admin switches it on (FR-SUB-009)
+ * once hosting supports it. A default only: `is_active` is the operator's, so an existing install
+ * keeps whatever it has — see `up()`.
+ */
+const SEEDED_INACTIVE = Object.freeze(['custom_domain']);
+
 const ADDON_DEFINITIONS = ADDON_LIST.map((key, index) => {
   const effect = ADDON_EFFECTS[key];
   return {
@@ -53,7 +63,7 @@ const ADDON_DEFINITIONS = ADDON_LIST.map((key, index) => {
     effect_target: effect.target,
     units_per_quantity: 1,
     unit: effect.type === 'limit_increase' ? LIMIT_UNITS[effect.target] || 'count' : null,
-    is_active: true,
+    is_active: !SEEDED_INACTIVE.includes(key),
     display_order: index + 1,
   };
 });

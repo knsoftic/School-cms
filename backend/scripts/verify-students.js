@@ -138,19 +138,31 @@ function named(router, method, path, fnName) {
 function verifySchemas() {
   console.log('\n── Part 1 — request schemas ──\n');
 
-  const minimal = run(schemas.create, { first_name: 'Amina', admission_date: '2025-04-01' });
-  check('first_name and admission_date are enough to admit', minimal.ok, true);
+  /*
+   * `class_id` is in every create body below that is meant to be valid apart from one field. Since D4
+   * made it required, a body without it is refused for the missing class — so an "X is refused"
+   * assertion over such a body would pass whatever the schema did with X.
+   */
+  const minimal = run(schemas.create, { first_name: 'Amina', admission_date: '2025-04-01', class_id: 1 });
+  check('first_name, admission_date and a class are enough to admit', minimal.ok, true);
   check(
     'student_id is optional — FR-STUDENT-001 says the system assigns it',
     minimal.value.student_id,
     undefined
   );
 
-  check('first_name is required', run(schemas.create, { admission_date: '2025-04-01' }).ok, false);
+  check('first_name is required', run(schemas.create, { admission_date: '2025-04-01', class_id: 1 }).ok, false);
   check(
     'admission_date is required — the column is NOT NULL',
-    run(schemas.create, { first_name: 'Amina' }).ok,
+    run(schemas.create, { first_name: 'Amina', class_id: 1 }).ok,
     false
+  );
+  /* D4 — "Student is assigned to a Class and Section" (FR-STUDENT-001), so the roll number always has a scope. */
+  const classless = schemas.create.validate({ first_name: 'Amina', admission_date: '2025-04-01' }, VALIDATE_OPTIONS);
+  check(
+    'a class is required — the owner\'s decision D4, and the only thing missing here',
+    classless.error ? classless.error.details.map((d) => d.path.join('.')) : [],
+    ['class_id']
   );
 
   /*
@@ -169,7 +181,7 @@ function verifySchemas() {
   ]) {
     check(
       `${field} is refused on create`,
-      run(schemas.create, { first_name: 'A', admission_date: '2025-04-01', [field]: 'x' }).ok,
+      run(schemas.create, { first_name: 'A', admission_date: '2025-04-01', class_id: 1, [field]: 'x' }).ok,
       false
     );
     /*
@@ -187,20 +199,21 @@ function verifySchemas() {
 
   check(
     'organization_id is refused',
-    run(schemas.create, { first_name: 'A', admission_date: '2025-04-01', organization_id: 3 }).ok,
+    run(schemas.create, { first_name: 'A', admission_date: '2025-04-01', class_id: 1, organization_id: 3 }).ok,
     false
   );
 
   const stripped = run(schemas.create, {
     first_name: 'A',
     admission_date: '2025-04-01',
+    class_id: 1,
     is_superuser: true,
   });
   check('an unknown key is stripped', stripped.ok && stripped.value.is_superuser === undefined, true);
 
   check(
     'gender is held to the model enum',
-    run(schemas.create, { first_name: 'A', admission_date: '2025-04-01', gender: 'unknown' }).ok,
+    run(schemas.create, { first_name: 'A', admission_date: '2025-04-01', class_id: 1, gender: 'unknown' }).ok,
     false
   );
 
@@ -247,7 +260,7 @@ function verifySchemas() {
     'a body-supplied photo_path is REFUSED, not stripped, on create',
     (() => {
       const r = schemas.create.validate(
-        { first_name: 'A', admission_date: '2025-04-01', photo_path: '../../../etc/passwd' },
+        { first_name: 'A', admission_date: '2025-04-01', class_id: 1, photo_path: '../../../etc/passwd' },
         VALIDATE_OPTIONS
       );
       return [Boolean(r.error), r.error ? r.error.details.map((d) => d.path.join('.')) : []];
@@ -267,7 +280,7 @@ function verifySchemas() {
   check(
     '  including a value that looks harmless — the column is not a body field at all now',
     run(schemas.create, {
-      first_name: 'A', admission_date: '2025-04-01', photo_path: 'photo.png',
+      first_name: 'A', admission_date: '2025-04-01', class_id: 1, photo_path: 'photo.png',
     }).ok,
     false
   );
@@ -293,17 +306,30 @@ function verifyRouting() {
   console.log('\n── Part 2 — declared routes ──\n');
 
   const routes = routesOf(studentRoutes);
-  check('the nine §15.1 routes are declared', routes, [
+  /* Twelve since the owner's decision D13 gave §15.1's "Documents" its upload, list and download. */
+  check('the twelve §15.1 routes are declared', routes, [
     'GET /',
     'POST /',
     'POST /:id/photo',
     'GET /:id/photo',
+    'POST /:id/documents',
+    'GET /:id/documents',
+    'GET /:id/documents/:documentId',
     'POST /:id/promote',
     'POST /:id/transfer',
     'POST /:id/leave',
     'GET /:id',
     'PATCH /:id',
   ]);
+  check(
+    'D13 — a document is uploaded on students.manage and read on students.view, like the photo',
+    [
+      permissionsOf(studentRoutes, 'post', '/:id/documents'),
+      permissionsOf(studentRoutes, 'get', '/:id/documents'),
+      permissionsOf(studentRoutes, 'get', '/:id/documents/:documentId'),
+    ],
+    [['students.manage'], ['students.view'], ['students.view']]
+  );
 
   /*
    * `GET /:id/photo` closes Known Issues #32: `photo_path` had a writer and no reader, so a photo could
@@ -360,7 +386,7 @@ function verifyRouting() {
   const writes = studentRoutes.stack
     .filter((l) => l.route && !l.route.methods.get)
     .map((l) => [Object.keys(l.route.methods)[0], l.route.path]);
-  check('there are six write routes', writes.length, 6);
+  check('there are seven write routes — the document upload is the seventh (D13)', writes.length, 7);
   check(
     'no write carries requirePlatformScope() — the actor is the school, not the platform',
     writes.every(([m, p]) => named(studentRoutes, m, p, 'platformGuard') === false),
@@ -800,7 +826,7 @@ async function verifyHttp() {
     const explicitId = await call('/students', {
       method: 'POST',
       token: principalA,
-      body: { first_name: 'Clash', admission_date: '2025-04-12', student_id: first.student_id },
+      body: { first_name: 'Clash', admission_date: '2025-04-12', class_id: grade1.id, student_id: first.student_id },
     });
     check('a duplicate student id is refused', explicitId.status, 409);
     check('duplicate student id code', codeOf(explicitId), 'STUDENT_ID_TAKEN');
@@ -808,7 +834,7 @@ async function verifyHttp() {
     const statusInBody = await call('/students', {
       method: 'POST',
       token: principalA,
-      body: { first_name: 'Sneaky', admission_date: '2025-04-12', status: STUDENT_STATUS.LEFT },
+      body: { first_name: 'Sneaky', admission_date: '2025-04-12', class_id: grade1.id, status: STUDENT_STATUS.LEFT },
     });
     check('status may not be set through a body', statusInBody.status, 422);
 
@@ -836,7 +862,18 @@ async function verifyHttp() {
       token: principalA,
       body: { first_name: 'Orphan', admission_date: '2025-04-12', section_id: sectionA.id },
     });
-    check('a section with no class is refused', orphanSection.status, 422);
+    /*
+     * Refused one step earlier than it used to be: D4 made the class required, so the validator names
+     * the missing class before the service's own "a section needs its class" check is reached.
+     */
+    check(
+      'a section with no class is refused — at validation, for the missing class (D4)',
+      [
+        orphanSection.status,
+        ((orphanSection.body && orphanSection.body.error && orphanSection.body.error.details) || []).map((d) => d.field),
+      ],
+      [422, ['class_id']]
+    );
 
     /* ── the ceiling ── */
 
@@ -868,7 +905,7 @@ async function verifyHttp() {
     const third = await call('/students', {
       method: 'POST',
       token: principalA,
-      body: { first_name: 'Third', admission_date: '2025-04-13' },
+      body: { first_name: 'Third', admission_date: '2025-04-13', class_id: grade1.id },
     });
     check('the third admission exceeds a student_limit of 2', third.status, 403);
     check('and it is the limit guard refusing', codeOf(third), 'PLAN_LIMIT_EXCEEDED');
@@ -935,7 +972,7 @@ async function verifyHttp() {
     /* The allowance really is returned — the freed capacity is usable. */
     const readmitted = await expectOk(
       '/students',
-      { method: 'POST', token: principalA, body: { first_name: 'Fresh', admission_date: '2025-05-01' } },
+      { method: 'POST', token: principalA, body: { first_name: 'Fresh', admission_date: '2025-05-01', class_id: grade1.id } },
       201
     );
     created.students.push(dataOf(readmitted).student.id);
@@ -982,8 +1019,13 @@ async function verifyHttp() {
      * Run in school D, which is on a roomy plan: school A is at its ceiling by now, and at the
      * ceiling every one of these would come back 403 instead of the thing it claims to test.
      */
+    /*
+     * Every admission names a class (D4). These sequence cases take school D's first class with no
+     * section unless they say otherwise: roll numbers are allocated per class *and* section, so they
+     * cannot disturb the sectioned student's roll 1 or the second class's, asserted below.
+     */
     const mkD = async (body) =>
-      expectOk('/students', { method: 'POST', token: principalD, body }, 201);
+      expectOk('/students', { method: 'POST', token: principalD, body: { class_id: dClassOne.id, ...body } }, 201);
 
     const dFirst = await mkD({ first_name: 'DeeOne', admission_date: '2025-04-01' });
     check(
@@ -1070,6 +1112,7 @@ async function verifyHttp() {
       body: {
         first_name: 'DeeForeignSession',
         admission_date: '2025-04-08',
+        class_id: dClassOne.id,
         admission_session_id: session.id,
       },
     });
@@ -1078,7 +1121,7 @@ async function verifyHttp() {
     const foreignUser = await call('/students', {
       method: 'POST',
       token: principalD,
-      body: { first_name: 'DeeForeignUser', admission_date: '2025-04-08', user_id: userIdOf['reception'] },
+      body: { first_name: 'DeeForeignUser', admission_date: '2025-04-08', class_id: dClassOne.id, user_id: userIdOf['reception'] },
     });
     check('a user_id from another school is refused', foreignUser.status, 422);
 
@@ -1127,7 +1170,7 @@ async function verifyHttp() {
     const teacherWrite = await call('/students', {
       method: 'POST',
       token: teacher,
-      body: { first_name: 'Nope', admission_date: '2025-04-14' },
+      body: { first_name: 'Nope', admission_date: '2025-04-14', class_id: grade1.id },
     });
     check('but may not admit one', teacherWrite.status, 403);
 
@@ -1147,7 +1190,7 @@ async function verifyHttp() {
     check('  naming the field', bodyPath.body.error.details[0].field, 'photo_path');
     const bodyPathOnCreate = await call('/students', {
       method: 'POST', token: principalA,
-      body: { first_name: 'Pathy', admission_date: '2025-04-10', photo_path: 'x.png' },
+      body: { first_name: 'Pathy', admission_date: '2025-04-10', class_id: grade1.id, photo_path: 'x.png' },
     });
     check('  and on the admission too', bodyPathOnCreate.status, 422);
 
@@ -1253,7 +1296,7 @@ async function verifyHttp() {
       {
         method: 'POST',
         token: principalA,
-        body: { first_name: 'Unphotographed', last_name: 'Probe', admission_date: '2025-04-11' },
+        body: { first_name: 'Unphotographed', last_name: 'Probe', admission_date: '2025-04-11', class_id: grade1.id },
       },
       201
     );
@@ -1278,6 +1321,56 @@ async function verifyHttp() {
     check('  which is not vacuous — the same photo is readable by its own school', ownSchoolRead.status, 200);
     const deniedRead = await call(`/students/${photoTarget.id}/photo`, { token: principalB });
     check('and the module gate applies to the reader as well as the writer', deniedRead.status, 403);
+
+    /* ═══ FR-STUDENT-001's "Documents" — the owner's decision D13, settling triage finding 16 ═══ */
+
+    const docsUrl = `/students/${photoTarget.id}/documents`;
+    const docForm = new FormData();
+    docForm.set('title', 'Birth certificate');
+    docForm.append('documents', new Blob([PNG], { type: 'image/png' }), 'front.png');
+    docForm.append('documents', new Blob([PNG], { type: 'image/png' }), 'back.png');
+    const docUpload = await call(docsUrl, { method: 'POST', token: principalA, form: docForm });
+    const uploadedDocs = docUpload.status === 201 ? dataOf(docUpload).documents : [];
+    check('D13 — documents can be attached to a student, several at once, titled from the one title',
+      [docUpload.status, uploadedDocs.map((d) => d.title)],
+      [201, ['Birth certificate — front.png', 'Birth certificate — back.png']]);
+    check('  stored as uploads on this student, not as one of §20.5’s generated types',
+      uploadedDocs.map((d) => [d.is_generated, d.document_type, d.owner_type, Number(d.owner_id)]),
+      [[false, null, 'student', photoTarget.id], [false, null, 'student', photoTarget.id]]);
+    check('  and the stored path never leaves the server', uploadedDocs.some((d) => 'file_path' in d), false);
+
+    const emptyUpload = await call(docsUrl, { method: 'POST', token: principalA, form: new FormData() });
+    check('  an upload with no file is refused, naming the field',
+      [emptyUpload.status,
+        ((emptyUpload.body && emptyUpload.body.error && emptyUpload.body.error.details) || []).map((d) => d.field)],
+      [422, ['documents']]);
+
+    const teacherForm = new FormData();
+    teacherForm.append('documents', new Blob([PNG], { type: 'image/png' }), 'teacher.png');
+    const teacherUpload = await call(docsUrl, { method: 'POST', token: teacher, form: teacherForm });
+    check('  a teacher, who may read students but not manage them, cannot attach one', teacherUpload.status, 403);
+
+    const listed = await call(docsUrl, { token: teacher });
+    check('  but can list them — reading a student’s document is viewing the student, newest first',
+      [listed.status, (listed.status === 200 ? dataOf(listed).documents : []).map((d) => d.file_name)],
+      [200, ['back.png', 'front.png']]);
+
+    const firstDoc = uploadedDocs[0] || { id: 0 };
+    const docResponse = await fetch(`${base}${docsUrl}/${firstDoc.id}`, {
+      headers: { Authorization: `Bearer ${teacher}` },
+    });
+    const docBytes = Buffer.from(await docResponse.arrayBuffer());
+    check('  and download one — the uploaded bytes, as an attachment under its own name',
+      [docResponse.status, docBytes.equals(PNG), docResponse.headers.get('content-disposition')],
+      [200, true, 'attachment; filename="front.png"']);
+
+    const underOtherStudent = await call(
+      `/students/${dataOf(unphotographed).student.id}/documents/${firstDoc.id}`,
+      { token: principalA }
+    );
+    check('  a document is found only under the student it belongs to', underOtherStudent.status, 404);
+    const crossSchoolDocs = await call(docsUrl, { token: principalD });
+    check('  and another school cannot list them', crossSchoolDocs.status, 404);
 
     const audits = await settleDistinct(
       () => db.AuditLog.findAll({

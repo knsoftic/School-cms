@@ -294,34 +294,37 @@ async function updateStructure(req, id, payload) {
  * which is what `invoices` settles for and for the same reason — the index that would close it outright
  * cannot be added. Stated rather than papered over.
  *
- * ## The null-period consequence, which is a real limitation and is not a bug to be fixed here
+ * ## With no month, the fee structure is part of the identity — the owner's decision D12
  *
- * `period_month` is optional (`fees.validation.js`, no `.required()`) and is normalised to `null`. When
- * it is absent this `where` emits `period_month IS NULL`, so the triple degenerates to
- * `(student, component)` and matches **every** prior period-less fee of that component for that
- * student. The consequence is observable: a school that assigns an `exam_fee` with no period for the
- * mid-term is refused `FEE_PERIOD_ALREADY_ASSIGNED` when it assigns an `exam_fee` for the final — and
- * the message reads *"already carry this fee for this period"* when the caller named no period. The
- * same holds for a second `admission_fee` or `transport_fee`. The escapes are to supply a
- * `period_month`, which no message suggests, or to waive the first.
+ * `period_month` is optional (`fees.validation.js`, no `.required()`) and is normalised to `null`. With
+ * only the triple, a missing month degenerated it to `(student, component)`, so a school that assigned a
+ * period-less `exam_fee` for the mid-term was refused when it assigned one for the final. §17 never says
+ * what tells two such fees apart, and every repair was a business rule — so it was put to the owner
+ * (`docs/SRS-TRIAGE-VERDICTS.md` finding 20), whose answer is D12 in `docs/OWNER-DECISIONS.md`: **when no
+ * month is named, a different fee structure is a different fee.** "Mid-term exam fee" and "Final exam
+ * fee" are two structures and both assign; the same structure twice is still the double-click
+ * double-bill and is still refused.
  *
- * It is left as it stands because **every available repair is a business rule §17 does not state**, and
- * §35 forbids inventing one. Making `period_month` required adds a mandatory field §17 never names.
- * Exempting a null period from the guard reopens the double-click double-bill the guard exists for, and
- * does so for exactly the components most likely to be assigned without a period. Falling back to
- * `fee_structure_id` when the period is null contradicts the paragraph above — two different structures
- * charging `monthly_fee` for May are the same double-bill. `verify-fees.js` pins the current behaviour
- * so the choice is recorded rather than incidental; `docs/SRS-TRIAGE-VERDICTS.md` finding 20 holds the
- * open question, which is what identifies two distinct fees of one component for one student when
- * neither names a period.
+ * The paragraph above still holds wherever a month *is* named: two different structures both charging
+ * `monthly_fee` for May are one double-bill, so a dated fee is matched on the triple alone.
+ *
+ * @param {number} schoolId
+ * @param {number[]} studentIds
+ * @param {string} component
+ * @param {string|null} periodMonth
+ * @param {number} structureId  consulted only when `periodMonth` is empty
+ * @param {object} transaction
+ * @returns {Promise<number[]>}  the students who already carry it
  */
-async function alreadyAssigned(schoolId, studentIds, component, periodMonth, transaction) {
+async function alreadyAssigned(schoolId, studentIds, component, periodMonth, structureId, transaction) {
+  const identity = periodMonth
+    ? { component, period_month: periodMonth }
+    : { component, period_month: null, fee_structure_id: structureId };
   const rows = await db.StudentFee.findAll({
     where: {
       school_id: schoolId,
       student_id: { [Op.in]: studentIds },
-      component,
-      period_month: periodMonth || null,
+      ...identity,
       status: { [Op.ne]: STUDENT_FEE_STATUS.WAIVED },
     },
     attributes: ['student_id'],
@@ -416,12 +419,21 @@ async function assign(req, payload) {
         unique,
         structure.component,
         rows[0].period_month,
+        structure.id,
         transaction
       );
       if (duplicates.length) {
-        throw ApiError.conflict('Those students already carry this fee for this period', {
+        const message = rows[0].period_month
+          ? 'Those students already carry this fee for this period'
+          : 'Those students already carry this fee structure with no month named — name a month, or use a different fee structure';
+        throw ApiError.conflict(message, {
           code: 'FEE_PERIOD_ALREADY_ASSIGNED',
-          details: { student_ids: duplicates, component: structure.component, period_month: rows[0].period_month },
+          details: {
+            student_ids: duplicates,
+            component: structure.component,
+            period_month: rows[0].period_month,
+            fee_structure_id: structure.id,
+          },
         });
       }
       return db.StudentFee.bulkCreate(rows, { validate: true, transaction });

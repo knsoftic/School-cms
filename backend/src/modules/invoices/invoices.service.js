@@ -139,6 +139,7 @@ const dates = require('../../utils/dates');
 const documentNumber = require('../../utils/documentNumber');
 const couponsService = require('../coupons/coupons.service');
 const taxesService = require('../taxes/taxes.service');
+const { activeWindow } = require('../../services/entitlementService');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const { tenantWhere } = require('../../models');
@@ -147,6 +148,9 @@ const {
   PAYMENT_STATUS,
   REFUND_STATUS,
   BILLING_CYCLES,
+  OVERRIDE_TYPES,
+  PRICE_OVERRIDE_TARGETS,
+  SUBSCRIPTION_STATES,
 } = require('../../config/constants');
 
 const SORTABLE = Object.freeze([
@@ -796,6 +800,44 @@ async function generateForSubscription(req, subscriptionId, payload = {}) {
   const lines = items.map((item) => lineFromSubscriptionItem(item, { periodStart, periodEnd }));
 
   /*
+   * A negotiated price replaces the plan's — the owner's decision D7 in `docs/OWNER-DECISIONS.md`,
+   * settling triage finding 39. A `price` override on `cycle_amount` used to be accepted, stored and
+   * billed by nothing: the school kept paying the plan price. Now the override in effect at the start
+   * of the billed period sets the plan line's amount, whatever the plan price is. It touches only the
+   * plan line — a setup fee and add-ons are priced by their own rows — and it is read per period, so an
+   * override that ends stops applying to the invoices after it, which is also how a renewal honours it:
+   * a renewed period is invoiced here like any other.
+   *
+   * The line collapses to one unit at the negotiated amount. A per-seat plan's quantity would otherwise
+   * print beside a unit price that no longer multiplies out; the plan's own figures stay in `metadata`.
+   */
+  const priceOverride = await db.SubscriptionOverride.findOne({
+    where: {
+      subscription_id: subscription.id,
+      override_type: OVERRIDE_TYPES.PRICE,
+      target_key: PRICE_OVERRIDE_TARGETS,
+      is_active: true,
+      ...activeWindow('effective_from', 'effective_until', new Date(periodStart)),
+    },
+    order: [['id', 'DESC']],
+  });
+  if (priceOverride && priceOverride.amount !== null) {
+    for (const line of lines) {
+      if (line.item_type !== 'plan') continue;
+      const negotiated = money.round(priceOverride.amount);
+      line.metadata = {
+        price_override_id: priceOverride.id,
+        plan_quantity: line.quantity,
+        plan_unit_amount: line.unit_amount,
+        plan_amount: line.amount,
+      };
+      line.quantity = 1;
+      line.unit_amount = negotiated;
+      line.amount = negotiated;
+    }
+  }
+
+  /*
    * Overage is skipped on a first cycle: the period has not been used yet, so any usage row overlapping
    * it belongs to a previous subscription of the same school and is not this invoice's to bill.
    */
@@ -803,6 +845,16 @@ async function generateForSubscription(req, subscriptionId, payload = {}) {
     lines.push(
       ...(await overageLinesFor(subscription.school_id, subscription.id, periodStart, periodEnd))
     );
+  }
+
+  /*
+   * The automatic run (D6) leaves a period that costs nothing un-invoiced: an invoice for zero is born
+   * `unpaid`, can never be paid into `paid` — `applyPayment()` settles only a positive total — and
+   * would be flagged overdue by the next sweep. Generate by hand is unaffected; an operator may want the
+   * record.
+   */
+  if (payload.skip_if_free && money.toMinor(money.sum(lines.map((line) => line.amount))) === 0) {
+    return null;
   }
 
   return issue(req, {
@@ -1276,6 +1328,91 @@ async function markOverdue(options = {}) {
 }
 
 /**
+ * Subscription states whose running period is owed. A **trial** is not — it is free until it ends, and
+ * the lifecycle sweep then moves it to `past_due`, which is. A pending subscription is: it becomes
+ * active when its first invoice is paid (`payments.service` → `activate`), so that invoice has to exist
+ * before activation can.
+ */
+const INVOICEABLE_STATES = Object.freeze([
+  SUBSCRIPTION_STATES.PENDING,
+  SUBSCRIPTION_STATES.ACTIVE,
+  SUBSCRIPTION_STATES.EXPIRING,
+  SUBSCRIPTION_STATES.PAST_DUE,
+  SUBSCRIPTION_STATES.GRACE_PERIOD,
+]);
+
+/**
+ * Issue the invoice for every billing period that has started and has none — the owner's decision D6.
+ *
+ * FR-BILL-001's actor is **System** and its precondition *"a billing event occurs"*, a phrase the SRS
+ * never defines, so for a long time invoices were issued only by a Super Admin's Generate. D6 in
+ * `docs/OWNER-DECISIONS.md` defined it: **a billing period starting** — a subscription's first period,
+ * and each period a renewal opens. The daily run finds each subscription in an owed state whose current
+ * period has begun and carries no live invoice, and issues one through `generateForSubscription()`, so
+ * it is the same invoice Generate would produce: the plan and add-on lines, any price override (D7),
+ * the default tax, and a due date `grace_period_days` after issue.
+ *
+ * Idempotent, like every task the scheduler runs: a period is matched by its start against live
+ * invoices — the same test `alreadyBilled()` makes — so a second run the same day issues nothing, and a
+ * cancelled invoice leaves its period open to be issued again. The exclusion is inside the query, so
+ * `limit` bounds the work actually outstanding rather than being filled by periods already billed.
+ *
+ * A period that costs nothing — a free plan with no priced add-on — is counted as `free` and not
+ * invoiced; see `skip_if_free` in `generateForSubscription()`.
+ *
+ * @param {{at?: Date, limit?: number}} [options]
+ * @returns {Promise<{at: string, issued: number, free: number, failed: object[]}>}
+ */
+async function issueForStartedPeriods(options = {}) {
+  const at = options.at || new Date();
+  const limit = options.limit || 500;
+  const live = LIVE_STATUSES.map((status) => db.sequelize.escape(status)).join(', ');
+
+  const due = await db.Subscription.findAll({
+    where: {
+      state: { [Op.in]: INVOICEABLE_STATES },
+      current_period_start: { [Op.ne]: null, [Op.lte]: at },
+      [Op.and]: [
+        db.sequelize.literal(
+          'NOT EXISTS (SELECT 1 FROM `invoices` AS `billed` ' +
+            'WHERE `billed`.`subscription_id` = `Subscription`.`id` ' +
+            'AND `billed`.`billing_period_start` = `Subscription`.`current_period_start` ' +
+            `AND \`billed\`.\`status\` IN (${live}))`
+        ),
+      ],
+    },
+    attributes: ['id'],
+    order: [['id', 'ASC']],
+    limit,
+  });
+
+  const report = { at: at.toISOString(), issued: 0, free: 0, failed: [] };
+  for (const subscription of due) {
+    try {
+      /* eslint-disable-next-line no-await-in-loop */
+      const invoice = await generateForSubscription(null, subscription.id, {
+        issue_date: at,
+        skip_if_free: true,
+        reason: 'Issued automatically at the start of the billing period (owner decision D6)',
+      });
+      if (invoice) report.issued += 1;
+      else report.free += 1;
+    } catch (err) {
+      /* One subscription with no billable lines must not stop the rest being invoiced. */
+      report.failed.push({ subscriptionId: subscription.id, code: err.code || null, error: err.message });
+    }
+  }
+
+  if (report.issued || report.failed.length) {
+    logger.info('Invoices issued for started billing periods', {
+      issued: report.issued,
+      failed: report.failed.length,
+    });
+  }
+  return report;
+}
+
+/**
  * The invoices a reminder cron would notify about, and nothing more.
  *
  * `reminder_sent_at`'s column comment is *"Marker used by the fee/subscription reminder cron"*. The
@@ -1397,6 +1534,8 @@ module.exports = {
   applyRefund,
   /* scheduler-facing, no routes */
   markOverdue,
+  issueForStartedPeriods,
+  INVOICEABLE_STATES,
   reminderCandidates,
   markReminderSent,
   /* shared vocabulary */

@@ -1162,8 +1162,13 @@ async function verifyHttp() {
       body: { user_id: p3Id },
     });
     check('a Principal belonging to another school is refused', wrongSchool.status, 422);
-    check('with the fix named', wrongSchool.body.error.details, {
-      user_id: "Change the user's school before assigning them here",
+    /*
+     * The hint names an operation that exists. It used to say "Change the user's school", and no endpoint
+     * changes a user's school — the owner's decision D3 is that none will, so the only next step is
+     * creating a Principal for this school (FR-SADMIN-009).
+     */
+    check('with a next step that exists', wrongSchool.body.error.details, {
+      user_id: 'Create a Principal account for this school instead — an account never moves between schools',
     });
 
     const missingUser = await call(`/schools/${schoolAId}/principal`, {

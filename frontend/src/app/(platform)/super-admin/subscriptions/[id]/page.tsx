@@ -50,7 +50,7 @@ import { useEffect, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
-import { formatCodeWithAmount, formatMoney } from '@/lib/money';
+import { formatCodeWithAmount } from '@/lib/money';
 import { useSchoolNames } from '@/lib/useSchoolNames';
 import {
   Field,
@@ -381,8 +381,13 @@ export default function SubscriptionDetailPage() {
               />
               <MetricCard
                 label="Credit balance"
-                value={formatMoney(standing.creditBalance)}
+                value={formatCodeWithAmount(detail.currency, standing.creditBalance)}
                 hint="Applied against the next proration or renewal."
+              />
+              <MetricCard
+                label="Wallet"
+                value={formatCodeWithAmount(detail.currency, Number(detail.wallet_balance) || 0)}
+                hint="Credited by refunds sent to the wallet; the school can pay an invoice from it."
               />
             </dl>
 

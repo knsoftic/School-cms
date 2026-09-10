@@ -90,7 +90,17 @@ const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
 const permissionService = require('../src/services/permissionService');
 const usersService = require('../src/modules/users/users.service');
-const { ROLES, USER_STATUS, PAGINATION } = require('../src/config/constants');
+const { metaOf } = require('../src/utils/routeMeta');
+const {
+  ROLES,
+  USER_STATUS,
+  PAGINATION,
+  LIMITS,
+  LIMIT_TYPES,
+  STAFF_CATEGORIES,
+  SUBSCRIPTION_STATES,
+} = require('../src/config/constants');
+const entitlementService = require('../src/services/entitlementService');
 const { DEFAULT_ROLE_PERMISSIONS, PERMISSION_KEYS } = require('../src/config/permissions');
 
 const userRoutes = require('../src/modules/users/users.routes');
@@ -329,6 +339,17 @@ function stackOf(router, method, path) {
   return layer ? layer.route.stack.map((s) => s.handle) : null;
 }
 
+/** The permission keys a route's guard publishes through `routeMeta` — `null` when it has no guard. */
+function permissionsOf(router, method, path) {
+  const layer = router.stack.find((l) => l.route && l.route.path === path && l.route.methods[method]);
+  if (!layer) return null;
+  for (const handler of layer.route.stack) {
+    const meta = metaOf(handler.handle);
+    if (meta && meta.permissions) return meta.permissions;
+  }
+  return null;
+}
+
 /** Routes declared by a router, in declaration order. */
 function routesOf(router) {
   return router.stack
@@ -345,9 +366,10 @@ function named(router, method, path, fnName) {
 function verifyRouting() {
   console.log('\n--- routing: the declared surface ---');
 
-  check('the users module declares five routes', routesOf(userRoutes), [
+  check('the users module declares six routes', routesOf(userRoutes), [
     'GET /',
     'GET /permissions',
+    'POST /',
     'GET /:id',
     'PATCH /:id',
     'PUT /:id/permissions',
@@ -357,10 +379,16 @@ function verifyRouting() {
     routesOf(userRoutes).indexOf('GET /permissions') < routesOf(userRoutes).indexOf('GET /:id'),
     true
   );
+  /*
+   * This assertion used to be "no POST", on the premise that §15 creates school people's accounts. §15
+   * creates their profiles; only a Parent's comes with an account, so no teacher, staff member or
+   * student could sign in. The owner's decision D1 made `POST /` that path, on the permission the
+   * catalogue already calls "Create / edit users".
+   */
   check(
-    'no POST — §9.3 creates a Principal and §15 creates school people; a generic create would be a second implementation of each',
-    routesOf(userRoutes).some((r) => r.startsWith('POST')),
-    false
+    'one POST — a school login, on users.manage (owner decision D1)',
+    [routesOf(userRoutes).filter((r) => r.startsWith('POST')), permissionsOf(userRoutes, 'post', '/')],
+    [['POST /'], ['users.manage']]
   );
   check(
     'no DELETE — FR-SADMIN-006 archives a *school*; nothing in the source deletes a person',
@@ -464,7 +492,7 @@ function verifyRouting() {
 /* ═══════════════════════════ fixtures ═══════════════════════════ */
 
 const fixtures = {};
-const created = { organizations: [], schools: [], users: [] };
+const created = { organizations: [], schools: [], users: [], plans: [] };
 const baseline = { activityLog: 0, auditLog: 0 };
 
 /** The seeded rows this run mutates, so `removeFixtures` can put them back. */
@@ -595,6 +623,13 @@ async function removeFixtures() {
   if (created.schools.length) await db.School.destroy({ where: { id: created.schools }, force: true });
   if (created.organizations.length) {
     await db.Organization.destroy({ where: { id: created.organizations }, force: true });
+  }
+  /*
+   * After the schools: their subscriptions went with them, and `subscriptions.plan_id` is RESTRICT, so
+   * the plan the D2 case subscribes a school to can only go once nothing points at it.
+   */
+  if (created.plans.length) {
+    await db.SubscriptionPlan.destroy({ where: { id: created.plans }, force: true });
   }
   /* Both seeded rows are back, so the journal that would have restored them is no longer owed. */
   clearJournal(JOURNAL);
@@ -1696,6 +1731,139 @@ async function verifyHttp() {
       activities.every((r) => Boolean(r.request_id)),
       true
     );
+
+    /* ═══════ A school creates logins — the owner's decisions D1 and D2 (docs/OWNER-DECISIONS.md) ═══════ */
+
+    /*
+     * After the activity assertions above, deliberately: those pin the exact set of rows the run wrote,
+     * and this block writes more.
+     */
+    console.log('\n--- D1 / D2: a login for someone on record, and the Admin Limit ---');
+
+    /*
+     * In a school of its own, in an organization of its own: `verifyServiceScope()` runs after this and
+     * counts the accounts in A1 and in Alpha, and the logins made here would move every one of those.
+     */
+    const orgC = await db.Organization.create({ name: 'Verify Users Gamma', code: 'VUR-GAMMA' });
+    created.organizations.push(orgC.id);
+    const schoolA = await db.School.create({ organization_id: orgC.id, name: 'Verify Users C1 School', code: 'VUR-C1' });
+    created.schools.push(schoolA.id);
+    const principalRole = await db.Role.findOne({ where: { slug: ROLES.PRINCIPAL } });
+    const principalC = await db.User.create({
+      role_id: principalRole.id, organization_id: orgC.id, school_id: schoolA.id, name: 'Verify C1 Principal',
+      email: `cprincipal@${DOMAIN}`, username: 'vur_cprincipal', password_hash: await hashPassword(PASSWORD),
+      status: USER_STATUS.ACTIVE, must_change_password: false,
+    });
+    created.users.push(principalC.id);
+    const cPrincipal = await signIn(`cprincipal@${DOMAIN}`);
+    /*
+     * An `admin_limit` of 2. `usageService` counts the "Principals/Admins" tier — Principals and School
+     * Admins together — so the fixture Principal is one of the two and exactly one School Admin fits.
+     */
+    const plan = await db.SubscriptionPlan.create({
+      name: 'Verify Users Plan', code: 'VUR-PLAN', status: 'active', tier_rank: 1, trial_days: 0, grace_period_days: 7,
+    });
+    created.plans.push(plan.id);
+    await db.PlanLimit.create({
+      plan_id: plan.id, limit_key: LIMITS.ADMIN_LIMIT, limit_type: LIMIT_TYPES.FIXED, limit_value: 2,
+    });
+    const now = new Date();
+    await db.Subscription.create({
+      school_id: schoolA.id, organization_id: schoolA.organization_id, plan_id: plan.id,
+      state: SUBSCRIPTION_STATES.ACTIVE, billing_cycle: 'monthly', cycle_days: 30, pricing_model: 'fixed',
+      currency: 'USD', cycle_amount: 100, quantity: 1, starts_at: now, current_period_start: now,
+      current_period_end: new Date(now.getTime() + 30 * 86400000), renewal_mode: 'manual',
+    });
+    await entitlementService.invalidateSchool(schoolA.id);
+
+    const onRecord = { school_id: schoolA.id, organization_id: schoolA.organization_id };
+    const teacherRecord = await db.Teacher.create({
+      ...onRecord, employee_id: 'VUR-T1', first_name: 'Tariq', last_name: 'Aziz', joining_date: '2025-01-06',
+    });
+    const librarianRecord = await db.Staff.create({
+      ...onRecord, employee_id: 'VUR-L1', first_name: 'Lina', joining_date: '2025-01-06',
+      category: STAFF_CATEGORIES.LIBRARIAN,
+    });
+    const studentRecord = await db.Student.create({
+      ...onRecord, student_id: 'VUR-S1', first_name: 'Sana', last_name: 'Iqbal', admission_date: '2025-04-01',
+    });
+
+    const loginFor = (body, token = cPrincipal) =>
+      call('/users', { method: 'POST', token, body: { password: 'Verify-Login-2025!', ...body } });
+    const track = (res) => {
+      if (res.status === 201) created.users.push(dataOf(res).user.id);
+      return res;
+    };
+
+    const teacherLogin = track(await loginFor({
+      role: ROLES.TEACHER, profile_id: teacherRecord.id, email: `t-login@${DOMAIN}`, username: 'vur_t_login',
+    }));
+    const teacherUser = teacherLogin.status === 201 ? dataOf(teacherLogin).user : {};
+    check('D1 — a Principal creates a login for a teacher on record',
+      [teacherLogin.status, teacherUser.role && teacherUser.role.slug, teacherUser.name],
+      [201, ROLES.TEACHER, 'Tariq Aziz']);
+    check('  in the school, with a password that must be changed at first sign-in, and linked to the profile',
+      [Number(teacherUser.school_id), teacherUser.must_change_password,
+        Number((await teacherRecord.reload()).user_id)],
+      [schoolA.id, true, Number(teacherUser.id)]);
+    check('  and the temporary password really signs in',
+      Boolean(await signIn(`t-login@${DOMAIN}`, 'Verify-Login-2025!')), true);
+
+    const secondForTeacher = await loginFor({
+      role: ROLES.TEACHER, profile_id: teacherRecord.id, email: `t-login2@${DOMAIN}`, username: 'vur_t_login2',
+    });
+    check('  a profile that already has a login is refused a second one',
+      [secondForTeacher.status, codeOf(secondForTeacher)], [409, 'PROFILE_ALREADY_HAS_LOGIN']);
+
+    const wrongCategory = await loginFor({
+      role: ROLES.ACCOUNTANT, profile_id: librarianRecord.id, email: `l-acc@${DOMAIN}`, username: 'vur_l_acc',
+    });
+    check('  a staff login takes the role of the staff member\'s category, not the caller\'s choice',
+      [wrongCategory.status, ((wrongCategory.body && wrongCategory.body.error && wrongCategory.body.error.details) || [])
+        .map((d) => d.field)],
+      [422, ['role']]);
+    const librarianLogin = track(await loginFor({
+      role: ROLES.LIBRARIAN, profile_id: librarianRecord.id, email: `l-login@${DOMAIN}`, username: 'vur_l_login',
+    }));
+    const studentLogin = track(await loginFor({
+      role: ROLES.STUDENT, profile_id: studentRecord.id, email: `s-login@${DOMAIN}`, username: 'vur_s_login',
+    }));
+    check('  and the librarian and the student each get theirs',
+      [librarianLogin.status, studentLogin.status], [201, 201]);
+
+    const principalByHere = await loginFor({
+      role: ROLES.PRINCIPAL, name: 'Another Principal', email: `p2@${DOMAIN}`, username: 'vur_p2',
+    });
+    const parentByHere = await loginFor({
+      role: ROLES.PARENT, profile_id: 1, email: `par@${DOMAIN}`, username: 'vur_par',
+    });
+    check('  a Principal or a Parent is refused — each keeps the one creation path the SRS gives it',
+      [principalByHere.status, parentByHere.status], [422, 422]);
+
+    const byTeacher = await loginFor({
+      role: ROLES.SCHOOL_ADMIN, name: 'Not Allowed', email: `na@${DOMAIN}`, username: 'vur_na',
+    }, tokens.teacher);
+    check('  a teacher, who lacks users.manage, cannot create a login at all', byTeacher.status, 403);
+
+    const foreignProfile = await loginFor({
+      role: ROLES.TEACHER, profile_id: teacherRecord.id, email: `f@${DOMAIN}`, username: 'vur_f',
+    }, tokens.principal);
+    check('  nor can another school link one to this school\'s teacher',
+      [foreignProfile.status, ((foreignProfile.body && foreignProfile.body.error && foreignProfile.body.error.details) || [])
+        .map((d) => d.field)],
+      [422, ['profile_id']]);
+
+    /* D2 — the Principal is one of the two; one School Admin fits and the next does not. */
+    const firstAdmin = track(await loginFor({
+      role: ROLES.SCHOOL_ADMIN, name: 'First Admin', email: `adm1@${DOMAIN}`, username: 'vur_adm1',
+    }));
+    const secondAdmin = track(await loginFor({
+      role: ROLES.SCHOOL_ADMIN, name: 'Second Admin', email: `adm2@${DOMAIN}`, username: 'vur_adm2',
+    }));
+    check('D2 — a School Admin login fits within the Admin Limit (the Principal is the other of two)',
+      firstAdmin.status, 201);
+    check('  and the next is refused by the limit, not by anything else',
+      [secondAdmin.status, codeOf(secondAdmin)], [403, 'PLAN_LIMIT_EXCEEDED']);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

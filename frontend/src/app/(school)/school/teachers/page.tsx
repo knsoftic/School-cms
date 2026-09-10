@@ -40,7 +40,9 @@
  *
  * `teachers.service.list()` is a plain `paginateQuery(db.Teacher, { where, order })` — no `include`.
  * The row's one foreign key to a thing with a name, `user_id`, therefore arrives as a bare integer,
- * and a column reading "User 41" tells an administrator nothing. It is omitted rather than rendered.
+ * and a column reading "User 41" tells an administrator nothing. It is never rendered as a number —
+ * only as whether the teacher can sign in, which is what decides if "Create login" is offered (the
+ * owner's decision D1).
  * Subjects and classes are a real answer to "what does this teacher do", but they live behind
  * `GET /teachers/:id/assignments` and cost a request per row; they belong on the detail screen.
  */
@@ -52,6 +54,8 @@ import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
 import { useRowAction } from '@/lib/useRowAction';
 import { DeactivateDialog, ReactivateDialog } from '@/components/deactivate';
+import { CreateLoginDialog } from '@/components/createLogin';
+import type { LoginTarget } from '@/components/createLogin';
 import {
   SearchField,
   FilterBar,
@@ -97,6 +101,11 @@ interface TeacherRow {
   specialization: string | null;
   experience_years: number | string | null;
   is_active: boolean;
+  /*
+   * Read as a yes/no and never rendered as a number — the header's point about "User 41" stands. It is
+   * what decides whether "Create login" is offered (the owner's decision D1).
+   */
+  user_id: number | null;
 }
 
 /**
@@ -189,6 +198,9 @@ export default function TeachersPage() {
 
   /* `teachers.manage` is what `PATCH /teachers/:id` is mounted behind. */
   const canManage = can('teachers.manage');
+  /* `users.manage` is what `POST /users` is mounted behind — a login is an account, not a profile edit. */
+  const canCreateLogin = can('users.manage');
+  const [loginFor, setLoginFor] = useState<LoginTarget | null>(null);
 
   const label = (row: TeacherRow) => [row.first_name, row.last_name].filter(Boolean).join(' ');
 
@@ -271,17 +283,23 @@ export default function TeachersPage() {
          */
         cell: (row) => <StatusBadge status={row.is_active ? 'active' : 'inactive'} />,
       },
+      {
+        key: 'login',
+        header: 'Login',
+        cell: (row) =>
+          row.user_id ? <span>Can sign in</span> : <span className="text-muted-soft">No login</span>,
+      },
     ];
 
     /*
-     * The one lifecycle control this record has.
+     * The one lifecycle control this record has, and the login a teacher needs to sign in at all.
      *
      * There is no teacher detail route and §15.3 asks for none. Until now the status column was
      * display-only and `PATCH /teachers/:id` had no caller anywhere in the frontend, so a departing
      * teacher's record stayed active — and `teacher_limit` counts `is_active: true`, so the school
      * could not hire a replacement without buying capacity it was not using.
      */
-    if (!canManage) return base;
+    if (!canManage && !canCreateLogin) return base;
 
     return [
       ...base,
@@ -289,17 +307,32 @@ export default function TeachersPage() {
         key: 'actions',
         header: 'Actions',
         cell: (row) => (
-          <button
-            type="button"
-            onClick={() => (row.is_active ? deactivate.ask(row) : reactivate.ask(row))}
-            className="btn btn-ghost btn-sm"
-          >
-            {row.is_active ? 'Deactivate' : 'Reactivate'}
-          </button>
+          <div className="flex gap-1">
+            {canManage ? (
+              <button
+                type="button"
+                onClick={() => (row.is_active ? deactivate.ask(row) : reactivate.ask(row))}
+                className="btn btn-ghost btn-sm"
+              >
+                {row.is_active ? 'Deactivate' : 'Reactivate'}
+              </button>
+            ) : null}
+            {canCreateLogin && !row.user_id && row.is_active ? (
+              <button
+                type="button"
+                onClick={() =>
+                  setLoginFor({ role: 'teacher', person: fullName(row), profileId: row.id, email: row.email })
+                }
+                className="btn btn-ghost btn-sm"
+              >
+                Create login
+              </button>
+            ) : null}
+          </div>
         ),
       },
     ];
-  }, [canManage, deactivate, reactivate]);
+  }, [canManage, canCreateLogin, deactivate, reactivate]);
 
   const filtered = Boolean(debounced || activity);
 
@@ -441,6 +474,8 @@ export default function TeachersPage() {
         onCancel={reactivate.cancel}
         onConfirm={() => reactivate.confirm()}
       />
+
+      <CreateLoginDialog target={loginFor} onClose={() => setLoginFor(null)} onCreated={reload} />
     </div>
   );
 }

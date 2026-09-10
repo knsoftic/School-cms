@@ -65,8 +65,15 @@ const {
   logActivity,
   requirePermission,
   requireModule,
+  requireFeature,
 } = require('../../middlewares');
-const { MODULES, REPORT_TYPES, REPORT_FORMATS } = require('../../config/constants');
+const {
+  MODULES,
+  REPORT_TYPES,
+  REPORT_FORMATS,
+  ADDONS,
+  ADDON_EFFECTS,
+} = require('../../config/constants');
 
 const controller = require('./reports.controller');
 const { schemas } = require('./reports.validation');
@@ -88,6 +95,31 @@ const exportGuard = (() => {
   };
 })();
 
+/*
+ * Premium Reports unlocks exports — the owner's decision D9 in `docs/OWNER-DECISIONS.md`, settling
+ * triage finding 64.
+ *
+ * §11.3 sells "Premium Reports" and §22 defines seven reports with no premium tier, so for a long time
+ * the add-on resolved to a `feature_unlock` nothing checked: a school could pay for it and see no
+ * change. D9 made it the exports — PDF and Excel here, and Print, which is the browser's
+ * `window.print()` and so is gated on the screen. Every report stays readable on screen without it.
+ *
+ * The key is the feature the add-on unlocks, read from `ADDON_EFFECTS` rather than restated, so a plan
+ * may also grant it directly as a plan feature. Only the six school reports: the Subscription Report
+ * belongs to no single school, so there is no school's feature to check, and `requireFeature()` passes
+ * a platform caller anyway.
+ */
+const PREMIUM_REPORTS_FEATURE = ADDON_EFFECTS[ADDONS.PREMIUM_REPORTS].target;
+
+const schoolExportGuard = (() => {
+  const premium = requireFeature(PREMIUM_REPORTS_FEATURE);
+  return function requirePremiumForExport(req, res, next) {
+    const format = req.query && req.query.format;
+    if (!format || format === REPORT_FORMATS.JSON) return next();
+    return premium(req, res, next);
+  };
+})();
+
 /** The six school-side reports differ only in their second permission, module and schema. */
 const SCHOOL_REPORTS = [
   { path: '/students', type: REPORT_TYPES.STUDENT, permission: 'students.view', module: MODULES.STUDENTS, schema: schemas.students },
@@ -106,6 +138,7 @@ for (const report of SCHOOL_REPORTS) {
     requireModule(MODULES.REPORTS, report.module),
     validate({ query: report.schema }),
     exportGuard,
+    schoolExportGuard,
     logActivity({ action: 'export', entityType: 'reports', onlyOnSuccess: true }),
     asyncHandler(controller.handlerFor(report.type))
   );

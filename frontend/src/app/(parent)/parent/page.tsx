@@ -18,6 +18,7 @@
  * its own header rather than leaving it to look like an oversight.
  */
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
@@ -155,6 +156,12 @@ export default function ParentDashboard() {
       <PageHeader
         title={`Welcome, ${profile?.user.name ?? 'parent'}`}
         description="The children linked to your account."
+        action={
+          /* §23 addresses attendance alerts, fee reminders, receipts and results to a guardian. */
+          <Link href="/parent/notifications" className="btn btn-secondary">
+            Notifications
+          </Link>
+        }
       />
 
       {refusal ? (

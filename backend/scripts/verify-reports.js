@@ -55,6 +55,7 @@ const { sweepResidue } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
+const entitlementService = require('../src/services/entitlementService');
 
 const reportRoutes = require('../src/modules/reports/reports.routes');
 const { schemas, SUPPORTED_FORMATS } = require('../src/modules/reports/reports.validation');
@@ -406,6 +407,7 @@ async function verifyHttp() {
     if (stale.length) {
       await db.PlanModule.destroy({ where: { plan_id: stale } });
       await db.PlanLimit.destroy({ where: { plan_id: stale } });
+      await db.PlanFeature.destroy({ where: { plan_id: stale } });
       await db.SubscriptionPlan.destroy({ where: { id: stale }, force: true });
     }
     if (created.schools.length) await db.School.destroy({ where: { id: created.schools }, force: true });
@@ -958,6 +960,22 @@ async function verifyHttp() {
       const m = buffer.toString('latin1').match(/\/Type\s*\/Pages[^>]*?\/Count\s+(\d+)/);
       return m ? Number(m[1]) : null;
     };
+
+    /*
+     * ── Premium Reports unlocks exports — the owner's decision D9, settling triage finding 64 ──
+     *
+     * School A's plan has the Reports module and, until this block adds it, not the `premium_reports`
+     * feature — the one the Premium Reports add-on unlocks. So the same school shows both halves: a
+     * refusal before, the export after. Granted here as a plan feature rather than through the add-on,
+     * which also proves a plan may include it outright.
+     */
+    const withoutPremium = await call('/reports/students?format=pdf', { token: principalA });
+    check('D9 — without Premium Reports a school cannot export a report',
+      [withoutPremium.status, codeOf(withoutPremium)], [403, 'FEATURE_NOT_SUBSCRIBED']);
+    check('  nor as Excel', (await call('/reports/students?format=excel', { token: principalA })).status, 403);
+    check('  but still reads the same report on screen', (await call('/reports/students', { token: principalA })).status, 200);
+    await db.PlanFeature.create({ plan_id: withReports.id, feature_key: 'premium_reports', is_enabled: true });
+    await entitlementService.invalidatePlan(withReports.id);
 
     const pdf = await call('/reports/students?format=pdf', { token: principalA, raw: true });
     check('FR-REPORT-002 — a PDF export is produced', pdf.status, 200);

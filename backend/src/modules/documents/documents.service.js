@@ -706,9 +706,18 @@ const matchesOwner = (owners, row) =>
 
 /* ─────────────────────────────── the three routes ─────────────────────────────── */
 
+/*
+ * **Generated documents only.** The `documents` table also holds uploads — a certificate attached to a
+ * student under the owner's decision D13 — and those belong to the record they are attached to: they
+ * are read on `students.view` through `/students/:id/documents`. This module's view key is
+ * `documents.view`, "View generated documents", so it neither lists nor serves an upload; without
+ * this, anyone holding it could read admission paperwork that `students.view` was chosen to guard.
+ */
+const GENERATED_ONLY = Object.freeze({ is_generated: true });
+
 async function findById(req, id, namedSchoolId = undefined) {
   const named = namedSchoolId !== undefined ? namedSchoolId : req.query && req.query.school_id;
-  const where = tenantWhere(req.tenant, { id });
+  const where = tenantWhere(req.tenant, { id, ...GENERATED_ONLY });
   if (named) {
     const school = await resolveSchool(req, named);
     where.school_id = school.id;
@@ -730,9 +739,11 @@ async function list(req, query, pagination) {
     const school = await resolveSchool(req, query.school_id);
     where.school_id = school.id;
   }
-  for (const field of ['document_type', 'owner_type', 'owner_id', 'is_generated']) {
+  for (const field of ['document_type', 'owner_type', 'owner_id']) {
     if (query[field] !== undefined) where[field] = query[field];
   }
+  /* After the filters, so `?is_generated=false` cannot reach the uploads — see `GENERATED_ONLY`. */
+  Object.assign(where, GENERATED_ONLY);
   if (query.q) where.title = { [Op.like]: `%${query.q}%` };
 
   const owners = await selfScope(req);

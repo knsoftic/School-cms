@@ -69,7 +69,8 @@
  * and it writes back through `invoices.applyRefund()`. When the original payment used a gateway, the
  * refund is dispatched through the same adapter and a `payment_transactions` row with
  * `direction: 'refund'` records it; a gateway that cannot refund aborts the whole thing with a 422 so no
- * half-made refund row is left behind. `REFUND_STATUS.pending` and `.rejected` stay unused, available
+ * half-made refund row is left behind. A refund to the **wallet** — or of a wallet payment — is credited
+ * to the subscription's `wallet_balance` instead and touches no gateway; see the wallet section below. `REFUND_STATUS.pending` and `.rejected` stay unused, available
  * for a school-*requested* refund flow the SRS does not currently describe — the same way
  * `invoice_items.item_type: 'credit'` is a defined value with no current writer.
  */
@@ -323,12 +324,99 @@ async function createPaymentRow(spec, transaction) {
   return db.Payment.create({ ...spec, payment_number: paymentNumber }, { transaction });
 }
 
+/* ─────────────── The wallet — §13.2's fifth method, the owner's decision D5 ─────────────── */
+
+/*
+ * §13.2 lists "Wallet" among the five payment methods and says nothing else, so for a long time this
+ * module accepted the method and moved no money: `subscriptions.wallet_balance` was declared and read or
+ * written by nothing (Known Issues #19). D5 in `docs/OWNER-DECISIONS.md` settled it — **refunds credit,
+ * invoices spend**:
+ *
+ *  - a refund whose destination is the wallet adds its amount to the balance, and so does any refund of
+ *    a payment that was itself drawn from the wallet, since that is where the money came from;
+ *  - a wallet payment takes its amount from the balance at the moment it is approved, and is refused if
+ *    the balance is short. Approval is the moment for the same reason it is the moment an invoice's
+ *    totals move: a pending payment has not happened yet.
+ *
+ * The balance lives on the subscription because §29 put the column there; a payment names its
+ * subscription through the invoice it settles. No new table: the `payments` row is the record of a
+ * draw-down and the `refunds` row the record of a credit.
+ */
+
+/**
+ * Load, locked, the subscription whose wallet a payment draws on or a refund credits.
+ *
+ * @param {number|null} subscriptionId
+ * @param {object} transaction
+ * @returns {Promise<object>}
+ */
+async function lockWallet(subscriptionId, transaction) {
+  const subscription = subscriptionId
+    ? await db.Subscription.findByPk(subscriptionId, { transaction, lock: true })
+    : null;
+  if (!subscription) {
+    throw new ApiError(422, 'This payment is not against a subscription, so there is no wallet to use', {
+      code: 'WALLET_NOT_AVAILABLE',
+      details: { subscriptionId: subscriptionId || null },
+    });
+  }
+  return subscription;
+}
+
+/**
+ * Refuse a wallet payment the balance cannot cover.
+ *
+ * @param {object} subscription
+ * @param {number} amount
+ * @param {string} currency
+ */
+function assertWalletCovers(subscription, amount, currency) {
+  const balance = money.round(subscription.wallet_balance || 0);
+  if (money.toMinor(amount) > money.toMinor(balance)) {
+    throw new ApiError(409, `The wallet holds ${balance} ${currency}, less than the ${money.round(amount)} this payment needs`, {
+      code: 'WALLET_INSUFFICIENT',
+      details: { balance, amount: money.round(amount) },
+    });
+  }
+}
+
+/**
+ * Draw an approved wallet payment from the balance, under the subscription's row lock.
+ *
+ * @param {object} payment
+ * @param {object} transaction
+ */
+async function debitWallet(payment, transaction) {
+  const subscription = await lockWallet(payment.subscription_id, transaction);
+  assertWalletCovers(subscription, payment.amount, payment.currency);
+  await subscription.update(
+    { wallet_balance: money.subtract(subscription.wallet_balance || 0, payment.amount) },
+    { transaction }
+  );
+}
+
+/**
+ * Credit a refund to the wallet, under the subscription's row lock.
+ *
+ * @param {number|null} subscriptionId
+ * @param {number} amount
+ * @param {object} transaction
+ */
+async function creditWallet(subscriptionId, amount, transaction) {
+  const subscription = await lockWallet(subscriptionId, transaction);
+  await subscription.update(
+    { wallet_balance: money.sum(subscription.wallet_balance || 0, amount) },
+    { transaction }
+  );
+}
+
 /**
  * Set a payment `approved`, stamp `paid_at`, and push the money onto its invoice.
  *
  * The invoice is recomputed by `invoices.applyPayment()`, never here — this function decides only that
  * the payment itself is approved. Returns the invoice settlement result so the caller can decide whether
- * a subscription lifecycle edge follows.
+ * a subscription lifecycle edge follows. It is also the one place a payment becomes approved — both
+ * `record()` and `review()` arrive here — which makes it the one place a wallet payment is drawn down.
  *
  * @param {object} payment
  * @param {object} invoice
@@ -338,6 +426,8 @@ async function createPaymentRow(spec, transaction) {
  */
 async function applyApproved(payment, invoice, reviewer, transaction) {
   const now = new Date();
+
+  if (payment.method === PAYMENT_METHODS.WALLET) await debitWallet(payment, transaction);
 
   payment.set({
     status: PAYMENT_STATUS.APPROVED,
@@ -421,6 +511,19 @@ async function submit(req, spec) {
 
   paymentGateway.assertMethodEnabled(spec.method);
 
+  /*
+   * Something the reviewer can check — the owner's decision D8. FR-BILL-004's Super Admin "reviews the
+   * submitted transaction ID and screenshot"; a submission carrying neither is a pending row with
+   * nothing to review. Either one is enough, because a cash payment may have a receipt photo and no
+   * reference. A wallet payment is exempt: what it is paid from is the balance itself (D5).
+   */
+  if (spec.method !== PAYMENT_METHODS.WALLET && !spec.transaction_id && !req.file) {
+    throw new ApiError(422, 'Enter the transaction ID or attach a screenshot of the payment', {
+      code: 'PAYMENT_EVIDENCE_REQUIRED',
+      details: { transaction_id: 'Required when no screenshot is attached' },
+    });
+  }
+
   const screenshotPath = relativeUploadPath(req.file);
 
   try {
@@ -428,6 +531,16 @@ async function submit(req, spec) {
       () =>
         db.sequelize.transaction(async (transaction) => {
           const invoice = await loadInvoiceForPayment(tenant, spec.invoice_id, transaction);
+
+          /*
+           * A wallet payment the balance cannot cover is refused now rather than left pending for a
+           * review that could only reject it. Approval checks again under the lock and is what actually
+           * draws the money (D5), since a pending payment reserves nothing.
+           */
+          if (spec.method === PAYMENT_METHODS.WALLET) {
+            const wallet = await lockWallet(invoice.subscription_id, transaction);
+            assertWalletCovers(wallet, spec.amount, spec.currency || invoice.currency);
+          }
 
           return createPaymentRow(
             {
@@ -760,8 +873,15 @@ async function requestRefund(req, paymentId, spec = {}) {
           transaction,
         });
 
+        /*
+         * Money refunded to the wallet stays on the platform as credit (D5): a refund whose destination is
+         * the wallet, and a refund of a payment drawn from the wallet — whose "original method" is the
+         * wallet. Neither goes back through a gateway, even for a card payment, because nothing leaves.
+         */
+        const toWallet = spec.destination === 'wallet' || payment.method === PAYMENT_METHODS.WALLET;
+
         /* Gateway refunds go back through the adapter that took the charge. */
-        const usedGateway = payment.method === GATEWAY_METHOD && payment.gateway_key;
+        const usedGateway = !toWallet && payment.method === GATEWAY_METHOD && payment.gateway_key;
         let gatewayRefundId = null;
 
         if (usedGateway) {
@@ -805,7 +925,7 @@ async function requestRefund(req, paymentId, spec = {}) {
             amount,
             reason: spec.reason || null,
             status: REFUND_STATUS.COMPLETED,
-            destination: spec.destination || 'original_method',
+            destination: toWallet ? 'wallet' : 'original_method',
             gateway_key: usedGateway ? payment.gateway_key : null,
             gateway_refund_id: gatewayRefundId,
             processed_at: new Date(),
@@ -815,6 +935,8 @@ async function requestRefund(req, paymentId, spec = {}) {
           },
           { transaction }
         );
+
+        if (toWallet) await creditWallet(payment.subscription_id, amount, transaction);
 
         /* Roll the payment's own tally forward and re-label it from the refunded totals. */
         const refundedTotal = await db.Refund.sum('amount', {

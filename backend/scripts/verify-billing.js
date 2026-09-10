@@ -84,6 +84,9 @@ process.env.CACHE_TTL = '600';
  * Run: node scripts/verify-billing.js
  */
 
+const fs = require('fs');
+const path = require('path');
+
 const db = require('../src/models');
 const { sweepResidue } = require('./lib/residue');
 const config = require('../src/config/env');
@@ -137,6 +140,12 @@ const { settle } = require('./lib/settle');
 const PREFIX = config.app.apiPrefix;
 const DOMAIN = 'verify-billing.local';
 const PASSWORD = 'Verify@Billing123';
+
+/* A valid 1×1 PNG: the smallest screenshot the upload chain will accept as an image. */
+const ONE_PIXEL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64'
+);
 
 let failures = 0;
 let dbSkipped = false;
@@ -928,6 +937,11 @@ async function verifyHttp() {
     if (schoolIds.length) await db.School.destroy({ where: { id: schoolIds }, force: true });
     const orgIds = [...new Set([...created.organizations, ...leftoverOrgs.map((row) => row.id)])];
     if (orgIds.length) await db.Organization.destroy({ where: { id: orgIds }, force: true });
+
+    /* The receipt the D8 case uploads lands under the school's own upload directory. */
+    for (const id of schoolIds) {
+      fs.rmSync(path.join(config.uploads.dir, `school-${id}`), { recursive: true, force: true });
+    }
   }
 
   try {
@@ -940,7 +954,7 @@ async function verifyHttp() {
      * suite. Measured: every killed run left eleven activity and ten audit rows that no later run
      * could reach. The sweep deletes a user's log rows before the user.
      */
-    const residueCleared = await sweepResidue(db, { codes: ['VBL'], domains: ['verify-billing.local'], also: [{ table: 'coupons', column: 'code', prefix: 'VBL' }, { table: 'taxes', column: 'code', prefix: 'VBL' }] });
+    const residueCleared = await sweepResidue(db, { codes: ['VBL'], domains: ['verify-billing.local'], also: [{ table: 'coupons', column: 'code', prefix: 'VBL' }, { table: 'taxes', column: 'code', prefix: 'VBL' }], uploadsDir: config.uploads.dir });
     if (residueCleared) {
       console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
     }
@@ -1525,6 +1539,226 @@ async function verifyHttp() {
           amount: 50,
         },
       ]
+    );
+
+    /* ──────── The wallet (D5) and a submission's evidence (D8) — docs/OWNER-DECISIONS.md ──────── */
+
+    /*
+     * A third invoice, on a period neither earlier one bills, so no figure above moves. Its total is not
+     * asserted here — the add-on bought above is on it — and every wallet figure below is arithmetic on
+     * amounts this block itself moves, starting from a balance read, not assumed.
+     */
+    const thirdIssued = await expectOk(
+      '/invoices/generate',
+      {
+        method: 'POST',
+        token: platform,
+        body: {
+          subscription_id: subscriptionId,
+          tax_id: tax.id,
+          billing_period_start: '2032-01-01T00:00:00.000Z',
+          billing_period_end: '2032-01-31T00:00:00.000Z',
+        },
+      },
+      201
+    );
+    const walletInvoice = dataOf(thirdIssued).invoice;
+    created.invoices.push(walletInvoice.id);
+
+    const walletBalance = async () =>
+      num((await db.Subscription.findByPk(subscriptionId, { attributes: ['wallet_balance'] })).wallet_balance);
+    const submission = (amount, method, extra = {}) => {
+      const body = new FormData();
+      body.append('invoice_id', String(walletInvoice.id));
+      body.append('amount', String(amount));
+      body.append('method', method);
+      /* A file is `[blob, filename]` — appended bare, a Blob is sent as "blob", with no extension. */
+      for (const [key, value] of Object.entries(extra)) {
+        if (Array.isArray(value)) body.append(key, value[0], value[1]);
+        else body.append(key, value);
+      }
+      return body;
+    };
+
+    /* The first invoice's refund went to its original method, a bank transfer, so nothing reached here. */
+    check('D5 — the subscription wallet starts empty', await walletBalance(), 0);
+
+    const noEvidence = await call('/payments', {
+      method: 'POST',
+      token: principal,
+      form: submission(100, PAYMENT_METHODS.BANK_TRANSFER),
+    });
+    check(
+      'D8 — a submission with neither a transaction id nor a screenshot is refused',
+      { status: noEvidence.status, code: codeOf(noEvidence) },
+      { status: 422, code: 'PAYMENT_EVIDENCE_REQUIRED' }
+    );
+
+    /* Either is enough: a cash payment may have a receipt photo and no reference at all. */
+    const receiptOnly = await call('/payments', {
+      method: 'POST',
+      token: principal,
+      form: submission(100, PAYMENT_METHODS.CASH, {
+        screenshot: [new Blob([ONE_PIXEL_PNG], { type: 'image/png' }), 'receipt.png'],
+      }),
+    });
+    check(
+      '  but a screenshot alone is enough',
+      { status: receiptOnly.status, state: receiptOnly.status === 201 ? dataOf(receiptOnly).payment.status : null },
+      { status: 201, state: PAYMENT_STATUS.PENDING }
+    );
+
+    const fromEmpty = await call('/payments', {
+      method: 'POST',
+      token: principal,
+      form: submission(100, PAYMENT_METHODS.WALLET),
+    });
+    check(
+      'D5 — a wallet payment an empty wallet cannot cover is refused when it is submitted',
+      { status: fromEmpty.status, code: codeOf(fromEmpty) },
+      { status: 409, code: 'WALLET_INSUFFICIENT' }
+    );
+
+    /* Money in: a transfer the platform recorded, 200 of it refunded to the wallet. */
+    const transfer = await expectOk(
+      '/payments/record',
+      {
+        method: 'POST',
+        token: platform,
+        body: {
+          invoice_id: walletInvoice.id,
+          amount: 500,
+          method: PAYMENT_METHODS.BANK_TRANSFER,
+          transaction_id: 'TXN-VBL-W1',
+        },
+      },
+      201
+    );
+    const transferPayment = dataOf(transfer).payment;
+    created.payments.push(transferPayment.id);
+    const creditRes = await expectOk(
+      `/payments/${transferPayment.id}/refunds`,
+      { method: 'POST', token: platform, body: { amount: 200, destination: 'wallet', reason: 'Verify wallet credit' } },
+      201
+    );
+    check('  a refund to the wallet is recorded as one', dataOf(creditRes).refund.destination, 'wallet');
+    check('  and credits the balance by exactly its amount', await walletBalance(), 200);
+
+    const tooLarge = await call('/payments', {
+      method: 'POST',
+      token: principal,
+      form: submission(300, PAYMENT_METHODS.WALLET),
+    });
+    check('  a wallet payment larger than the balance is still refused', codeOf(tooLarge), 'WALLET_INSUFFICIENT');
+
+    /* Two payments of 150, each covered by 200 on its own — and together not. */
+    const firstRes = await expectOk('/payments', { method: 'POST', token: principal, form: submission(150, PAYMENT_METHODS.WALLET) }, 201);
+    const secondRes = await expectOk('/payments', { method: 'POST', token: principal, form: submission(150, PAYMENT_METHODS.WALLET) }, 201);
+    const firstWallet = dataOf(firstRes).payment;
+    const secondWallet = dataOf(secondRes).payment;
+    created.payments.push(firstWallet.id, secondWallet.id);
+    check(
+      '  one the balance covers is accepted with no transaction id or screenshot — D8 exempts the wallet',
+      firstWallet.status,
+      PAYMENT_STATUS.PENDING
+    );
+    check('  and a pending payment has drawn nothing', await walletBalance(), 200);
+
+    await expectOk(`/payments/${firstWallet.id}/approve`, { method: 'POST', token: platform, body: { note: 'Wallet' } }, 200);
+    check('  approval is what draws it', await walletBalance(), 50);
+
+    /* A pending payment reserves nothing, so the second one's approval meets the balance as it now is. */
+    const lateApproval = await call(`/payments/${secondWallet.id}/approve`, {
+      method: 'POST',
+      token: platform,
+      body: { note: 'Wallet' },
+    });
+    check(
+      '  approving a second one the balance no longer covers is refused',
+      { status: lateApproval.status, code: codeOf(lateApproval) },
+      { status: 409, code: 'WALLET_INSUFFICIENT' }
+    );
+    const secondAfter = await db.Payment.findByPk(secondWallet.id, { attributes: ['status'] });
+    check('  and that payment stays pending, to be rejected or approved once the money is there', secondAfter.status, PAYMENT_STATUS.PENDING);
+
+    const overdraw = await call('/payments/record', {
+      method: 'POST',
+      token: platform,
+      body: { invoice_id: walletInvoice.id, amount: 100, method: PAYMENT_METHODS.WALLET },
+    });
+    check(
+      '  the Super Admin cannot record a wallet payment past the balance either',
+      { status: overdraw.status, code: codeOf(overdraw), balance: await walletBalance() },
+      { status: 409, code: 'WALLET_INSUFFICIENT', balance: 50 }
+    );
+
+    const walletRefund = await expectOk(
+      `/payments/${firstWallet.id}/refunds`,
+      { method: 'POST', token: platform, body: { reason: 'Verify wallet refund' } },
+      201
+    );
+    check(
+      '  a wallet payment refunded to its original method goes back into the wallet',
+      { destination: dataOf(walletRefund).refund.destination, balance: await walletBalance() },
+      { destination: 'wallet', balance: 200 }
+    );
+
+    /* ──────── A negotiated price is billed (D7) — triage finding 39 ──────── */
+
+    /*
+     * In effect for the first half of 2033 only, so one invoice inside the window and one after it show
+     * both halves of the rule: the override sets the plan line while it is in effect, and stops with it.
+     */
+    await expectOk(
+      `/subscriptions/${subscriptionId}/overrides`,
+      {
+        method: 'POST',
+        token: platform,
+        body: {
+          override_type: 'price',
+          target_key: 'cycle_amount',
+          amount: 640,
+          effective_from: '2033-01-01T00:00:00.000Z',
+          effective_until: '2033-07-01T00:00:00.000Z',
+          reason: 'Verify negotiated price',
+        },
+      },
+      201
+    );
+    const billFor = async (start, end) => {
+      const res = await expectOk(
+        '/invoices/generate',
+        {
+          method: 'POST',
+          token: platform,
+          body: { subscription_id: subscriptionId, tax_id: tax.id, billing_period_start: start, billing_period_end: end },
+        },
+        201
+      );
+      const invoice = dataOf(res).invoice;
+      created.invoices.push(invoice.id);
+      const lineOf = (type) => (invoice.items || []).find((row) => row.item_type === type) || {};
+      return { plan: lineOf('plan'), addon: lineOf('addon') };
+    };
+
+    const negotiated = await billFor('2033-02-01T00:00:00.000Z', '2033-02-28T00:00:00.000Z');
+    check(
+      'D7 — a period inside the override bills the plan line at the negotiated amount',
+      { quantity: num(negotiated.plan.quantity), unit: num(negotiated.plan.unit_amount), amount: num(negotiated.plan.amount) },
+      { quantity: 1, unit: 640, amount: 640 }
+    );
+    check(
+      '  keeping the plan price it replaced on the line, so the invoice shows what was negotiated away',
+      num((negotiated.plan.metadata || {}).plan_amount),
+      1000
+    );
+    check('  and the add-on line is priced by its own row, untouched', num(negotiated.addon.amount), 50);
+
+    const afterWindow = await billFor('2033-08-01T00:00:00.000Z', '2033-08-31T00:00:00.000Z');
+    check(
+      '  a period after the override ends is billed at the plan price again',
+      num(afterWindow.plan.amount),
+      1000
     );
   } finally {
     try {

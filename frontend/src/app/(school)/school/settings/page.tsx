@@ -63,6 +63,7 @@ import {
 } from '@/components/form';
 import { Modal } from '@/components/overlay';
 import { TabPanel, Tabs, useActiveTab } from '@/components/tabs';
+import { SchoolAdminsPanel } from './admins';
 import { useToast } from '@/components/toast';
 import {
   Column,
@@ -78,6 +79,8 @@ import {
 const TABS = [
   { key: 'settings', label: 'School settings' },
   { key: 'sessions', label: 'Academic sessions' },
+  /* The owner's decisions D1 and D2 — see `admins.tsx`. */
+  { key: 'admins', label: 'School Admins' },
 ];
 
 /** `GET /school-settings` — the ten §14.1 fields, plus the two path columns this screen leaves alone. */
@@ -476,6 +479,8 @@ export default function SchoolSettingsPage() {
               </FormActions>
             </form>
           )
+        ) : tab === 'admins' ? (
+          <SchoolAdminsPanel />
         ) : (
           <div className="space-y-6">
             {sessions.error ? (

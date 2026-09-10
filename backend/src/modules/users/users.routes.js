@@ -13,17 +13,24 @@
  *  - `GET /`                  the screen itself.
  *  - `GET /permissions`       the assignable vocabulary, so the overrides below can be chosen from a
  *                             list rather than typed.
+ *  - `POST /`                 a login for a school person — the owner's decision D1.
  *  - `GET /:id`               one account, with its role grant, overrides and effective set.
  *  - `PATCH /:id`             edit. FR-AUTH-007's `status` is one of the six accepted columns.
  *  - `PUT /:id/permissions`   the per-user overrides FR-AUTH-009 resolves against.
  *
- * ## No POST, and no DELETE
+ * ## `POST /` — and why this header once said there would be none
  *
- * **No `POST /users`.** Every role the system can create has a specified creation path already:
- * §9.3 / FR-SADMIN-009 for a Principal, §15 for Teacher, Staff, Student and Parent. A generic
- * create-any-user endpoint would be a second implementation of each — two places deciding what a new
- * account of that role requires, free to disagree — and §35 rules out workflows the source does not
- * describe.
+ * It used to argue that every role already had a creation path — "§9.3 / FR-SADMIN-009 for a
+ * Principal, §15 for Teacher, Staff, Student and Parent" — and that was false for all but the first
+ * and last: §15 creates a teacher's, staff member's or student's *profile*, and only a Parent's comes
+ * with an account. FR-TEACHER-002's precondition is "Teacher account exists" and nothing created it,
+ * so no teacher, staff member or student could sign in. The owner's decision D1
+ * (`docs/OWNER-DECISIONS.md`) gave the school that path: `users.manage` — already "Create / edit
+ * users" in the catalogue and already the school leadership's — creates a login for someone on record
+ * and links it to their profile, or a School Admin login, capped by `admin_limit` (D2). A Principal and
+ * a Parent keep their own paths and are refused here, so no role has two.
+ *
+ * ## No DELETE
  *
  * **No `DELETE /users/:id`.** FR-SADMIN-006 specifies delete/archive for a *school*; nothing in the
  * source deletes a person. FR-AUTH-007's status column is the specified way to stop an account being
@@ -79,6 +86,14 @@ router.get(
   '/permissions',
   requireAnyPermission('users.manage', 'roles.view'),
   asyncHandler(controller.catalogue)
+);
+
+router.post(
+  '/',
+  requirePermission('users.manage'),
+  validate({ body: schemas.create }),
+  logActivity({ action: 'create', entityType: 'user', onlyOnSuccess: true }),
+  asyncHandler(controller.create)
 );
 
 router.get(

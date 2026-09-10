@@ -27,6 +27,25 @@ async function show(req, res) {
   return ApiResponse.ok(res, { user: await service.presentWithPermissions(user) });
 }
 
+/** POST / — a login for a school person (owner decision D1). */
+async function create(req, res) {
+  const { user, verificationEmailSent, profile } = await service.create(req, req.body);
+
+  describeActivity(req, {
+    entityType: 'user',
+    entityId: user.id,
+    /* The role and the profile it is for — never the email or password, for the reason `update` gives. */
+    description: `Created a ${req.body.role} login${profile ? ` for ${profile.type} ${profile.id}` : ''}`,
+    metadata: { role: req.body.role, profile, verificationEmailSent },
+  });
+
+  return ApiResponse.created(
+    res,
+    { user: await service.presentWithPermissions(user), profile, verificationEmailSent },
+    { message: 'Login created — the temporary password must be changed at first sign-in' }
+  );
+}
+
 /** PATCH /:id — edit an account. */
 async function update(req, res) {
   const { user, verificationEmailSent } = await service.update(req, req.params.id, req.body);
@@ -85,4 +104,4 @@ async function catalogue(req, res) {
   });
 }
 
-module.exports = { list, show, update, setPermissions, catalogue };
+module.exports = { list, show, create, update, setPermissions, catalogue };

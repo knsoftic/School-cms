@@ -53,9 +53,9 @@ const {
 } = require('../../utils/schoolScope');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
-const { cleanupUploads, relativeUploadPath } = require('../../middlewares/upload');
+const { cleanupUploads, relativeUploadPath, uploadedFiles } = require('../../middlewares/upload');
 const usageService = require('../../services/usageService');
-const { LIMITS, STUDENT_STATUS } = require('../../config/constants');
+const { LIMITS, STUDENT_STATUS, DOCUMENT_OWNER_TYPES } = require('../../config/constants');
 
 const SORTABLE = Object.freeze([
   'id',
@@ -662,6 +662,124 @@ async function setPhoto(req, id) {
   }
 }
 
+/* ────────── FR-STUDENT-001 "Documents" — the owner's decision D13; see the routes file ────────── */
+
+/** An uploaded document as a caller sees it: never the stored path, which is the server's business. */
+function presentDocument(row) {
+  const json = typeof row.toJSON === 'function' ? row.toJSON() : { ...row };
+  delete json.file_path;
+  delete json.generation_payload;
+  return json;
+}
+
+/** Where this student's uploads are, and nothing generated — §20.5's documents are its own module's. */
+function documentsOf(student) {
+  return {
+    school_id: student.school_id,
+    owner_type: DOCUMENT_OWNER_TYPES.STUDENT,
+    owner_id: student.id,
+    is_generated: false,
+  };
+}
+
+/**
+ * Attach uploaded files to a student — `POST /students/:id/documents`.
+ *
+ * One `documents` row per file, in one transaction, so a batch lands whole or not at all; the files are
+ * already on disk by the time this runs, so a failure removes them again. Titled by the caller's
+ * `title` when there is one file, prefixed by it when there are several, and by the file's own name
+ * otherwise. `storage_limit` is not charged, the same as every other upload here — no upload caller
+ * records storage usage, and starting with this one would make the figure mean nothing.
+ *
+ * @param {import('express').Request} req
+ * @param {number|string} id
+ * @returns {Promise<{student: object, documents: object[]}>}
+ */
+async function addDocuments(req, id) {
+  const files = uploadedFiles(req);
+  if (!files.length) {
+    throw ApiError.validation('No document was uploaded', [
+      { field: 'documents', message: 'Attach one or more files as the "documents" field of a multipart request' },
+    ]);
+  }
+  const body = req.body || {};
+
+  try {
+    const student = await findById(req, id, body.school_id);
+    const titleFor = (file) => {
+      if (!body.title) return String(file.originalname).slice(0, 255);
+      return (files.length === 1 ? body.title : `${body.title} — ${file.originalname}`).slice(0, 255);
+    };
+
+    const rows = await db.sequelize.transaction((transaction) =>
+      db.Document.bulkCreate(
+        files.map((file) => ({
+          ...documentsOf(student),
+          organization_id: student.organization_id,
+          document_type: null,
+          title: titleFor(file),
+          file_path: relativeUploadPath(file),
+          file_name: String(file.originalname).slice(0, 255),
+          mime_type: file.mimetype,
+          file_size_bytes: file.size,
+          uploaded_by: req.user ? req.user.id : null,
+          description: body.description || null,
+        })),
+        { validate: true, transaction }
+      )
+    );
+
+    for (const row of rows) {
+      // eslint-disable-next-line no-await-in-loop
+      await recordAudit(req, {
+        tableName: 'documents',
+        recordId: row.id,
+        event: 'create',
+        after: snapshot(row),
+        reason: body.reason || `Uploaded to student ${student.student_id}`,
+      });
+    }
+    return { student, documents: rows.map(presentDocument) };
+  } catch (err) {
+    await cleanupUploads(req);
+    throw err;
+  }
+}
+
+/**
+ * The documents uploaded to a student — `GET /students/:id/documents`. Loaded through `findById`, so
+ * the tenant rule that decides which students a caller may see decides which documents too.
+ *
+ * @param {import('express').Request} req
+ * @param {number|string} id
+ * @param {number|string} [schoolId]
+ * @returns {Promise<{student: object, documents: object[]}>}
+ */
+async function listDocuments(req, id, schoolId) {
+  const student = await findById(req, id, schoolId);
+  const rows = await db.Document.findAll({ where: documentsOf(student), order: [['id', 'DESC']] });
+  return { student, documents: rows.map(presentDocument) };
+}
+
+/**
+ * One uploaded document of one student, with its stored path, for the controller to serve. A document
+ * of another student, a generated document, or one that does not exist are all the same 404.
+ *
+ * @param {import('express').Request} req
+ * @param {number|string} id
+ * @param {number|string} documentId
+ * @param {number|string} [schoolId]
+ * @returns {Promise<{student: object, document: object}>}
+ */
+async function findDocument(req, id, documentId, schoolId) {
+  const student = await findById(req, id, schoolId);
+  const document = await db.Document.findOne({ where: { id: documentId, ...documentsOf(student) } });
+  if (!document || !document.file_path) {
+    throw ApiError.notFound('Document not found', { code: 'DOCUMENT_NOT_FOUND' });
+  }
+  return { student, document };
+}
+
 const promote = (req, id, payload) => applyTransition(req, id, 'promote', payload);
 const transfer = (req, id, payload) => applyTransition(req, id, 'transfer', payload);
 const leave = (req, id, payload) => applyTransition(req, id, 'leave', payload);
@@ -691,6 +809,10 @@ module.exports = {
   create,
   update,
   setPhoto,
+  addDocuments,
+  listDocuments,
+  findDocument,
+  presentDocument,
   present,
   promote,
   transfer,

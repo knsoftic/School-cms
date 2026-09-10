@@ -11,7 +11,8 @@
  *
  * `students.validation.js` `create` takes `school_id`, `student_id`, `first_name`, `admission_date`,
  * `class_id`, `section_id`, `academic_session_id` and the whole of its `profile` group, and marks
- * exactly two `.required()`: **`first_name`** and **`admission_date`**. This form marks the same two.
+ * three `.required()`: **`first_name`**, **`admission_date`** and — since the owner's decision D4 in
+ * `docs/OWNER-DECISIONS.md` — **`class_id`**. This form marks the same three.
  * Every optional field in that group is here, because an optional field the API accepts and the UI
  * omits is a capability the product does not have.
  *
@@ -56,9 +57,9 @@
  *   * The generated student ID is `<the school's code>-<the admission year>-<a four-digit sequence>`,
  *     and the year comes from the **admission date on this form**, not from today. Back-dating an
  *     admission therefore back-dates the identifier.
- *   * `allocateRollNumber()` returns `null` when no class was named — it numbers within
- *     school + class + section and has nothing to number within otherwise. So a student admitted with
- *     no class and no roll number has no roll number at all, rather than a provisional one.
+ *   * `allocateRollNumber()` numbers within school + class + section. It used to return `null` for
+ *     a student admitted with no class, who then never got a roll number; D4 made the class required,
+ *     so every admission is numbered.
  *
  * ## One request answers the class picker and the section picker
  *
@@ -514,7 +515,7 @@ export default function NewStudentPage() {
     <div className="max-w-2xl">
       <PageHeader
         title="Admit student"
-        description="A first name and an admission date are required. Everything else — placement, profile, guardian — can be filled in later."
+        description="A first name, an admission date and a class are required. Everything else — section, profile, guardian — can be filled in later."
       />
 
       {refusal ? <RefusalNotice refusal={refusal} /> : null}
@@ -525,7 +526,7 @@ export default function NewStudentPage() {
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
           title="Identity and admission"
-          description="Who the student is, and the day they joined. A first name and an admission date are the only fields this form requires."
+          description="Who the student is, and the day they joined. With the class below, these are the fields this form requires."
         >
           <Field
             id="first_name"
@@ -614,11 +615,12 @@ export default function NewStudentPage() {
 
         <FormSection
           title="Class placement"
-          description="Where the student sits in the timetable. Each choice narrows the next, and all of them can be set later."
+          description="Where the student sits. The class is required — the roll number is allocated within it — and the section and current session can be set later."
         >
           <SelectField
             id="class_id"
             label="Class"
+            required
             value={values.class_id}
             onChange={onClassChange}
             disabled={loadingOptions || classes.failed}
@@ -626,17 +628,17 @@ export default function NewStudentPage() {
             error={fieldErrors.class_id}
             hint={
               classes.failed
-                ? 'The class list could not be loaded, so no placement can be made here. Viewing classes is a separate permission from admitting students; the student can be admitted unplaced and assigned a class afterwards.'
+                ? 'The class list could not be loaded, so a student cannot be admitted from here — every admission names a class. Viewing classes is a separate permission from admitting students; ask someone who holds it, or try again.'
                 : !loadingOptions && classes.rows.length === 0
-                  ? 'This school has no classes yet. A student may still be admitted — the column is nullable — and placed once a class exists.'
-                  : `Optional. Each option names its own session, so two identically-named classes from consecutive years are tellable apart.${
+                  ? 'This school has no classes yet. Create one first: every student is admitted into a class, which is where their roll number comes from.'
+                  : `Each option names its own session, so two identically-named classes from consecutive years are tellable apart.${
                       classes.total > classes.rows.length
                         ? ` The first ${classes.rows.length} of ${classes.total}; a page cannot hold more.`
                         : ''
                     }`
             }
           >
-            <option value="">{loadingOptions ? 'Loading…' : 'Not placed yet'}</option>
+            <option value="">{loadingOptions ? 'Loading…' : 'Choose a class'}</option>
             {classes.rows.map((row) => {
               const session = row.academic_session_id
                 ? sessionNames.get(row.academic_session_id)

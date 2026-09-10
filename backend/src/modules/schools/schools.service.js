@@ -403,8 +403,9 @@ async function remove(req, id) {
  *     teacher into `schools.principal_id` would put a name on the record with none of the authority.
  *  3. **The user already belongs to this school.** A user's own `school_id` is what scopes every request
  *     they make, so a principal of school A named as principal of school B would be on record here
- *     while operating there. Moving a Principal between schools is a change to the *user*, and belongs
- *     to the user-management surface (SRS §33 "Users"), not to this endpoint.
+ *     while operating there. A Principal's tenancy never moves — the owner's decision D3 in
+ *     `docs/OWNER-DECISIONS.md` — so the way to give school B a Principal is to create one for it
+ *     (FR-SADMIN-009), which is what the refusal says.
  *
  * A suspended or inactive Principal *is* accepted: `users.status` governs whether they can sign in, and
  * the source treats the assignment as a record of who holds the post, not as a grant of access.
@@ -435,7 +436,7 @@ async function assignPrincipal(req, id, userId) {
 
   if (Number(user.school_id) !== Number(school.id)) {
     throw ApiError.validation('The selected Principal does not belong to this school', {
-      user_id: "Change the user's school before assigning them here",
+      user_id: 'Create a Principal account for this school instead — an account never moves between schools',
     });
   }
 

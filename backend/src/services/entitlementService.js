@@ -500,14 +500,12 @@ async function resolve(schoolId) {
 
     /*
      * OVERRIDE_TYPES.PRICE is SRS §33 "Custom Pricing". Skipped deliberately, because it is not an
-     * entitlement — it would change what the school is CHARGED rather than what it may do.
+     * entitlement — it changes what the school is CHARGED rather than what it may do.
      *
-     * This comment used to add "so it belongs to invoice generation", naming a consumer that does
-     * not exist: `grep -rn "SubscriptionOverride" backend/src/modules/invoices/` returns nothing,
-     * and `cycle_amount` is only ever `computeCycleAmount(price, quantity)`. A `price` override is
-     * accepted with 201, stored, echoed back on the subscription detail, and read by NOTHING. That
-     * is finding 39 and it is blocked on §33/§10.4 rather than on this line — but the forward
-     * reference made an inert row look like a deferral with a known destination.
+     * Its consumer is invoice generation: `invoices.generateForSubscription()` bills the plan line at
+     * the override's amount for any period starting while it is in effect, using this module's own
+     * `activeWindow()` so the two cannot disagree about "in effect". For a long time nothing read it —
+     * finding 39 — until the owner's decision D7 said what it means.
      */
   }
 
@@ -729,6 +727,8 @@ module.exports = {
   invalidateSchool,
   invalidatePlan,
   invalidateAll,
+  /* Also what invoice generation uses to find a price override in effect, so the two cannot disagree. */
+  activeWindow,
   SOURCES,
   CACHE_NAMESPACE,
 };

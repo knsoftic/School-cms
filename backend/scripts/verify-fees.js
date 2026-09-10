@@ -1006,17 +1006,14 @@ async function verifyHttp() {
     check('but the next month is a different fee, and is allowed', dataOf(june).fees[0].period_month, '2025-06-01');
 
     /*
-     * ── The null-period consequence, pinned rather than left incidental — triage finding 20 ──
+     * ── Two fees of one component with no month — triage finding 20, settled by the owner as D12 ──
      *
-     * `period_month` is optional and normalises to `null`, so `alreadyAssigned()` emits
-     * `period_month IS NULL` and the guard's triple degenerates to `(student, component)`. A second
-     * period-less fee of the same component is therefore refused **for the life of the record**, and
-     * the refusal says "for this period" when the caller named none.
-     *
-     * This is asserted because it is a limitation, not because it is desirable. §17 states no
-     * once-per-student rule and every available repair invents one — see the long note beside the
-     * guard in `fees.service.js`. What an assertion buys is that the behaviour cannot change by
-     * accident: whoever settles the open question will have to come here and say so.
+     * `period_month` is optional and normalises to `null`. With only the schema's triple, a missing
+     * month degenerated it to `(student, component)` and a second period-less fee of the component was
+     * refused for the life of the record — which this block used to pin as a known limitation, so that
+     * whoever settled the question would have to come here and say so. D12 in
+     * `docs/OWNER-DECISIONS.md` is that answer: **with no month, a different fee structure is a
+     * different fee**, and the same structure twice is still the double-click double-bill.
      *
      * Deliberately on `exam_fee`, which the §17 component list names and which a school assigns per
      * examination rather than per month — the case where a null period is most natural.
@@ -1038,14 +1035,41 @@ async function verifyHttp() {
       body: { fee_structure_id: exam.id, student_ids: [kids[2].id], due_date: '2025-12-01' },
     });
     check(
-      'and a SECOND period-less fee of the same component is then refused — the known limitation',
+      'the SAME structure again with no month is still refused — that is the double charge',
       [secondExam.status, codeOf(secondExam)],
       [409, 'FEE_PERIOD_ALREADY_ASSIGNED']
     );
+    check(
+      '  and the refusal no longer says "for this period" when no period was named',
+      /no month named/.test(secondExam.body && secondExam.body.error ? secondExam.body.error.message : ''),
+      true
+    );
+
+    /* The final exam is its own structure, so D12 makes it its own fee. */
+    const finalExamRes = await expectOk(
+      '/fees/structures',
+      {
+        method: 'POST',
+        token: principalA,
+        body: { name: 'Final Exam', component: FEE_COMPONENTS.EXAM_FEE, amount: 250 },
+      },
+      201
+    );
+    const finalExam = dataOf(finalExamRes).structure;
+    const finalExamFee = await call('/fees/assignments', {
+      method: 'POST',
+      token: accountant,
+      body: { fee_structure_id: finalExam.id, student_ids: [kids[2].id], due_date: '2025-12-01' },
+    });
+    check(
+      'but a DIFFERENT structure of the same component, with no month, is a different fee (D12)',
+      [finalExamFee.status, finalExamFee.status === 201 ? dataOf(finalExamFee).fees[0].period_month : 'refused'],
+      [201, null]
+    );
+
     /*
-     * The escape that does exist, asserted so the limitation is bounded rather than absolute: naming a
-     * period sidesteps it, because the triple stops degenerating. No error message says so, which is
-     * part of what finding 20 records.
+     * A month still decides it where one is named: the dated fee below goes through because its triple
+     * is new, whatever structure it came from.
      */
     const datedExam = await expectOk(
       '/fees/assignments',
@@ -1061,7 +1085,7 @@ async function verifyHttp() {
       },
       201
     );
-    check('  while the same fee WITH a period goes through, which is the only escape',
+    check('  and the same structure WITH a month goes through, because its triple is new',
       dataOf(datedExam).fees[0].period_month, '2025-12-01');
 
     /*

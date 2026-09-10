@@ -600,7 +600,9 @@ export default function PaymentsPage() {
               <option value="wallet">To the school’s wallet</option>
             </select>
             <p className="mt-1 text-xs text-muted">
-              The two the API accepts. Returning money the way it arrived is the default.
+              The wallet keeps the money on the platform as credit the school can pay a later invoice
+              with; nothing goes back through a gateway. A refund of a wallet payment always returns to
+              the wallet.
             </p>
           </div>
 

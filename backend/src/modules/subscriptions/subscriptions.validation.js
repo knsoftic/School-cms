@@ -75,11 +75,10 @@
  *  - **`price`** — `amount` required, and `target_key` is restricted to `cycle_amount`. That is the
  *    only price component a subscription row holds, and `entitlementService` skips price overrides
  *    on purpose (*"it belongs to invoice generation rather than here"*), so a row naming anything
- *    else would have no consumer at all. **§13 is now built and still reads no override** —
- *    `grep -rn "SubscriptionOverride" backend/src/modules/invoices/` returns nothing — so a `price`
- *    row is accepted, stored, echoed back on the subscription detail, and read by nothing. That is
- *    triage finding 39, and it is the one exception to this header’s own principle above: every
- *    other override an operator could create and watch do nothing is refused here instead.
+ *    else would have no consumer at all. For a long time §13 read no override either, so a `price`
+ *    row was accepted, stored and billed by nothing — triage finding 39. The owner's decision D7
+ *    settled what it means, and `invoices.generateForSubscription()` now bills the plan line at the
+ *    override's `amount` for every period that starts while it is in effect.
  */
 
 const Joi = require('joi');

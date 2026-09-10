@@ -120,13 +120,22 @@ const profile = {
  * FR-STUDENT-001 says "System assigns a Student ID and Roll Number", so leaving it out has to work —
  * the service allocates one. It is still *accepted*, because the SRS names no format and a school
  * that already has a numbering scheme must be able to keep it. The same applies to `roll_number`.
+ *
+ * **`class_id` is required** — the owner's decision D4 in `docs/OWNER-DECISIONS.md`, settling triage
+ * finding 17. The SRS answered twice: FR-STUDENT-001 says "Student is assigned to a Class and Section"
+ * with "Class and section exist" as its precondition, while §15.1 lists Admission and Class Assignment
+ * as separate features. Optional, it admitted a student with no class and therefore **no roll number**
+ * — the allocator is scoped by class — and nothing ever gave them one. Required, the roll-number half
+ * of "assigns a Student ID and Roll Number" holds for every admission. `section_id` stays optional:
+ * the allocator already numbers a section-less class, and nothing in the source makes a section
+ * mandatory.
  */
 const create = Joi.object({
   school_id: fields.school_id,
   student_id: fields.student_id,
   first_name: fields.first_name.required(),
   admission_date: fields.admission_date.required(),
-  class_id: fields.class_id,
+  class_id: fields.class_id.required(),
   section_id: fields.section_id,
   academic_session_id: fields.academic_session_id,
   ...profile,
@@ -202,11 +211,33 @@ const setPhoto = Joi.object({
   photo_path: fields.photo_path,
 });
 
+/**
+ * The body of `POST /students/:id/documents` — FR-STUDENT-001's "Documents", the owner's decision D13.
+ *
+ * The files arrive as the multipart field `documents`; these are the text fields beside them. `title`
+ * is optional because every file already has a name: with one file it replaces that name, with several
+ * it is put in front of each. Nothing here chooses a `document_type` — §20.5's seven are generated
+ * artefacts, and an upload's type is null by the column's own design.
+ */
+const addDocuments = Joi.object({
+  school_id: fields.school_id,
+  title: Joi.string().trim().max(200).empty('').allow(null),
+  description: Joi.string().trim().max(255).empty('').allow(null),
+  reason: fields.reason,
+});
+
+const documentParam = Joi.object({
+  id: Joi.number().integer().min(1).required(),
+  documentId: Joi.number().integer().min(1).required(),
+});
+
 module.exports = {
   schemas: {
     create,
     update,
     setPhoto,
+    addDocuments,
+    documentParam,
     promote,
     transfer,
     leave,

@@ -44,6 +44,7 @@ const {
   requireModule,
   enforceLimit,
   uploadSingle,
+  uploadArray,
 } = require('../../middlewares');
 const { MODULES, LIMITS, UPLOAD_PROFILES } = require('../../config/constants');
 
@@ -115,6 +116,43 @@ router.get(
   requirePermission('students.view'),
   validate({ params: schemas.idParam, query: schemas.showQuery }),
   asyncHandler(controller.photo)
+);
+
+/*
+ * FR-STUDENT-001's other half — "System captures Student Photo **and Documents**" — the owner's
+ * decision D13 in `docs/OWNER-DECISIONS.md`, settling triage finding 16.
+ *
+ * The `STUDENT_DOCUMENT` upload profile has cited '§15.1 / FR-STUDENT-001 — "Documents"' since
+ * `upload.js` was written and had no caller: the finding was blocked because the only view key in the
+ * fixed catalogue, `documents.view`, reads "View *generated* documents". D13 answers it with the
+ * student's own permissions — a document on a student is part of the student's record, so uploading
+ * one is managing the student (`students.manage`) and reading one is viewing them (`students.view`) —
+ * which is the same reasoning the photo routes above already rest on. Rows go in the existing
+ * `documents` table as uploads: `owner_type: 'student'`, `is_generated: false`, `document_type` null.
+ *
+ * Upload, list and download. Removing a document is not among what D13 decided.
+ */
+router.post(
+  '/:id/documents',
+  requirePermission('students.manage'),
+  uploadArray(UPLOAD_PROFILES.STUDENT_DOCUMENT, 'documents'),
+  validate({ params: schemas.idParam, body: schemas.addDocuments }),
+  logActivity({ action: 'create', entityType: 'document', onlyOnSuccess: true }),
+  asyncHandler(controller.addDocuments)
+);
+
+router.get(
+  '/:id/documents',
+  requirePermission('students.view'),
+  validate({ params: schemas.idParam, query: schemas.showQuery }),
+  asyncHandler(controller.documents)
+);
+
+router.get(
+  '/:id/documents/:documentId',
+  requirePermission('students.view'),
+  validate({ params: schemas.documentParam, query: schemas.showQuery }),
+  asyncHandler(controller.documentFile)
 );
 
 router.post(

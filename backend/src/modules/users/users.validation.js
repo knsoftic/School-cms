@@ -20,8 +20,10 @@
  *    `users.manage` could promote a teacher to `super_admin` with one PATCH. The role is decided by
  *    whichever module creates the account (§9.3 for a Principal, §15 for school people).
  *  - **`password`** — FR-AUTH-005 makes password reset the account holder's own operation, initiated
- *    by them. §9.3 is the only place the source has an administrator type someone else's password,
- *    and that is at creation. An administrator-sets-any-password endpoint is not in the document.
+ *    by them. An administrator types someone else's password only at creation — §9.3's Principal, a
+ *    Parent, and the school logins of the owner's decision D1 (`create` below), each a temporary
+ *    password the account must change at first sign-in. An administrator-sets-any-password endpoint is
+ *    not in the document.
  *  - **`organization_id` / `school_id`** — moving a user between tenants would make
  *    `users.school_id` disagree with the records that reference them (`schools.principal_id`, marks,
  *    attendance) and there is no source requirement for a transfer. Tenancy is set at creation from
@@ -44,8 +46,26 @@
 
 const Joi = require('joi');
 const { commonSchemas, listQuery } = require('../../middlewares/validate');
-const { USER_STATUS, ROLE_LIST } = require('../../config/constants');
-const { email } = require('../auth/auth.validation');
+const { USER_STATUS, ROLE_LIST, ROLES } = require('../../config/constants');
+const { email, newPassword } = require('../auth/auth.validation');
+
+/**
+ * The roles a school may create a login for — the owner's decision D1 in `docs/OWNER-DECISIONS.md`.
+ *
+ * Every school person except the two the source already gives a creation path: a **Principal** is
+ * created by the Super Admin (FR-SADMIN-009) and a **Parent** with their profile (FR-PARENT-001). The
+ * platform roles are never a school's to create. `users.service` pairs each role with the profile it
+ * must be linked to; a School Admin has no profile table, so it links to nothing.
+ */
+const CREATABLE_ROLES = Object.freeze([
+  ROLES.SCHOOL_ADMIN,
+  ROLES.TEACHER,
+  ROLES.ACCOUNTANT,
+  ROLES.RECEPTIONIST,
+  ROLES.LIBRARIAN,
+  ROLES.STAFF,
+  ROLES.STUDENT,
+]);
 
 /**
  * The username character class.
@@ -117,6 +137,41 @@ const update = Joi.object({
   .messages({ 'object.min': 'Provide at least one field to update' });
 
 /**
+ * `POST /users` — a login for someone the school already has on record (D1).
+ *
+ * `profile_id` names the teacher, staff member or student the login is for; it is refused for a School
+ * Admin, who has no profile. `name` defaults to the profile's own name, so it is required only for a
+ * School Admin. `password` is the temporary one: the account is created with `must_change_password`,
+ * as a Parent's is, and the same shared policy governs it. The tenancy comes from the school — a body
+ * `school_id` is how a platform caller names it, and a school caller's own is used regardless.
+ */
+const create = Joi.object({
+  role: Joi.string()
+    .valid(...CREATABLE_ROLES)
+    .required()
+    .messages({
+      'any.only': `"role" must be one of ${CREATABLE_ROLES.join(', ')} — a Principal is created by the Super Admin and a Parent with their profile`,
+    }),
+  school_id: Joi.number().integer().min(1),
+  profile_id: Joi.number()
+    .integer()
+    .min(1)
+    .when('role', {
+      is: ROLES.SCHOOL_ADMIN,
+      then: Joi.forbidden().messages({ 'any.unknown': 'A School Admin login is not linked to a profile' }),
+      otherwise: Joi.required().messages({
+        'any.required': '"profile_id" names the teacher, staff member or student this login is for',
+      }),
+    }),
+  name: fields.name.when('role', { is: ROLES.SCHOOL_ADMIN, then: Joi.required() }),
+  email: email.required(),
+  username: fields.username.required(),
+  phone: fields.phone,
+  password: newPassword,
+  reason: Joi.string().trim().max(255).empty('').allow(null),
+});
+
+/**
  * The §33 Users list.
  *
  * `role` is the §5 slug rather than a `role_id`, because the screen's filter is a role name and an id
@@ -154,11 +209,13 @@ const setPermissions = Joi.object({
 
 module.exports = {
   schemas: {
+    create,
     update,
     list,
     setPermissions,
     idParam: commonSchemas.idParam,
   },
+  CREATABLE_ROLES,
   USERNAME_PATTERN,
   PERMISSION_KEY_PATTERN,
 };

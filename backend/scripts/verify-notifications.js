@@ -606,6 +606,17 @@ async function verifyHttp() {
       start_date: '2026-08-05', end_date: '2026-08-06', status: EXAM_STATUS.CANCELLED,
     });
 
+    /*
+     * D15 — the class's teacher, with a login, so an exam announcement and published results have a
+     * teacher to reach. Linked as the class teacher, which is one of the four ways the schema records
+     * who teaches a class.
+     */
+    const gradeTeacher = await db.Teacher.create({
+      school_id: schoolA.id, organization_id: org.id, user_id: teacherU.id, employee_id: `${CODE_PREFIX}T1`,
+      first_name: 'Grade', last_name: 'Teacher', joining_date: '2025-01-06',
+    });
+    await grade.update({ class_teacher_id: gradeTeacher.id });
+
     const mkResult = async (student, published, percentage) => db.Result.create({
       school_id: schoolA.id, organization_id: org.id, academic_session_id: session.id,
       exam_id: examScheduled.id, student_id: student.id, class_id: grade.id,
@@ -680,14 +691,15 @@ async function verifyHttp() {
 
     check('the sweep reports one pass per §23 type group, in order',
       Object.keys(report).filter((k) => k !== 'at' && k !== 'failed'),
-      ['homework', 'examAnnouncements', 'results', 'attendanceAlerts', 'feeReminders',
-        'feePaid', 'subscriptionExpiry', 'payments']);
+      ['homework', 'examAnnouncements', 'results', 'resultsForTeachers', 'attendanceAlerts',
+        'feeReminders', 'feePaid', 'subscriptionExpiry', 'payments']);
     check('  and nothing failed', report.failed, []);
 
     check('each pass notified exactly its candidates and left its negatives alone',
-      [report.homework, report.examAnnouncements, report.results, report.attendanceAlerts,
-        report.feeReminders, report.feePaid, report.subscriptionExpiry, report.payments],
-      [1, 1, 1, 1, 1, 1, 1, 2]);
+      [report.homework, report.examAnnouncements, report.results, report.resultsForTeachers,
+        report.attendanceAlerts, report.feeReminders, report.feePaid, report.subscriptionExpiry,
+        report.payments],
+      [1, 1, 1, 1, 1, 1, 1, 1, 2]);
 
     /* ── the five marker columns are actually stamped ── */
 
@@ -790,20 +802,53 @@ async function verifyHttp() {
       [[payApproved.id], [payRejected.id]]);
     check('  a payment still pending is neither received nor failed',
       payRows.some((r) => r.reference_id === payPending.id), false);
+    /*
+     * Each payment and each expiring subscription now raises two notices: the school's, and the
+     * platform's copy for the Super Admins with a null `school_id` (the owner's decision D15). The
+     * school-audience checks read the school's rows; the platform rows are checked on their own below.
+     */
+    const schoolPayRows = payRows.filter((r) => r.school_id !== null);
     check('  and they went to the school, not to a student — principal and the submitter',
-      [...new Set(payRows.map((r) => r.user_id))].sort((a, b) => a - b),
+      [...new Set(schoolPayRows.map((r) => r.user_id))].sort((a, b) => a - b),
       [principalA.id, accountantU.id].sort((a, b) => a - b));
+    const superAdminIds = (await db.User.findAll({
+      where: { school_id: null, status: USER_STATUS.ACTIVE },
+      include: [{ model: db.Role, as: 'role', where: { slug: ROLES.SUPER_ADMIN }, attributes: [] }],
+      attributes: ['id'],
+    })).map((u) => u.id).sort((a, b) => a - b);
+    const platformPayRows = payRows.filter((r) => r.school_id === null);
+    check('D15 — and the Super Admins get the platform copy of each, one per payment, with no school on it',
+      [[...new Set(platformPayRows.map((r) => r.user_id))].sort((a, b) => a - b),
+        platformPayRows.map((r) => r.reference_id).sort((a, b) => a - b)],
+      [superAdminIds, superAdminIds.flatMap(() => [payApproved.id, payRejected.id]).sort((a, b) => a - b)]);
 
     const expiryRows = await rowsOf({
       type: NOTIFICATION_TYPES.SUBSCRIPTION_EXPIRY, channel: NOTIFICATION_CHANNELS.IN_APP,
     });
+    const schoolExpiryRows = expiryRows.filter((r) => r.school_id !== null);
     check('the expiry notice names the expiring subscription and only school A hears it',
-      [expiryRows.map((r) => r.reference_id), [...new Set(expiryRows.map((r) => r.school_id))]],
+      [schoolExpiryRows.map((r) => r.reference_id), [...new Set(schoolExpiryRows.map((r) => r.school_id))]],
       [[subExpiring.id], [schoolA.id]]);
+    const platformExpiryRows = expiryRows.filter((r) => r.school_id === null);
+    check('D15 — the platform copy of the expiry notice reaches every Super Admin, about the same subscription',
+      [[...new Set(platformExpiryRows.map((r) => r.user_id))].sort((a, b) => a - b),
+        [...new Set(platformExpiryRows.map((r) => r.reference_id))]],
+      [superAdminIds, [subExpiring.id]]);
 
-    const resultRows = await rowsOf({ type: NOTIFICATION_TYPES.RESULT_PUBLISHED });
+    /* The per-student rows reference the result; the teacher's once-per-exam row references the exam. */
+    const resultRows = await rowsOf({ type: NOTIFICATION_TYPES.RESULT_PUBLISHED, reference_type: 'result' });
     check('only a PUBLISHED result is announced',
       [...new Set(resultRows.map((r) => r.reference_id))], [resultPublished.id]);
+    const teacherResultRows = await rowsOf({
+      type: NOTIFICATION_TYPES.RESULT_PUBLISHED, reference_type: 'exam', channel: NOTIFICATION_CHANNELS.IN_APP,
+    });
+    check('D15 — the class teacher is told once per exam that its results are published, not once per student',
+      teacherResultRows.map((r) => [r.user_id, r.reference_id]), [[teacherU.id, examScheduled.id]]);
+    const teacherExamRows = await rowsOf({
+      type: NOTIFICATION_TYPES.EXAM_ANNOUNCEMENT, user_id: teacherU.id, channel: NOTIFICATION_CHANNELS.IN_APP,
+    });
+    check('  and hears the exam announcement for their class',
+      teacherExamRows.map((r) => r.reference_id), [examScheduled.id]);
 
     const feeRows = await rowsOf({ type: NOTIFICATION_TYPES.FEE_REMINDER });
     check('only the fee due inside the seven-day window is reminded about',
@@ -964,9 +1009,16 @@ async function verifyHttp() {
     check('  and they never carry the transport\'s message out of the building',
       (dataOf(emailInbox) || []).every((r) => !('error_message' in r)), true);
 
+    /*
+     * This used to be a teacher who received nothing and an inbox of 0. Since the owner's decision D15
+     * the class teacher receives exactly two — the exam announcement and the once-per-exam results
+     * notice — so the same point, that an inbox is its owner's and not everybody else's, is made by
+     * that exact pair rather than by an emptiness.
+     */
     const teacherInbox = await call('/notifications', { token: teacherToken });
-    check('a teacher who received nothing gets an empty inbox, not everybody else\'s',
-      [teacherInbox.status, (dataOf(teacherInbox) || []).length], [200, 0]);
+    check('a teacher\'s inbox holds exactly what was addressed to them, not everybody else\'s',
+      [teacherInbox.status, (dataOf(teacherInbox) || []).map((r) => r.type).sort()],
+      [200, [NOTIFICATION_TYPES.EXAM_ANNOUNCEMENT, NOTIFICATION_TYPES.RESULT_PUBLISHED]]);
 
     const mine = inboxRows[0];
     const someoneElse = await db.Notification.findOne({

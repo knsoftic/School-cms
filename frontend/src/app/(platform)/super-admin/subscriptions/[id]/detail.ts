@@ -133,6 +133,8 @@ export interface SubscriptionDetail {
   cycle_amount: number | string;
   quantity: number;
   credit_balance: number | string;
+  /** §13.2's wallet — credited by refunds to it, drawn by approved wallet payments (owner decision D5). */
+  wallet_balance: number | string;
   trial_days: number;
   grace_period_days: number;
   renewal_mode: string;

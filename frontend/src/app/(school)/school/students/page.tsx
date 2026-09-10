@@ -52,6 +52,8 @@ import { useCollection } from '@/lib/useCollection';
 import { useClassSections } from '@/lib/useTimetablePickers';
 import { Modal } from '@/components/overlay';
 import { useToast } from '@/components/toast';
+import { CreateLoginDialog } from '@/components/createLogin';
+import type { LoginTarget } from '@/components/createLogin';
 import {
   Field,
   Notice,
@@ -97,6 +99,9 @@ interface StudentRow {
   /** `DATEONLY`, and NOT NULL: FR-STUDENT-001 makes admission the event that creates the row. */
   admission_date: string;
   status: string;
+  /* Read only as "can they sign in" — it decides whether "Create login" is offered (owner decision D1). */
+  user_id: number | null;
+  email: string | null;
 }
 
 /**
@@ -217,6 +222,9 @@ export default function StudentsPage() {
   const canProgress = can('students.progression');
   /* `students.manage` — the key both the edit and the photo route are mounted behind. */
   const canManage = can('students.manage');
+  /* A student's login is an account — `POST /users`, behind `users.manage` (owner decision D1). */
+  const canCreateLogin = can('users.manage');
+  const [loginFor, setLoginFor] = useState<LoginTarget | null>(null);
 
   const [promoting, setPromoting] = useState<StudentRow | null>(null);
   const [transferring, setTransferring] = useState<StudentRow | null>(null);
@@ -337,7 +345,7 @@ export default function StudentsPage() {
      * Offered only on an `active` student. The three are terminal or forward-only — nothing returns
      * a student to `active` — so a transferred row has nothing to offer but a history.
      */
-    if (!canProgress) return base;
+    if (!canProgress && !canCreateLogin) return base;
 
     return [
       ...base,
@@ -347,15 +355,35 @@ export default function StudentsPage() {
         cell: (row) =>
           row.status === 'active' ? (
             <span className="flex flex-wrap gap-1">
-              <button type="button" onClick={() => setPromoting(row)} className="btn btn-ghost btn-sm">
-                Promote
-              </button>
-              <button type="button" onClick={() => setTransferring(row)} className="btn btn-ghost btn-sm">
-                Transfer
-              </button>
-              <button type="button" onClick={() => setLeaving(row)} className="btn btn-ghost btn-sm">
-                Leaving
-              </button>
+              {canProgress ? (
+                <>
+                  <button type="button" onClick={() => setPromoting(row)} className="btn btn-ghost btn-sm">
+                    Promote
+                  </button>
+                  <button type="button" onClick={() => setTransferring(row)} className="btn btn-ghost btn-sm">
+                    Transfer
+                  </button>
+                  <button type="button" onClick={() => setLeaving(row)} className="btn btn-ghost btn-sm">
+                    Leaving
+                  </button>
+                </>
+              ) : null}
+              {canCreateLogin && !row.user_id ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setLoginFor({
+                      role: 'student',
+                      person: [row.first_name, row.last_name].filter(Boolean).join(' '),
+                      profileId: row.id,
+                      email: row.email,
+                    })
+                  }
+                  className="btn btn-ghost btn-sm"
+                >
+                  Create login
+                </button>
+              ) : null}
             </span>
           ) : (
             /* Terminal. A transferred or departed student is a record, not a workflow. */
@@ -363,7 +391,7 @@ export default function StudentsPage() {
           ),
       },
     ];
-  }, [canProgress, canManage]);
+  }, [canProgress, canManage, canCreateLogin]);
 
   const filtered = Boolean(debounced || status);
 
@@ -523,6 +551,8 @@ export default function StudentsPage() {
           reload();
         }}
       />
+
+      <CreateLoginDialog target={loginFor} onClose={() => setLoginFor(null)} onCreated={reload} />
     </div>
   );
 }

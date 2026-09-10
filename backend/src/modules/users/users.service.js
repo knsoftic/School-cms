@@ -50,9 +50,13 @@ const logger = require('../../config/logger');
 const ApiError = require('../../utils/ApiError');
 const authService = require('../auth/auth.service');
 const permissionService = require('../../services/permissionService');
+const usageService = require('../../services/usageService');
+const { hashPassword } = require('../../utils/tokens');
+const { resolveSchool } = require('../../utils/schoolScope');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const { PERMISSION_KEY_SET, PERMISSIONS } = require('../../config/permissions');
+const { ROLES, STAFF_CATEGORIES, LIMITS, USER_STATUS } = require('../../config/constants');
 
 const { tenantWhere, Op } = db;
 
@@ -358,6 +362,144 @@ async function update(req, id, payload) {
   return { user: await findById(req.tenant, user.id), verificationEmailSent };
 }
 
+/* ────────────── Creating a login — the owner's decision D1 in docs/OWNER-DECISIONS.md ────────────── */
+
+/**
+ * The profile each creatable role is a login *for*. FR-TEACHER-002's precondition is "Teacher account
+ * exists" and nothing in the source creates it — only a Principal (FR-SADMIN-009) and a Parent
+ * (FR-PARENT-001) had a creation path, so no teacher, staff member or student could ever sign in. D1
+ * gives the school that path. The profile tables already carried a nullable `user_id` for exactly
+ * this — "a school records someone who has no portal login yet" — so a login is created and linked in
+ * one step, and a staff member's role follows their §15.4 category rather than the caller's choice.
+ */
+const PROFILE_FOR_ROLE = Object.freeze({
+  [ROLES.TEACHER]: { model: 'Teacher', label: 'teacher' },
+  [ROLES.ACCOUNTANT]: { model: 'Staff', label: 'staff member', category: STAFF_CATEGORIES.ACCOUNTANT },
+  [ROLES.RECEPTIONIST]: { model: 'Staff', label: 'staff member', category: STAFF_CATEGORIES.RECEPTIONIST },
+  [ROLES.LIBRARIAN]: { model: 'Staff', label: 'staff member', category: STAFF_CATEGORIES.LIBRARIAN },
+  [ROLES.STAFF]: { model: 'Staff', label: 'staff member', category: STAFF_CATEGORIES.OTHER_STAFF },
+  [ROLES.STUDENT]: { model: 'Student', label: 'student' },
+});
+
+/**
+ * Create a login for a school person — `POST /users`.
+ *
+ * In one transaction: the School Admin headcount is reserved when that is the role (the owner's
+ * decision D2 — `admin_limit`, counted as `usageService` already counts it, Principals and School
+ * Admins together), the account is created with a temporary password and `must_change_password`, and
+ * the profile it is for is linked under a row lock, so two requests cannot hand one teacher two
+ * logins. The verification email follows the commit, and its failure is logged rather than thrown, as
+ * `principals.service` does: the account exists either way.
+ *
+ * @param {import('express').Request} req
+ * @param {object} payload  validated body
+ * @returns {Promise<{user: object, verificationEmailSent: boolean, profile: object|null}>}
+ */
+async function create(req, payload) {
+  const school = await resolveSchool(req, payload.school_id);
+  const role = await db.Role.findOne({ where: { slug: payload.role } });
+  if (!role) {
+    throw new ApiError(500, `The ${payload.role} role is missing — run the seeders`, { code: 'ROLE_MISSING' });
+  }
+  const profileRule = PROFILE_FOR_ROLE[payload.role] || null;
+  const passwordHash = await hashPassword(payload.password);
+
+  let created;
+  try {
+    created = await db.sequelize.transaction(async (transaction) => {
+      if (payload.role === ROLES.SCHOOL_ADMIN) {
+        await usageService.reserveHeadcount(school.id, LIMITS.ADMIN_LIMIT, 1, transaction);
+      }
+
+      let profile = null;
+      if (profileRule) {
+        profile = await db[profileRule.model].findOne({
+          where: { id: payload.profile_id, school_id: school.id },
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+        if (!profile) {
+          throw ApiError.validation(`No ${profileRule.label} with that id in this school`, [
+            { field: 'profile_id', message: `Name a ${profileRule.label} of this school` },
+          ]);
+        }
+        if (profile.user_id) {
+          throw ApiError.conflict(`This ${profileRule.label} already has a login`, {
+            code: 'PROFILE_ALREADY_HAS_LOGIN',
+            details: { profile_id: profile.id, user_id: profile.user_id },
+          });
+        }
+        if (profileRule.category && profile.category !== profileRule.category) {
+          throw ApiError.validation(`A ${payload.role} login is for a staff member in that category`, [
+            {
+              field: 'role',
+              message: `This staff member is recorded as ${profile.category}, so their login's role follows that`,
+            },
+          ]);
+        }
+      }
+
+      const profileName = profile ? [profile.first_name, profile.last_name].filter(Boolean).join(' ') : null;
+      const user = await db.User.create(
+        {
+          role_id: role.id,
+          school_id: school.id,
+          organization_id: school.organization_id,
+          name: payload.name || profileName,
+          email: payload.email,
+          username: payload.username,
+          phone: payload.phone ?? null,
+          password_hash: passwordHash,
+          status: USER_STATUS.ACTIVE,
+          must_change_password: true,
+        },
+        { transaction }
+      );
+      if (profile) await profile.update({ user_id: user.id }, { transaction });
+
+      return { user, profile };
+    });
+  } catch (err) {
+    rethrowUniqueViolation(err, payload);
+  }
+
+  await recordAudit(req, {
+    tableName: 'users',
+    recordId: created.user.id,
+    event: 'create',
+    after: snapshot(created.user, AUDIT_FIELDS),
+    reason: payload.reason || `${role.name} login created for school ${school.code}`,
+  });
+  if (created.profile) {
+    await recordAudit(req, {
+      tableName: created.profile.constructor.getTableName(),
+      recordId: created.profile.id,
+      event: 'update',
+      before: { user_id: null },
+      after: { user_id: created.user.id },
+      reason: 'Linked to the login created for them',
+    });
+  }
+
+  let verificationEmailSent = false;
+  try {
+    const result = await authService.sendVerificationEmail(created.user);
+    verificationEmailSent = Boolean(result && result.issued);
+  } catch (err) {
+    logger.error('Login created but the verification email could not be sent', {
+      requestId: req.id,
+      userId: created.user.id,
+      error: err.message,
+    });
+  }
+
+  return {
+    user: await findById(req.tenant, created.user.id),
+    verificationEmailSent,
+    profile: created.profile ? { type: PROFILE_FOR_ROLE[payload.role].model.toLowerCase(), id: created.profile.id } : null,
+  };
+}
+
 /**
  * Reject permission keys that are not in the catalogue.
  *
@@ -485,6 +627,7 @@ function permissionCatalogue() {
 module.exports = {
   list,
   findById,
+  create,
   update,
   setPermissions,
   present,

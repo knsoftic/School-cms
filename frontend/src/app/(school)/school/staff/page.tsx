@@ -59,6 +59,8 @@ import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
 import { useRowAction } from '@/lib/useRowAction';
 import { DeactivateDialog, ReactivateDialog } from '@/components/deactivate';
+import { CreateLoginDialog, ROLE_FOR_STAFF_CATEGORY } from '@/components/createLogin';
+import type { LoginTarget } from '@/components/createLogin';
 import {
   SearchField,
   FilterBar,
@@ -97,6 +99,8 @@ interface StaffRow {
   email: string | null;
   phone: string | null;
   is_active: boolean;
+  /* Read only as "can they sign in" — it decides whether "Create login" is offered (owner decision D1). */
+  user_id: number | null;
 }
 
 /**
@@ -178,6 +182,9 @@ export default function StaffPage() {
   /* `staff.manage` is the key `PATCH /staff/:id` is mounted behind. Without it the column is not
      rendered at all rather than rendered disabled — a control nobody can use is noise per row. */
   const canManage = can('staff.manage');
+  /* A login is an account: `POST /users` is mounted behind `users.manage`, not `staff.manage`. */
+  const canCreateLogin = can('users.manage');
+  const [loginFor, setLoginFor] = useState<LoginTarget | null>(null);
 
   const label = (row: StaffRow) => [row.first_name, row.last_name].filter(Boolean).join(' ');
 
@@ -263,6 +270,11 @@ export default function StaffPage() {
          */
         cell: (row) => <StatusBadge status={row.is_active ? 'active' : 'inactive'} />,
       },
+      {
+        key: 'login',
+        header: 'Login',
+        cell: (row) => (row.user_id ? <span>Can sign in</span> : <Blank />),
+      },
     ];
 
     /*
@@ -280,7 +292,7 @@ export default function StaffPage() {
      * Reactivation is offered on the same column, because the mistake this column makes possible is
      * deactivating the wrong person, and a one-way door would turn that into a support request.
      */
-    if (!canManage) return base;
+    if (!canManage && !canCreateLogin) return base;
 
     return [
       ...base,
@@ -288,17 +300,38 @@ export default function StaffPage() {
         key: 'actions',
         header: 'Actions',
         cell: (row) => (
-          <button
-            type="button"
-            onClick={() => (row.is_active ? deactivate.ask(row) : reactivate.ask(row))}
-            className="btn btn-ghost btn-sm"
-          >
-            {row.is_active ? 'Deactivate' : 'Reactivate'}
-          </button>
+          <div className="flex gap-1">
+            {canManage ? (
+              <button
+                type="button"
+                onClick={() => (row.is_active ? deactivate.ask(row) : reactivate.ask(row))}
+                className="btn btn-ghost btn-sm"
+              >
+                {row.is_active ? 'Deactivate' : 'Reactivate'}
+              </button>
+            ) : null}
+            {/* The login's role follows the §15.4 category — the server refuses any other. */}
+            {canCreateLogin && !row.user_id && row.is_active && ROLE_FOR_STAFF_CATEGORY[row.category] ? (
+              <button
+                type="button"
+                onClick={() =>
+                  setLoginFor({
+                    role: ROLE_FOR_STAFF_CATEGORY[row.category],
+                    person: label(row),
+                    profileId: row.id,
+                    email: row.email,
+                  })
+                }
+                className="btn btn-ghost btn-sm"
+              >
+                Create login
+              </button>
+            ) : null}
+          </div>
         ),
       },
     ];
-  }, [canManage, deactivate, reactivate]);
+  }, [canManage, canCreateLogin, deactivate, reactivate]);
 
   const filtered = Boolean(debounced || category || active);
 
@@ -463,6 +496,7 @@ export default function StaffPage() {
         onConfirm={() => reactivate.confirm()}
       />
 
+      <CreateLoginDialog target={loginFor} onClose={() => setLoginFor(null)} onCreated={reload} />
     </div>
   );
 }

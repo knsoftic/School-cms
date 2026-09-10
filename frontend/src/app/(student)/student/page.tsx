@@ -32,6 +32,7 @@
  * often means "not released yet" rather than "no exams", and the empty state says so.
  */
 
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
@@ -85,7 +86,7 @@ function figure(value: string | number | null, digits?: number) {
 }
 
 export default function StudentPortal() {
-  const { profile } = useAuth();
+  const { profile, can } = useAuth();
   const [page, setPage] = useState(1);
 
   const query = useMemo(() => ({ page, limit: 20 }), [page]);
@@ -162,6 +163,23 @@ export default function StudentPortal() {
       <PageHeader
         title={`Your results, ${profile?.user.name ?? ''}`.trim()}
         description="Results appear here once your school publishes them."
+        action={
+          /*
+           * The two screens a student acts on and could not reach from here: the inbox §23 addresses
+           * them in, and the assignments they hand work in to (`assignments.submit`). Links rather than
+           * nav entries, as the School surface links its own extra screens.
+           */
+          <div className="flex gap-2">
+            <Link href="/student/notifications" className="btn btn-secondary">
+              Notifications
+            </Link>
+            {can('assignments.submit') ? (
+              <Link href="/school/assignments" className="btn btn-secondary">
+                Assignments
+              </Link>
+            ) : null}
+          </div>
+        }
       />
 
       {refusal ? (

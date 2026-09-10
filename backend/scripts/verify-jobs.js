@@ -100,12 +100,17 @@ function verifyContract() {
    * `a`, because indexOf returns -1 — the defect §5a recorded in session 22 and again in §21. An
    * array literal pins presence and order together and no deletion can satisfy it.
    */
-  check('five tasks, in the order a --once run uses',
+  check('six tasks, in the order a --once run uses',
     names,
-    ['subscription-lifecycle', 'notification-dispatch', 'invoice-overdue', 'coupon-expiry',
-      'database-backup']);
-  check('  and notification-dispatch follows subscription-lifecycle, which is a real dependency',
-    names.slice(0, 2), ['subscription-lifecycle', 'notification-dispatch']);
+    ['subscription-lifecycle', 'invoice-issue', 'notification-dispatch', 'invoice-overdue',
+      'coupon-expiry', 'database-backup']);
+  /*
+   * Two real dependencies on the lifecycle sweep going first: `notification-dispatch` warns about the
+   * `expiring` state it writes, and `invoice-issue` (owner decision D6) invoices the period a renewal
+   * opens.
+   */
+  check('  and invoice-issue and notification-dispatch both follow subscription-lifecycle',
+    names.slice(0, 3), ['subscription-lifecycle', 'invoice-issue', 'notification-dispatch']);
   check('  every name is unique', new Set(names).size, names.length);
 
   check('every task declares the whole contract',
@@ -383,8 +388,17 @@ async function verifyExecution() {
       pricing_model: 'fixed', currency: 'USD', cycle_amount: 100, quantity: 1,
       starts_at: dates.addDays(at, -27), current_period_start: dates.addDays(at, -27),
       current_period_end: dates.addDays(at, 3), renewal_mode: 'manual',
+      /* Copied from the plan, as `subscriptions.create()` would — the invoice's due date is read from here. */
+      grace_period_days: plan.grace_period_days,
     });
     created.subscriptions.push(subscription.id);
+
+    /* The plan line a billing period bills — so `invoice-issue` (owner decision D6) has something to issue. */
+    await db.SubscriptionItem.create({
+      subscription_id: subscription.id, school_id: school.id, plan_id: plan.id, item_type: 'plan',
+      description: 'Verify Jobs Plan (monthly)', quantity: 1, unit_amount: 100, amount: 100,
+      currency: 'USD', is_recurring: true,
+    });
 
     check('the fixture starts ACTIVE, so nothing can notify about it yet',
       subscription.state, SUBSCRIPTION_STATES.ACTIVE);
@@ -402,8 +416,8 @@ async function verifyExecution() {
 
     check('every task ran and none failed',
       [report.ran.map((r) => r.task), report.failed, report.skipped],
-      [['subscription-lifecycle', 'notification-dispatch', 'invoice-overdue', 'coupon-expiry',
-        'database-backup'], [], []]);
+      [['subscription-lifecycle', 'invoice-issue', 'notification-dispatch', 'invoice-overdue',
+        'coupon-expiry', 'database-backup'], [], []]);
     check('  and each carries the summary its own module returns',
       report.ran.every((r) => r.summary && typeof r.summary === 'object'), true);
 
@@ -416,6 +430,24 @@ async function verifyExecution() {
      */
     check('the backup is in the report, not merely on disk — a task that never settles exits 0',
       report.ran.some((r) => r.task === 'database-backup'), true);
+
+    /* ── FR-BILL-001's "billing event", as the owner defined it (D6): a period that has started ── */
+
+    const periodInvoices = () => db.Invoice.findAll({
+      where: { subscription_id: subscription.id, billing_period_start: subscription.current_period_start },
+      attributes: ['id', 'total', 'issue_date', 'due_date', 'status'],
+      raw: true,
+    });
+    const issued = await periodInvoices();
+    check('D6 — invoice-issue invoiced the period that had started, with no Generate pressed',
+      issued.map((row) => [Number(row.total), row.status]), [[100, 'unpaid']]);
+    /* `due_date` is DATEONLY; built as a date string so an instant cannot pass at the wrong hour. */
+    check('  due when the plan grace period (7 days) after issue ends',
+      issued.length ? issued[0].due_date : null,
+      dates.toDateOnly(dates.addDays(at, 7)));
+    const issueAgain = await cronModule.runOrdered({ at, only: ['invoice-issue'], taskTimeoutMs: SUITE_TASK_TIMEOUT_MS });
+    check('  and a second run issues nothing for a period already on a live invoice',
+      [issueAgain.failed, (await periodInvoices()).length], [[], 1]);
 
     /* ── the ordering, proved end to end ── */
 
@@ -434,8 +466,9 @@ async function verifyExecution() {
     check('and the SAME pass notified the school about it — which is only possible if '
       + 'subscription-lifecycle ran before notification-dispatch',
       expiryNotices.length > 0, true);
+    /* The school's rows; the platform's copy for the Super Admins (owner decision D15) has no school. */
     check('  addressed to the principal, not to a student',
-      [...new Set(expiryNotices.map((n) => n.user_id))], [principal.id]);
+      [...new Set(expiryNotices.filter((n) => n.school_id !== null).map((n) => n.user_id))], [principal.id]);
 
     /* ── running it again notifies nobody: both halves are idempotent ── */
 
@@ -479,7 +512,7 @@ async function verifyExecution() {
     }
     check('a failing task is recorded and the others still ran — a broken backup must not stop '
       + 'the notifications',
-      [resilient.failed.map((f) => f.task), resilient.ran.length], [['database-backup'], 4]);
+      [resilient.failed.map((f) => f.task), resilient.ran.length], [['database-backup'], 5]);
     check('  and the failure carries the reason',
       resilient.failed[0].error, 'deliberate backup failure');
 

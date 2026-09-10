@@ -1016,6 +1016,32 @@ async function verifyHttp() {
     check('a document about somebody else cannot be read by guessing its id', byId.status, 404);
     check('  while their own can be', (await call(`/documents/${idCard.id}`, { token: aminaToken })).status, 200);
 
+    /*
+     * ── an upload is not this module's to show — the owner's decision D13 ──
+     *
+     * The table also holds certificates uploaded to a student, and D13 put those behind the student's
+     * own permissions. This module's key is `documents.view`, "View generated documents", so an upload
+     * on the same student must be invisible here to the school's principal and to the student alike —
+     * both of whom see that student's generated documents above, which is what keeps this from passing
+     * for a caller who simply sees nothing.
+     */
+    const upload = await db.Document.create({
+      school_id: schoolA.id, organization_id: schoolA.organization_id, document_type: null,
+      owner_type: DOCUMENT_OWNER_TYPES.STUDENT, owner_id: amina.id, title: 'Uploaded certificate',
+      file_path: `school-${schoolA.id}/student_document/verify-upload.pdf`, file_name: 'certificate.pdf',
+      mime_type: 'application/pdf', file_size_bytes: 10, is_generated: false,
+    });
+    check('D13 — an upload on a student is left out of this module\'s list, for the school and the student',
+      [idsOf(await expectOk('/documents?limit=100', { token: principalA }, 200)).includes(upload.id),
+        idsOf(await expectOk('/documents?limit=100', { token: aminaToken }, 200)).includes(upload.id)],
+      [false, false]);
+    check('  and cannot be read here by id',
+      (await call(`/documents/${upload.id}`, { token: principalA })).status, 404);
+    const askForUploads = await call('/documents?is_generated=false', { token: principalA });
+    check('  asking this module for uploads is refused with where to find them, not answered with generated rows',
+      [askForUploads.status, /students\/:id\/documents/.test(JSON.stringify(askForUploads.body))],
+      [422, true]);
+
     /* ── no bytes, stated positively ── */
 
     const stored = await db.Document.findByPk(idCard.id);

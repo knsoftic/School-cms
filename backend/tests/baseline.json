@@ -6,8 +6,8 @@
   },
   "database": "msms_test",
   "suiteCount": 40,
-  "totalAssertions": 5495,
-  "totalPassLines": 5474,
+  "totalAssertions": 5550,
+  "totalPassLines": 5529,
   "suites": {
     "verify-addons.js": {
       "assertions": 176,
@@ -38,8 +38,8 @@
       "passLines": 237
     },
     "verify-billing.js": {
-      "assertions": 239,
-      "passLines": 239
+      "assertions": 257,
+      "passLines": 257
     },
     "verify-concurrency.js": {
       "assertions": 19,
@@ -50,8 +50,8 @@
       "passLines": 67
     },
     "verify-documents.js": {
-      "assertions": 133,
-      "passLines": 133
+      "assertions": 136,
+      "passLines": 136
     },
     "verify-entitlement.js": {
       "assertions": 272,
@@ -66,8 +66,8 @@
       "passLines": 219
     },
     "verify-fees.js": {
-      "assertions": 177,
-      "passLines": 177
+      "assertions": 179,
+      "passLines": 179
     },
     "verify-finance.js": {
       "assertions": 163,
@@ -82,8 +82,8 @@
       "passLines": 109
     },
     "verify-jobs.js": {
-      "assertions": 57,
-      "passLines": 57
+      "assertions": 60,
+      "passLines": 60
     },
     "verify-library.js": {
       "assertions": 161,
@@ -94,8 +94,8 @@
       "passLines": 262
     },
     "verify-notifications.js": {
-      "assertions": 100,
-      "passLines": 100
+      "assertions": 104,
+      "passLines": 104
     },
     "verify-openapi.js": {
       "assertions": 104,
@@ -126,8 +126,8 @@
       "passLines": 11
     },
     "verify-reports.js": {
-      "assertions": 112,
-      "passLines": 112
+      "assertions": 115,
+      "passLines": 115
     },
     "verify-school-setup.js": {
       "assertions": 168,
@@ -146,8 +146,8 @@
       "passLines": 89
     },
     "verify-students.js": {
-      "assertions": 147,
-      "passLines": 147
+      "assertions": 158,
+      "passLines": 158
     },
     "verify-subscriptions.js": {
       "assertions": 212,
@@ -162,8 +162,8 @@
       "passLines": 115
     },
     "verify-users-roles.js": {
-      "assertions": 236,
-      "passLines": 236
+      "assertions": 247,
+      "passLines": 247
     },
     "verify-validate.js": {
       "assertions": 35,

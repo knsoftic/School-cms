@@ -393,7 +393,7 @@ export default function NewPaymentPage() {
               file={screenshot}
               error={fieldErrors.screenshot}
               onChange={(file) => setScreenshot(file)}
-              hint="An image of the transfer receipt. Optional to the API, and the thing a reviewer asks for when it is missing."
+              hint="An image of the receipt. A submission needs this or a transaction ID — one of the two, so the reviewer has something to check. A wallet payment needs neither."
             />
           </FormSection>
         ) : null}
