@@ -20,10 +20,12 @@ pages. It is now written from measurement, and the figures below were taken on 2
 | Frontend | Next.js 16.3.4 / React 19.2.8 / Tailwind 4.3.3 / TypeScript 5.9.3 — **82 pages**, `tsc` clean, `eslint .` exit 0 |
 | API reach | **150 write routes mounted, 149 with a frontend caller.** The exception is `POST /auth/refresh`, reached by a raw `fetch` because it *is* the refresh mechanism |
 | Verification | **40 suites, 5,495 assertions, 0 FAIL, 0 SKIP, every script exit 0** — one serial loop against live MariaDB. `npm test` wraps it as **5,705 cases**. A run killed partway no longer poisons the next: `scripts/kill-test.js`, 39 of 39 killable suites SAFE |
-| Checklist | 159 rows `Completed`, 4 `In Progress`, 2 `Implemented`, 1 `Will not be built`. None is blocked on engineering |
+| Checklist | 165 rows `Completed`, 5 `In Progress`, 2 `Implemented`, 1 `Will not be built` — counted under each table's `Status` column; this row read 159 and 4 when first written, leaving out §13.2 Wallet. None is blocked on engineering |
 | Known Issues | **6 open of 34.** Not one is waiting on code being written here |
 
-**The four `In Progress` rows and what each waits on.** **5.2** — the Anthropic adapter is exercised with
+**The five `In Progress` rows and what each waits on.** **§13.2 Wallet** — `wallet_balance` is read and
+written by nothing, because §13.2 names the method and specifies none of its behaviour (Known Issues
+#19). **5.2** — the Anthropic adapter is exercised with
 the SDK replaced in `require.cache`, so prompt construction and response parsing both run; the live
 round trip needs an API key this environment does not have. **7.13** — eleven `real-blocked` findings,
 each a decision the SRS declines to make; they are stated in `docs/SRS-TRIAGE-VERDICTS.md`. **FR-SUB-008**
@@ -11733,7 +11735,7 @@ rows six suites leave on a clean run (step 429). Measure before touching it, wit
 
 **Nothing else on this list is blocked on effort.** Session 28 closed every Known Issues row a patch
 could close — **#17, #21 (all four racing limit keys), #31, #32, #33 and #34** — and what remains is
-four `In Progress` checklist rows, two `Implemented`, one `Will not be built`, and six register rows.
+five `In Progress` checklist rows, two `Implemented`, one `Will not be built`, and six register rows.
 **Every one of them is waiting on something outside this repository**: an API key, a specification
 decision, a deployment, or the environment. Each is named below with what it waits on, so the next
 session can tell in one read whether the thing it was waiting for has arrived.
@@ -11749,9 +11751,18 @@ Reproduce that before trusting it. The script is short — `buildDocument(create
 this session found twice: a path built from a variable reads as uncalled when it is not, and a call
 made outside the client is invisible.
 
-**Seven rows in `docs/IMPLEMENTATION_CHECKLIST.md` are not `Completed`, and none of them can be
-finished here.** This paragraph said three, and named only the three below; counted from the status
-column on 2026-09-10 it is seven. The other four, each with what it waits on:
+**Eight rows in `docs/IMPLEMENTATION_CHECKLIST.md` are not `Completed`, and none of them can be
+finished here.** This paragraph said three, and named only the three below; then it said seven, and
+missed **§13.2 Wallet** — counted by reading only the cells under each table's `Status` column, the
+checklist reads **165 `Completed`, 5 `In Progress`, 2 `Implemented`, 1 `Will not be built`**, and has
+since commit `8b2fcf0`, so "seven" was wrong the day it was written. The other five, each with what it
+waits on:
+
+- **§13.2 Wallet — `In Progress`.** The method is accepted and a refund may name `wallet` as its
+  destination, but `subscriptions.wallet_balance` is declared, refused at validation, and read or
+  written by nothing (Known Issues #19). §13.2 lists "Wallet" among five payment methods and says
+  nothing else — no top-up, no debit order, no balance rule — so building it is a specification
+  decision.
 
 - **FR-SUB-008 — `In Progress`.** `enforceLimit` guards six of §11.2's eight keys. `admin_limit` has no
   guard mounted, and `api_limit` names no unit the source defines. Moved *down* from `Tested` in
