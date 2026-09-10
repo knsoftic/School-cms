@@ -278,8 +278,8 @@ export default function ExamDetailPage() {
       <PageHeader
         title={exam.name}
         description={`${humanise(exam.exam_type)}${exam.class ? ` · ${exam.class.name}` : ''}${
-          formatDate(exam.start_date) ? ` · from ${formatDate(exam.start_date)}` : ''
-        }`}
+          exam.section ? `, section ${exam.section.name}` : exam.class && exam.section_id === null ? ', all sections' : ''
+        }${formatDate(exam.start_date) ? ` · from ${formatDate(exam.start_date)}` : ''}`}
         action={
           <Link href="/school/exams" className="btn btn-secondary">
             Back to exams

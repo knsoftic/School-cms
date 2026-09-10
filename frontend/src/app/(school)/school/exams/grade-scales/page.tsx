@@ -22,6 +22,10 @@
  * its own copy of the name), and a scale with no bands does not exist at all. The filter offers the
  * names actually in use rather than a catalogue there is nowhere to keep.
  *
+ * The column is NOT NULL with a default of `'default'`, and `createGrade()` writes `'default'` for a
+ * blank — so "no scale" is not a state a band can be in. It is the scale called `default`, which is
+ * also what an exam is graded against when it names none (`exams.grade_scale` defaults the same).
+ *
  * ## There is no delete, and that is the API's decision
  *
  * `exams.routes.js` mounts no `DELETE` for a grade band. `is_active` is what withdraws one, and it
@@ -34,10 +38,16 @@
  * The schema forbids it by name: *"marks a platform-provided scale and is not settable"*. A seeded
  * band is marked so the school can see why it is there; the form does not offer it, and the API
  * would refuse it.
+ *
+ * Nor can a school edit such a band at all. `updateGrade()` refuses any row that `is_system` or has
+ * no `school_id` with a 403 `GRADE_IS_SYSTEM` — a platform scale is shared by every school, and one
+ * school may not change it for the rest. So those rows get no Edit button. The edit dialog used to
+ * open for them and promise they could be "edited and withdrawn like any other", and Save was then
+ * refused every time.
  */
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
@@ -69,6 +79,8 @@ import { useToast } from '@/components/toast';
 /** One `grades` row — a band, in the language this screen uses. */
 interface GradeRow {
   id: number;
+  /** Null on a platform-provided band, which `gradeScope()` shows every school beside its own. */
+  school_id: number | null;
   scale_name: string | null;
   name: string;
   min_percentage: number | string;
@@ -104,6 +116,27 @@ const EMPTY: FormValues = {
   reason: '',
 };
 
+/** The name `createGrade()` gives a band sent with no scale, and the column's own default. */
+const DEFAULT_SCALE = 'default';
+
+/** A band this school cannot edit — see the header on `is_system`. */
+const isPlatformBand = (row: GradeRow) => row.is_system || row.school_id === null;
+
+/**
+ * `GRADE_BAND_OVERLAP`'s `details.conflicts_with`, as `ApiError.context` keeps it — the band this
+ * one would have overlapped. `null` for any other refusal, or a shape this screen does not expect.
+ */
+function overlapMessage(caught: ApiError): string | null {
+  if (caught.code !== 'GRADE_BAND_OVERLAP') return null;
+  const other = caught.context?.conflicts_with as
+    | { name?: unknown; min_percentage?: unknown; max_percentage?: unknown }
+    | undefined;
+  if (!other || typeof other.name !== 'string') return null;
+  const scaleName = caught.context?.scale_name;
+  const scale = typeof scaleName === 'string' ? ` on the “${scaleName}” scale` : '';
+  return `This band overlaps “${other.name}” (${String(other.min_percentage)}% – ${String(other.max_percentage)}%)${scale}. Bands on one scale cannot share a percentage, not even at an edge, so this range has to stop short of that one.`;
+}
+
 function toValues(row: GradeRow): FormValues {
   return {
     scale_name: row.scale_name ?? '',
@@ -125,14 +158,38 @@ export default function GradeScalesPage() {
   const [page, setPage] = useState(1);
   const [scale, setScale] = useState('');
 
+  /*
+   * The order. `listGrades()` falls back to `min_percentage DESC` across **every** scale, so with no
+   * scale chosen the bands of two scales interleave — "A 90–100, Distinction 85–100, B 80–89…" —
+   * and neither reads as a scale. Sorting by `scale_name` groups them; `getSort` takes one column,
+   * so the order within each scale is then re-derived below, highest band first. With a scale
+   * chosen, the server's own fallback is already exactly that and nothing is sent.
+   */
   const query = useMemo(
-    () => ({ page, limit: 50, scale_name: scale || undefined }),
+    () => ({
+      page,
+      limit: 50,
+      scale_name: scale || undefined,
+      sortBy: scale ? undefined : 'scale_name',
+      sortOrder: scale ? undefined : ('asc' as const),
+    }),
     [page, scale]
   );
 
   const { rows, meta, loading, error, refusal, reload } = useCollection<GradeRow>(
     '/exams/grade-scales',
     query
+  );
+
+  /* Scale by scale, then highest band first — see `query`. Within one page; the server groups pages. */
+  const ordered = useMemo(
+    () =>
+      [...rows].sort(
+        (a, b) =>
+          (a.scale_name ?? '').localeCompare(b.scale_name ?? '') ||
+          Number(b.min_percentage) - Number(a.min_percentage)
+      ),
+    [rows]
   );
 
   const [editing, setEditing] = useState<GradeRow | null>(null);
@@ -148,16 +205,29 @@ export default function GradeScalesPage() {
   /*
    * The scale names actually in use, for the filter and for the datalist on the form.
    *
-   * Taken from the rows on screen rather than from a catalogue, because there is no catalogue — see
-   * the header. That makes the list only as complete as the page, which is why the form's control is
-   * a free-text input with suggestions rather than a select: a select built from one page would
-   * silently prevent adding a band to a scale that exists on the next.
+   * Gathered from the rows rather than from a catalogue, because there is no catalogue — see the
+   * header. Accumulated across every page and filter this screen has loaded, not recomputed from
+   * the rows on screen: recomputed, choosing a scale narrowed the rows to that scale, the filter's
+   * own options narrowed with them, and the only way to reach a second scale was to clear the first.
+   * Still only as complete as what has been loaded, which is why the form's control is a free-text
+   * input with suggestions rather than a select: a select built from what is known would silently
+   * prevent adding a band to a scale that exists on a page not yet seen.
    */
-  const scaleNames = useMemo(() => {
-    const names = new Set<string>();
-    for (const row of rows) if (row.scale_name) names.add(row.scale_name);
-    return [...names].sort();
-  }, [rows]);
+  const [scaleNames, setScaleNames] = useState<string[]>([]);
+
+  const learnScales = useCallback(
+    (names: (string | null)[]) =>
+      setScaleNames((known) => {
+        const next = new Set(known);
+        for (const name of names) if (name) next.add(name);
+        return next.size === known.length ? known : [...next].sort();
+      }),
+    []
+  );
+
+  useEffect(() => {
+    learnScales(rows.map((row) => row.scale_name));
+  }, [rows, learnScales]);
 
   function set<K extends keyof FormValues>(key: K, value: FormValues[K]) {
     setValues((current) => ({ ...current, [key]: value }));
@@ -190,20 +260,23 @@ export default function GradeScalesPage() {
     if (busy) return;
 
     /*
-     * One rule the schema does not carry: a band whose floor is above its ceiling matches nothing.
-     * Both are `percentField` independently, so the API stores the pair happily and every result
-     * graded against it would silently fall through to no band at all.
+     * One rule the schema does not carry, checked here so it is said in words. Both ends are
+     * `percentField` independently, so Joi passes any pair — but the model's own `bandOrdered`
+     * validator (`models/exams.js`) refuses a ceiling **at or below** the floor, and reports it under
+     * the validator's name rather than either field. This check used to allow the two to be equal,
+     * which the model then refused; a band is a range, and 60–60 is not one.
      */
     const min = Number(values.min_percentage);
     const max = Number(values.max_percentage);
-    if (values.min_percentage !== '' && values.max_percentage !== '' && min > max) {
-      setFormError('The lowest percentage must be at or below the highest — a band the wrong way round matches no result.');
+    if (values.min_percentage !== '' && values.max_percentage !== '' && min >= max) {
+      setFormError('The highest percentage must be above the lowest — a band is a range, and one the wrong way round or of no width matches no result.');
       return;
     }
 
     setBusy(true);
     setFormError(null);
     setFieldErrors({});
+    const scaleName = values.scale_name.trim() || DEFAULT_SCALE;
     try {
       const body: Record<string, unknown> = {
         name: values.name.trim(),
@@ -212,7 +285,12 @@ export default function GradeScalesPage() {
         is_failing: values.is_failing,
         is_active: values.is_active,
       };
-      body.scale_name = values.scale_name.trim() === '' ? undefined : values.scale_name.trim();
+      /*
+       * Blank is the `default` scale, sent by name. It used to be sent as `undefined`, which on a
+       * create meant the same thing — `createGrade()` falls back to `'default'` — but on an edit meant
+       * "leave it", so clearing the box on a band of another scale saved it where it was.
+       */
+      body.scale_name = scaleName;
       body.grade_point = values.grade_point.trim() === '' ? null : values.grade_point.trim();
       body.remarks = values.remarks.trim() === '' ? null : values.remarks.trim();
       if (values.reason.trim()) body.reason = values.reason.trim();
@@ -224,20 +302,27 @@ export default function GradeScalesPage() {
         await api.patch<{ grade: GradeRow }>(`/exams/grade-scales/${editing.id}`, body);
         success('Grade band updated');
       }
+      learnScales([scaleName]);
       close();
       reload();
     } catch (caught) {
       if (caught instanceof ApiError) {
         setFieldErrors(caught.fieldErrors());
         setFormError(
-          caught.bannerFor([
-            'scale_name',
-            'name',
-            'min_percentage',
-            'max_percentage',
-            'grade_point',
-            'remarks',
-          ])
+          /*
+           * An overlap names the band it collided with — `details.conflicts_with`, which `ApiError`
+           * keeps as `context`. Without it the refusal said only that *a* band overlapped, and the
+           * operator had to read every range on the scale to find which.
+           */
+          overlapMessage(caught) ??
+            caught.bannerFor([
+              'scale_name',
+              'name',
+              'min_percentage',
+              'max_percentage',
+              'grade_point',
+              'remarks',
+            ])
         );
       } else {
         setFormError('Could not reach the server. Check your connection and try again.');
@@ -303,11 +388,15 @@ export default function GradeScalesPage() {
             {
               key: 'actions',
               header: 'Actions',
-              cell: (row: GradeRow) => (
-                <button type="button" className="btn btn-sm btn-secondary" onClick={() => openEdit(row)}>
-                  Edit
-                </button>
-              ),
+              /* No Edit on a platform band: `updateGrade()` refuses it outright — see the header. */
+              cell: (row: GradeRow) =>
+                isPlatformBand(row) ? (
+                  <span className="text-xs text-muted-soft">read-only</span>
+                ) : (
+                  <button type="button" className="btn btn-sm btn-secondary" onClick={() => openEdit(row)}>
+                    Edit
+                  </button>
+                ),
             } as Column<GradeRow>,
           ]
         : []),
@@ -378,7 +467,7 @@ export default function GradeScalesPage() {
         <>
           <DataTable
             columns={columns}
-            rows={rows}
+            rows={ordered}
             rowKey={(row) => row.id}
             caption="Grade bands"
             busy={loading}
@@ -421,12 +510,11 @@ export default function GradeScalesPage() {
         >
           {formError ? <Notice tone="error">{formError}</Notice> : null}
 
-          {editing?.is_system ? (
-            <Notice tone="info">
-              This band was provided with the platform. It can be edited and withdrawn like any other,
-              and the marker stays so it is clear where it came from.
-            </Notice>
-          ) : null}
+          {/*
+            * There was an info notice here for a platform-provided band, saying it "can be edited and
+            * withdrawn like any other". It cannot — `updateGrade()` refuses it — so such a band no
+            * longer opens this dialog at all.
+            */}
 
           <FormGrid>
             <Field
@@ -436,7 +524,7 @@ export default function GradeScalesPage() {
               value={values.scale_name}
               error={fieldErrors.scale_name}
               onChange={(event) => set('scale_name', event.target.value)}
-              hint="Bands sharing a name are one scale. Leave blank for the school's default scale."
+              hint="Bands sharing a name are one scale. Blank is the scale called “default” — the one an exam is graded against when it names none."
             />
             <Field
               id="name"

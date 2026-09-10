@@ -16,21 +16,60 @@
  * control does that, and the delete block says so rather than leaving the operator to discover the
  * refusal.
  *
- * ## `status` accepts two of its four values
+ * ## `status` accepts two of its three values
  *
  * `active` and `inactive` are settable. `expired` is written by the scheduled sweep from
  * `expires_at`, and the schema's own message says so — a select offering it would be offering a
- * state the API will not take. `used_up` is likewise derived. So the control has exactly two
- * options and the other two are explained where they appear on the record.
+ * state the API will not take. There is no fourth: `COUPON_STATUS` is exactly those three, and a
+ * coupon whose redemptions have run out stays `active` with `remaining_uses` at 0, which the line
+ * under the badge shows.
  *
- * ## The discount rules are cross-field, and the API is the one that checks them
+ * An expired coupon still has to be *shown* as expired. With only the two settable options the
+ * select had nothing matching `expired`, so the browser displayed the first one — an expired coupon
+ * read "Active" in its own edit form. It now gets a disabled third option naming it, and the hint
+ * says the thing an operator is likeliest to assume wrongly: moving "Valid until" later does not
+ * bring it back. Nothing turns `expired` into `active` except choosing Active — the sweep only ever
+ * moves the other way.
  *
- * A percentage above 100, a fixed amount with no currency, a window that ends before it starts —
- * `checkCoherence` refuses all three at object level, and the messages name the pair rather than one
- * field. So this form does not re-implement them: it renders `error.details` where they land and
- * shows the banner for anything with no field of its own. The one thing it does do is swap the
- * discount field's unit as the type changes, because "50" means half off or fifty pounds off and the
- * label is the only thing that says which.
+ * ## The discount rules are cross-field, and a PATCH body is all the schema sees
+ *
+ * `checkCoherence` compares fields **within the body** — on a create that is the whole coupon, on a
+ * PATCH it is only what changed. Three consequences, each handled here rather than left to surface as
+ * something stranger:
+ *
+ *   - **A fixed amount with no currency.** The create schema requires the currency; the update
+ *     schema cannot, because a body that omits the type cannot say which rule applies. So turning a
+ *     percentage coupon into a fixed one without naming a currency is refused here, under the
+ *     Currency field, before anything is sent — `coupons.service.update()` checks the merged row too.
+ *   - **A percentage with a currency.** The Currency input disappears with the type, as it does on
+ *     the create screen, and switching to a percentage sends `currency: null` so the old currency is
+ *     not left on a coupon that must not have one.
+ *   - **A percentage above 100.** The bound is a `when` on `discount_type`, which can only read the
+ *     type and the value from the same body. So whenever either is sent the other goes with it;
+ *     otherwise `{ discount_value: 150 }` on a percentage coupon took the fixed-amount branch, and
+ *     switching a fixed 150 to a percentage sent the type with no value to check — both met the model's
+ *     own `percentageInRange` validator instead, whose message is keyed by that name, not by a field.
+ *
+ * The window rule — an end at or before the start — is a whole-object message with no field, and
+ * `splitApiErrors` puts it in the banner. The form also swaps the discount field's unit as the type
+ * changes, because "50" means half off or fifty pounds off and the label is the only thing that says
+ * which.
+ *
+ * ## Dates are sent as instants
+ *
+ * `datetime-local` yields a zoneless `2026-10-31T23:59`, which Joi reads in the **server's** zone. The
+ * create screen converted it with `isoInstant`; this one sent it as typed, so an expiry edited here
+ * landed hours away from the one set there. Both now go through the same helper.
+ *
+ * ## The two restriction lists
+ *
+ * `restricted_plan_ids` and `restricted_school_ids` are accepted by the update schema and were not on
+ * this form, so a restriction set at creation could never be corrected. They are the same checkbox
+ * pickers the create screen uses, fed from `/plans` and `/schools`, with one difference that matters
+ * on an edit: a coupon can already name an id the picker cannot list — beyond the first page, or in a
+ * list that failed to load. `MultiSelectField` emits only the options it shows, so without care the
+ * first tick would silently drop those ids from the restriction. They are carried through untouched,
+ * and the hint says how many there are.
  */
 
 import Link from 'next/link';
@@ -39,16 +78,20 @@ import { useEffect, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { splitApiErrors } from '@/lib/formErrors';
+import { isoInstant } from '@/lib/instants';
 import { EXPLAINED_CODES } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
 import {
   Field,
   FormGrid,
   FormSection,
+  MultiSelectField,
   Notice,
   SelectField,
   SubmitButton,
   TextAreaField,
+  focusFirstInvalidField,
 } from '@/components/form';
 import { Modal } from '@/components/overlay';
 import { useToast } from '@/components/toast';
@@ -60,7 +103,11 @@ import {
   StatusBadge,
 } from '@/components/table';
 
-/** `GET /coupons/:id` — the row plus the two derived fields `present()` adds. */
+/** `config/constants.js` COUPON_TYPES. */
+const PERCENTAGE = 'percentage';
+const FIXED_AMOUNT = 'fixed_amount';
+
+/** `GET /coupons/:id` — the row plus the derived field `present()` adds. */
 interface CouponDetail {
   id: number;
   code: string;
@@ -75,6 +122,9 @@ interface CouponDetail {
   expires_at: string | null;
   max_uses: number | null;
   max_uses_per_school: number | null;
+  /** JSON columns. `null` and `[]` both mean unrestricted — the model's own comment. */
+  restricted_plan_ids: number[] | null;
+  restricted_school_ids: number[] | null;
   used_count: number;
   remaining_uses: number | null;
   status: string;
@@ -89,8 +139,27 @@ interface CouponDetail {
  * number and a screen that declared otherwise would be describing the payload wrongly. Three of the
  * fields below are money columns. They are strings *here* and numbers *there*, and inferring the
  * type says that without asserting anything false about the API's shape.
+ *
+ * The two restriction lists are not in here: they are id arrays, not text, and live in their own
+ * state beside it.
  */
 type FormValues = ReturnType<typeof toValues>;
+
+/** `PAGINATION.MAX_LIMIT` — the most `commonSchemas.pagination` will accept in one page. */
+const OPTION_LIMIT = 100;
+
+/** A row from `/plans` or `/schools`; both presenters carry these three columns. */
+interface Option {
+  id: number;
+  name: string;
+  code: string;
+}
+
+/** One restriction picker: still loading, unreachable, or the rows plus how many exist in total. */
+type Picker =
+  | { state: 'loading' }
+  | { state: 'failed' }
+  | { state: 'ready'; rows: Option[]; total: number };
 
 /** An ISO timestamp as `<input type="datetime-local">` wants it, or blank. */
 function toLocal(value: string | null): string {
@@ -127,6 +196,26 @@ function toValues(coupon: CouponDetail) {
   };
 }
 
+/**
+ * A restriction list as the form holds it. The column is JSON, and `parseJsonValue` hands back
+ * malformed content untouched rather than throwing — so anything that is not an array of ids is read
+ * as "unrestricted" rather than trusted.
+ */
+function idsOf(value: unknown): number[] {
+  return Array.isArray(value)
+    ? value.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+    : [];
+}
+
+/** Two id lists hold the same ids, in whatever order. The picker emits in its own order. */
+function sameIds(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  const left = [...a].sort((x, y) => x - y);
+  const right = [...b].sort((x, y) => x - y);
+  return left.every((value, index) => value === right[index]);
+}
+
+/** The text fields sent when they differ from the record. `reason` is not one — see `save()`. */
 const FIELDS = [
   'code',
   'name',
@@ -141,7 +230,95 @@ const FIELDS = [
   'max_uses',
   'max_uses_per_school',
   'status',
-];
+] as const;
+
+/** Every field this form renders an error under. Anything else a 422 names goes to the banner. */
+const RENDERED = new Set<string>([
+  ...FIELDS,
+  'restricted_plan_ids',
+  'restricted_school_ids',
+  'reason',
+]);
+
+/**
+ * One of the two §13.4 restriction lists, on an existing coupon.
+ *
+ * The create screen has the same control; this one differs in what a failed or short list means. On
+ * a create there is nothing to lose. Here the coupon may already name ids the list cannot show, and
+ * those are kept rather than silently dropped — see the header.
+ */
+function RestrictionField({
+  id,
+  label,
+  noun,
+  picker,
+  selected,
+  onChange,
+  error,
+}: {
+  id: string;
+  label: string;
+  /** Singular; both of these pluralise with an `s`. */
+  noun: string;
+  picker: Picker;
+  selected: number[];
+  onChange: (ids: number[]) => void;
+  error?: string;
+}) {
+  if (picker.state === 'failed') {
+    return (
+      <div>
+        <p className="text-sm font-medium">{label}</p>
+        <p className="mt-1 text-sm text-muted">
+          {`The ${noun} list could not be loaded, so ${noun} restrictions cannot be changed here. `}
+          {selected.length
+            ? `The coupon stays restricted to the ${selected.length} ${noun}${selected.length === 1 ? '' : 's'} it names now.`
+            : `The coupon keeps applying to every ${noun}.`}
+        </p>
+      </div>
+    );
+  }
+
+  if (picker.state === 'ready' && picker.rows.length === 0 && selected.length === 0) {
+    return (
+      <div>
+        <p className="text-sm font-medium">{label}</p>
+        <p className="mt-1 text-sm text-muted">
+          {`No ${noun}s have been created yet, so there is nothing to restrict the coupon to.`}
+        </p>
+      </div>
+    );
+  }
+
+  const rows = picker.state === 'ready' ? picker.rows : [];
+  const listed = new Set(rows.map((row) => row.id));
+  /* Only knowable once the list is in; while it loads the control is disabled and cannot emit. */
+  const unlisted = picker.state === 'ready' ? selected.filter((value) => !listed.has(value)) : [];
+  const truncated = picker.state === 'ready' && picker.total > picker.rows.length;
+
+  return (
+    <MultiSelectField<number>
+      id={id}
+      label={label}
+      disabled={picker.state === 'loading'}
+      selected={selected}
+      /* `MultiSelectField` emits only what it lists; the ids it cannot show ride along unchanged. */
+      onChange={(ids) => onChange([...unlisted, ...ids])}
+      options={rows.map((row) => ({ value: row.id, label: row.name, hint: row.code }))}
+      emptyLabel={picker.state === 'loading' ? 'Loading…' : `No ${noun}s to choose from.`}
+      error={error}
+      hint={
+        `Select none to let the coupon apply to every ${noun}.` +
+        (truncated
+          ? ` Showing the first ${rows.length} of ${picker.total} — anything beyond that cannot be picked here.`
+          : '') +
+        (unlisted.length
+          ? ` ${unlisted.length} ${noun}${unlisted.length === 1 ? '' : 's'} the coupon already names ${unlisted.length === 1 ? 'is' : 'are'} not in this list and ${unlisted.length === 1 ? 'is' : 'are'} kept as ${unlisted.length === 1 ? 'it is' : 'they are'}.`
+          : '')
+      }
+    />
+  );
+}
 
 export default function CouponDetailPage() {
   const params = useParams<{ id: string }>();
@@ -153,6 +330,10 @@ export default function CouponDetailPage() {
 
   const [coupon, setCoupon] = useState<CouponDetail | null>(null);
   const [values, setValues] = useState<FormValues | null>(null);
+  const [planIds, setPlanIds] = useState<number[]>([]);
+  const [schoolIds, setSchoolIds] = useState<number[]>([]);
+  const [plans, setPlans] = useState<Picker>({ state: 'loading' });
+  const [schools, setSchools] = useState<Picker>({ state: 'loading' });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
@@ -165,6 +346,14 @@ export default function CouponDetailPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  /** The record and everything the form derives from it, in one place so a save resets all of it. */
+  function adopt(next: CouponDetail) {
+    setCoupon(next);
+    setValues(toValues(next));
+    setPlanIds(idsOf(next.restricted_plan_ids));
+    setSchoolIds(idsOf(next.restricted_school_ids));
+  }
 
   useEffect(() => {
     if (!id) return undefined;
@@ -181,6 +370,8 @@ export default function CouponDetailPage() {
         if (controller.signal.aborted) return;
         setCoupon(result.coupon);
         setValues(toValues(result.coupon));
+        setPlanIds(idsOf(result.coupon.restricted_plan_ids));
+        setSchoolIds(idsOf(result.coupon.restricted_school_ids));
       } catch (caught) {
         if (controller.signal.aborted) return;
         if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
@@ -198,6 +389,36 @@ export default function CouponDetailPage() {
     return () => controller.abort();
   }, [id, nonce]);
 
+  useEffect(() => {
+    /*
+     * The pickers are part of the edit form, which is only rendered with the permission — so they are
+     * not fetched without it either. `can` is `useCallback`-memoized on the profile in `AuthProvider`.
+     */
+    if (!can('coupons.manage')) return undefined;
+
+    let cancelled = false;
+
+    /* `api.page` rather than `api.get`: `meta.total` is what tells the picker it is short. */
+    async function load(path: string, apply: (picker: Picker) => void) {
+      try {
+        const page = await api.page<Option[]>(path, { query: { limit: OPTION_LIMIT } });
+        if (!cancelled) {
+          apply({ state: 'ready', rows: page.data, total: page.meta?.total ?? page.data.length });
+        }
+      } catch {
+        /* Which failure it was does not change the remedy — the restriction cannot be changed here. */
+        if (!cancelled) apply({ state: 'failed' });
+      }
+    }
+
+    void load('/plans', setPlans);
+    void load('/schools', setSchools);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [can]);
+
   if (refusal) return <RefusalNotice refusal={refusal} />;
   if (loadError) return <ErrorNotice message={loadError} onRetry={() => setNonce((n) => n + 1)} />;
   if (loading || !coupon || !values) return <LoadingBlock />;
@@ -211,9 +432,12 @@ export default function CouponDetailPage() {
     setValues((current) => (current ? { ...current, [key]: value } : current));
   }
 
+  const isPercentage = form.discount_type === PERCENTAGE;
+  const isExpired = record.status === 'expired';
+
   const base = toValues(record);
   const changed: Record<string, unknown> = {};
-  for (const key of FIELDS as (keyof FormValues)[]) {
+  for (const key of FIELDS) {
     if (form[key] === base[key]) continue;
     const raw = form[key].trim();
     /*
@@ -224,26 +448,83 @@ export default function CouponDetailPage() {
      */
     const NOT_NULLABLE = ['code', 'discount_type', 'discount_value', 'status'];
     if (raw === '' && NOT_NULLABLE.includes(key)) continue;
-    changed[key] = raw === '' ? null : raw;
+    if (raw === '') {
+      changed[key] = null;
+    } else if (key === 'starts_at' || key === 'expires_at') {
+      /* An instant, not the zoneless text the input holds. See the header. */
+      changed[key] = isoInstant(raw);
+    } else {
+      changed[key] = raw;
+    }
   }
+
+  if (isPercentage) {
+    /*
+     * Never a currency on a percentage coupon, whatever the hidden input still holds. Switching *to*
+     * a percentage says so explicitly, so the fixed amount's currency is cleared rather than kept.
+     */
+    delete changed.currency;
+    if (record.discount_type !== PERCENTAGE) changed.currency = null;
+  }
+
+  /*
+   * The value's bound depends on the type, and the schema can only read either from this body — so
+   * whenever one of the pair is sent, the other goes with it. Switching a fixed 150 to a percentage
+   * without retyping the value would otherwise send the type alone, the `when` would have no value to
+   * check, and the model's `percentageInRange` would refuse it under a name no field carries.
+   */
+  if ('discount_value' in changed || 'discount_type' in changed) {
+    changed.discount_type = form.discount_type;
+    if (!('discount_value' in changed) && form.discount_value.trim() !== '') {
+      changed.discount_value = form.discount_value.trim();
+    }
+  }
+
+  /* An empty picker is sent as `null`, which is what the create screen leaves on a coupon it never restricted. */
+  if (!sameIds(planIds, idsOf(record.restricted_plan_ids))) {
+    changed.restricted_plan_ids = planIds.length ? planIds : null;
+  }
+  if (!sameIds(schoolIds, idsOf(record.restricted_school_ids))) {
+    changed.restricted_school_ids = schoolIds.length ? schoolIds : null;
+  }
+
   const nothingChanged = Object.keys(changed).length === 0;
 
   async function save() {
     if (busy || nothingChanged) return;
-    setBusy(true);
     setError(null);
     setFieldErrors({});
+
+    /*
+     * Checked here because the PATCH schema cannot: a body without `discount_type` cannot tell it which
+     * rule to apply. Against the coupon as it would be saved, not the fields that happen to be sent.
+     */
+    if (form.discount_type === FIXED_AMOUNT && !form.currency.trim()) {
+      setFieldErrors({
+        currency: 'A fixed-amount coupon needs a currency — the three-letter code the amount is taken off in.',
+      });
+      focusFirstInvalidField();
+      return;
+    }
+
+    setBusy(true);
     try {
       const body = { ...changed };
+      /*
+       * `reason` goes to `audit_logs.reason` — `coupons` has no column for it. Sent only alongside a
+       * real change: the button stays disabled until there is one, because a reason on its own would
+       * record an audit entry for an edit that changed nothing.
+       */
       if (form.reason.trim()) body.reason = form.reason.trim();
       const result = await api.patch<{ coupon: CouponDetail }>(`/coupons/${record.id}`, body);
-      setCoupon(result.coupon);
-      setValues(toValues(result.coupon));
+      adopt(result.coupon);
       success('Coupon updated');
     } catch (caught) {
       if (caught instanceof ApiError) {
-        setFieldErrors(Array.isArray(caught.details) ? caught.fieldErrors() : {});
-        setError(Array.isArray(caught.details) ? caught.bannerFor(FIELDS) : caught.message);
+        const { perField, banner } = splitApiErrors(caught, RENDERED);
+        setFieldErrors(perField);
+        setError(banner);
+        if (Object.keys(perField).length) focusFirstInvalidField();
       } else {
         setError('Could not reach the server. Check your connection and try again.');
       }
@@ -269,8 +550,6 @@ export default function CouponDetailPage() {
       setDeleteBusy(false);
     }
   }
-
-  const isPercentage = form.discount_type === 'percentage';
 
   return (
     <div>
@@ -347,8 +626,8 @@ export default function CouponDetailPage() {
                   error={fieldErrors.discount_type}
                   onChange={(event) => set('discount_type', event.target.value)}
                 >
-                  <option value="percentage">Percentage off</option>
-                  <option value="fixed_amount">Fixed amount off</option>
+                  <option value={PERCENTAGE}>Percentage off</option>
+                  <option value={FIXED_AMOUNT}>Fixed amount off</option>
                 </SelectField>
                 <Field
                   id="discount_value"
@@ -366,18 +645,19 @@ export default function CouponDetailPage() {
               </FormGrid>
 
               <FormGrid>
-                <Field
-                  id="currency"
-                  label="Currency"
-                  value={form.currency}
-                  error={fieldErrors.currency}
-                  onChange={(event) => set('currency', event.target.value)}
-                  hint={
-                    isPercentage
-                      ? 'Not needed for a percentage — it applies whatever the invoice is in.'
-                      : 'Required for a fixed amount: the API refuses a fixed discount with no currency to be fixed in.'
-                  }
-                />
+                {/* Only for a fixed amount — a percentage coupon must not carry one. See the header. */}
+                {isPercentage ? null : (
+                  <Field
+                    id="currency"
+                    label="Currency"
+                    required
+                    maxLength={3}
+                    value={form.currency}
+                    error={fieldErrors.currency}
+                    onChange={(event) => set('currency', event.target.value)}
+                    hint="Three-letter ISO 4217 code, e.g. USD. The coupon is only redeemable against an invoice in this currency."
+                  />
+                )}
                 <Field
                   id="max_discount_amount"
                   label="Maximum discount"
@@ -413,6 +693,7 @@ export default function CouponDetailPage() {
                   value={form.starts_at}
                   error={fieldErrors.starts_at}
                   onChange={(event) => set('starts_at', event.target.value)}
+                  hint="Entered in your own time zone."
                 />
                 <Field
                   id="expires_at"
@@ -455,20 +736,57 @@ export default function CouponDetailPage() {
                 value={form.status}
                 error={fieldErrors.status}
                 onChange={(event) => set('status', event.target.value)}
-                hint="Only these two can be set. Expired and used up are written by the system from the window and the redemption count."
+                hint={
+                  isExpired
+                    ? 'Expired was set by the scheduled sweep when “Valid until” passed. Moving that date later does not reactivate the coupon — choose Active as well. Active on a window that has already closed is expired again by the next sweep.'
+                    : 'Only these two can be set. Expired is written by the scheduled sweep once “Valid until” has passed.'
+                }
               >
+                {/* Shown, never chosen: without it an expired coupon's select displayed "Active". */}
+                {isExpired ? (
+                  <option value="expired" disabled>
+                    Expired (set by the system)
+                  </option>
+                ) : null}
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
               </SelectField>
+            </FormSection>
+
+            <FormSection
+              title="Restrictions"
+              description="Leave both empty for a coupon that any school may use on any plan."
+              columns={2}
+            >
+              <RestrictionField
+                id="restricted_plan_ids"
+                label="Plan restrictions"
+                noun="plan"
+                picker={plans}
+                selected={planIds}
+                onChange={setPlanIds}
+                error={fieldErrors.restricted_plan_ids}
+              />
+              <RestrictionField
+                id="restricted_school_ids"
+                label="School restrictions"
+                noun="school"
+                picker={schools}
+                selected={schoolIds}
+                onChange={setSchoolIds}
+                error={fieldErrors.restricted_school_ids}
+              />
             </FormSection>
 
             <TextAreaField
               id="reason"
               label="Reason"
               rows={2}
+              maxLength={255}
               value={form.reason}
+              error={fieldErrors.reason}
               onChange={(event) => set('reason', event.target.value)}
-              hint="Recorded in the audit trail — the coupons table has no column for it and none may be added."
+              hint="Recorded in the audit trail with this change — the coupons table has no column for it and none may be added. Up to 255 characters."
             />
 
             <SubmitButton busy={busy} busyLabel="Saving…" fullWidth={false} disabled={nothingChanged}>

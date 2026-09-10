@@ -196,7 +196,8 @@ export function NotificationsInbox({ surface }: { surface: InboxSurface }) {
       {
         key: 'status',
         header: 'Status',
-        cell: (row) => <StatusBadge status={row.status} />,
+        /* A `sent` notification was delivered — good news here, whatever `sent` means on a quotation. */
+        cell: (row) => <StatusBadge status={row.status} tone={row.status === 'sent' ? 'good' : undefined} />,
       },
       {
         key: 'when',

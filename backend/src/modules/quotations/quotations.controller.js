@@ -15,9 +15,9 @@ const { QUOTATION_STATUS } = require('../../config/constants');
 
 /**
  * A quotation plus `is_expired` — derived, not read from `status`, for the same reason
- * `invoices.present()` derives `is_overdue`: `expireLapsed()` is a scheduled sweep and `src/jobs/` does
- * not exist yet, so a `sent` quote can be past its `valid_until` while still labelled `sent`. Deriving it
- * keeps the screen right today and right once the cron lands.
+ * `invoices.present()` derives `is_overdue`: `expireLapsed()` is a daily sweep (`jobs/tasks/
+ * quotationExpiry.js`), so between a quote's `valid_until` and the next run it is still labelled
+ * `sent`. Deriving it keeps the screen right in that window too.
  *
  * @param {object} quotation
  * @returns {object}

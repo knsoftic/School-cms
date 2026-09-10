@@ -174,7 +174,7 @@ const COPY: Record<
       api.post<TransitionResponse>(`/subscriptions/${id}/renew`, body),
     title: 'Renew for the next billing cycle?',
     description:
-      'A renewal an operator starts rather than one the nightly sweep starts. The next period begins where the current one ends, and a downgrade scheduled for the cycle boundary is applied as part of it.',
+      'A renewal an operator starts rather than one the hourly lifecycle sweep starts. The next period begins where the current one ends, and a downgrade scheduled for the cycle boundary is applied as part of it.',
     confirm: 'Renew',
     busy: 'Renewing…',
     tone: 'primary',
@@ -372,10 +372,16 @@ export function LifecycleBar({
         >
           {conflict ? <Notice tone="error">{conflict}</Notice> : null}
 
+          {/*
+            * 255 is `fields.reason`'s `max(255)` — the width of `audit_logs.reason` and of
+            * `cancellation_reason`. Past it the API answers "Validation failed" into the notice
+            * above, about a field the operator can no longer see the end of.
+            */}
           <TextAreaField
             id="transition-reason"
             label="Reason"
             rows={3}
+            maxLength={255}
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             hint={copy?.reasonHint}

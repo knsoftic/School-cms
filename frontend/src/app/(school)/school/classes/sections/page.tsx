@@ -661,12 +661,45 @@ function EditSectionDialog({
   );
 }
 
+/** `PAGINATION.MAX_LIMIT` — the most one page of the class picker can hold. */
+const CLASS_LIMIT = 100;
+
 function SectionsScreen() {
   const router = useRouter();
   const params = useSearchParams();
-  const selected = params.get('class');
+  /* An empty `?class=` is no choice at all, as it was before; only something typed there is judged. */
+  const selected = params.get('class')?.trim() || null;
 
-  const classes = useCollection<ClassRow>('/classes', useMemo(() => ({ limit: 100 }), []));
+  /*
+   * Parsed once, and only a positive integer counts as a class. The id arrives from the URL, which
+   * the header invites people to share and bookmark — so a hand-edited `?class=abc` is a real entry
+   * path, and it used to become `Number('abc')`, a request to `/classes/NaN/sections`, and an error
+   * whose Try again could only fail the same way. `null` means no usable class, whatever the URL said.
+   */
+  const parsed = selected === null ? NaN : Number(selected);
+  const classId = Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+
+  const classes = useCollection<ClassRow>('/classes', useMemo(() => ({ limit: CLASS_LIMIT }), []));
+
+  /*
+   * The picker holds one page, and a school with several sessions' classes can pass a hundred. It
+   * used to stop there without a word, so a class past the cut simply was not in the list and its
+   * sections could not be reached. The total is read and the shortfall said.
+   */
+  const classTotal = classes.meta?.total ?? classes.rows.length;
+  const truncated = classTotal > classes.rows.length;
+
+  /*
+   * A well-formed id the list does not contain. When the list is complete that is a class that no
+   * longer exists — deleted, or never this school's — and fetching its sections would only 404 behind
+   * a Try again that cannot help. When the list is a first page, it may simply be past the cut, so the
+   * sections are still fetched.
+   */
+  const unknownClass =
+    classId !== null &&
+    !classes.loading &&
+    !truncated &&
+    !classes.rows.some((row) => row.id === classId);
 
   return (
     <div>
@@ -687,7 +720,7 @@ function SectionsScreen() {
           id="class-picker"
           label="Class"
           labelVisible
-          value={selected ? String(selected) : ''}
+          value={classId !== null ? String(classId) : ''}
           onChange={(value) => {
             const next = new URLSearchParams(params.toString());
             if (value) next.set('class', value);
@@ -707,6 +740,13 @@ function SectionsScreen() {
         </FilterSelect>
       </FilterBar>
 
+      {truncated ? (
+        <p className="-mt-2 mb-4 text-sm text-muted">
+          The first {classes.rows.length} of {classTotal} classes. A page cannot hold more, so a class
+          past these is not in the list.
+        </p>
+      ) : null}
+
       {/*
         * The class list's own failures are surfaced here rather than swallowed. A refusal on
         * `/classes` means this screen cannot work at all, and saying "choose a class" over an empty
@@ -720,8 +760,15 @@ function SectionsScreen() {
         <LoadingBlock />
       ) : classes.rows.length === 0 ? (
         <EmptyNotice>No classes exist yet, so there are no sections to show.</EmptyNotice>
-      ) : selected ? (
-        <SectionsPanel classId={Number(selected)} />
+      ) : selected !== null && classId === null ? (
+        <EmptyNotice>This link does not name a class. Choose one above to see its sections.</EmptyNotice>
+      ) : unknownClass ? (
+        <EmptyNotice>
+          The class in this link is not one of this school’s classes — it may have been deleted.
+          Choose one above to see its sections.
+        </EmptyNotice>
+      ) : classId !== null ? (
+        <SectionsPanel classId={classId} />
       ) : (
         <EmptyNotice>Choose a class above to see its sections.</EmptyNotice>
       )}

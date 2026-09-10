@@ -77,6 +77,7 @@ const ORDER = Object.freeze([
   require('./tasks/notificationDispatch'),
   require('./tasks/invoiceOverdue'),
   require('./tasks/couponExpiry'),
+  require('./tasks/quotationExpiry'),
   require('./tasks/databaseBackup'),
 ]);
 

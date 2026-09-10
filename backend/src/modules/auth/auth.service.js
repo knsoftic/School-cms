@@ -635,6 +635,13 @@ async function writePasswordAudit(req, user, before, reason) {
     before,
     after: auditSnapshot(user),
     reason,
+    /*
+     * An emailed-link request has no signed-in user and no tenant. The account holder is the one
+     * acting — the link proves it — and the account belongs to its school and organization.
+     */
+    userId: user.id,
+    schoolId: user.school_id,
+    organizationId: user.organization_id,
   });
 }
 

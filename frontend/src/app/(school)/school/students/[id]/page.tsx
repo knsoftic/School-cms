@@ -225,7 +225,18 @@ export default function StudentDetailPage() {
 
   const { classes, sections } = useClassSections(values.class_id, canManage);
   const [sessions, setSessions] = useState<SessionOption[]>([]);
+  const [sessionsFailed, setSessionsFailed] = useState(false);
 
+  /*
+   * `GET /sessions` needs `sessions.view`, a separate grant from the `students.manage` that opens
+   * this screen — and the seeded Receptionist holds the second without the first.
+   *
+   * The failure used to be swallowed with a comment saying the selects "stay at what the record
+   * holds". The *value* did — `values` still carried the id and the save still sent it — but a
+   * controlled select whose value matches no option shows its first one, so a receptionist was shown
+   * "Not recorded" for a session that was recorded. The failure is kept now, and the selects below add
+   * the stored session as an option of its own whenever the list cannot show it.
+   */
   useEffect(() => {
     if (!canManage) return;
     const controller = new AbortController();
@@ -235,9 +246,12 @@ export default function StudentDetailPage() {
           query: { limit: OPTION_LIMIT },
           signal: controller.signal,
         });
-        if (!controller.signal.aborted) setSessions(page.data);
+        if (!controller.signal.aborted) {
+          setSessions(page.data);
+          setSessionsFailed(false);
+        }
       } catch {
-        /* The two session selects stay at what the record holds; `sessions.view` is its own grant. */
+        if (!controller.signal.aborted) setSessionsFailed(true);
       }
     })();
     return () => controller.abort();
@@ -369,7 +383,15 @@ export default function StudentDetailPage() {
       setValues((prev) => ({ ...prev, reason: '' }));
       success('Student updated');
     } catch (caught) {
-      if (!(caught instanceof ApiError)) throw caught;
+      /*
+       * A failed `fetch` is a TypeError, not an ApiError. This used to rethrow it — an unhandled
+       * rejection from a submit handler, so the button stopped spinning and nothing said whether the
+       * edit had been saved.
+       */
+      if (!(caught instanceof ApiError)) {
+        setError('Could not reach the server. Check your connection and try again.');
+        return;
+      }
       if (EXPLAINED_CODES.has(caught.code)) {
         setRefusal({ code: caught.code, message: caught.message });
         return;
@@ -470,9 +492,13 @@ export default function StudentDetailPage() {
       setPhotoVersion((n) => n + 1);
       success('Photo stored on the record');
     } catch (caught) {
-      if (!(caught instanceof ApiError)) throw caught;
-      setPhotoError(caught.message);
-      errorToast('Could not store that photo', caught.message);
+      /* The documents uploader below's shape: a network failure is said, not rethrown into the void. */
+      const message =
+        caught instanceof ApiError
+          ? caught.message
+          : 'Could not reach the server. Check your connection and try again.';
+      setPhotoError(message);
+      errorToast('Could not store that photo', message);
     } finally {
       setUploading(false);
     }
@@ -591,6 +617,21 @@ export default function StudentDetailPage() {
 
   const name = [student.first_name, student.last_name].filter(Boolean).join(' ');
 
+  /*
+   * The session the record already holds, as an option, whenever the loaded list cannot show it —
+   * the list failed, or (past `OPTION_LIMIT`) the id is not on its one page. Keyed on the stored
+   * `student` rather than on `values`, so choosing another session and changing one's mind still
+   * finds it there. It cannot be named — the name is what the list would have supplied — so it says
+   * what it is instead of pretending to be "Not recorded".
+   */
+  const storedSession = (stored: number | null) =>
+    stored !== null && !sessions.some((row) => row.id === stored) ? (
+      <option value={stored}>The session already on record</option>
+    ) : null;
+
+  const sessionsUnavailable =
+    'The session list could not be loaded — viewing sessions is a separate permission — so the session already on record is kept unless you clear it.';
+
   return (
     <div className="max-w-3xl">
       <PageHeader
@@ -642,9 +683,15 @@ export default function StudentDetailPage() {
             error={fieldErrors.last_name}
             hint="Optional — the column is nullable and the list joins the two names without leaving a gap."
           />
+          {/*
+            * Required here though optional on admission: the update schema's `student_id` is
+            * `Joi.string().trim().min(1)` with no `.empty('')`, so a cleared box is refused — the
+            * server only allocates one when admission leaves it out.
+            */}
           <Field
             id="student_id"
             label="Student ID"
+            required
             maxLength={60}
             value={values.student_id}
             onChange={set('student_id')}
@@ -676,9 +723,14 @@ export default function StudentDetailPage() {
             value={values.admission_session_id}
             onChange={set('admission_session_id')}
             error={fieldErrors.admission_session_id}
-            hint="The intake cohort. Promotion never moves it, which is what separates it from the current session below."
+            hint={
+              sessionsFailed
+                ? sessionsUnavailable
+                : 'The intake cohort. Promotion never moves it, which is what separates it from the current session below.'
+            }
           >
             <option value="">Not recorded</option>
+            {storedSession(student.admission_session_id)}
             {sessions.map((row) => (
               <option key={row.id} value={row.id}>
                 {row.name}
@@ -738,8 +790,10 @@ export default function StudentDetailPage() {
             value={values.academic_session_id}
             onChange={set('academic_session_id')}
             error={fieldErrors.academic_session_id}
+            hint={sessionsFailed ? sessionsUnavailable : undefined}
           >
             <option value="">Not recorded</option>
+            {storedSession(student.academic_session_id)}
             {sessions.map((row) => (
               <option key={row.id} value={row.id}>
                 {row.name}

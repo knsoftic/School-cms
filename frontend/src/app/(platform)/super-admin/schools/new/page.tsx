@@ -33,28 +33,30 @@
  * have a school coded `MAIN`. The hint says so, because a conflict on a code the user cannot find on
  * any school they can see reads as a bug otherwise.
  *
- * ## The 409 is unpacked by hand, and that guard is not cosmetic
+ * ## The 409's object-shaped `details` needs nothing from this page
  *
- * `ApiError.fieldErrors()` iterates `details` with `for…of`, which is right for the array `validate()`
- * builds for a 422. `schools.service.js` `rethrow()` raises its duplicate-code 409 with `details` as a
- * plain **object** — `{ code, organization_id }` — and `errorHandler.js:269` copies it to the wire
- * untouched. Calling `fieldErrors()` on that throws `TypeError: … is not iterable` from inside this
- * catch block, so the rejection escapes, `saving` is never cleared, and the button sticks on
- * "Creating…" with nothing on screen — for the single most likely failure this form has.
+ * `schools.service.js` `rethrow()` raises its duplicate-code 409 with `details` as a plain **object** —
+ * `{ code, organization_id }` — not the array `validate()` builds for a 422. This header used to say
+ * that `fieldErrors()` would throw on it and that a local `Array.isArray` guard was the fix, because
+ * `apiClient.ts` was not this page's to change. That was already untrue: `ApiError`'s constructor
+ * normalises `details`, keeping only well-formed field errors in the array and moving an object to
+ * `context`, so `fieldErrors()` is always safe and the guard was dead code. It is gone.
+ * `SCHOOL_CODE_TAKEN` carries no field errors, so `splitApiErrors` puts the server's own sentence in
+ * the top-level `Notice`.
  *
- * The `Array.isArray` guard below is deliberately local to this page rather than a fix in
- * `apiClient.ts`: that client is shared by thirty screens and is not this change's to alter.
- * `SCHOOL_CODE_TAKEN` therefore lands in the top-level `Notice`, carrying the server's own sentence.
- *
- * ## The organization select, and the ceiling it has
+ * ## The organization select, and what it says when it is not the whole list
  *
  * `organization_id` is a required foreign key, so it is a select filled from `GET /organizations` —
  * the same endpoint the organizations list uses, needing `organizations.view`, which the Super Admin
  * who can reach this route holds through `ALL`. `commonSchemas.pagination` caps `limit` at
- * `PAGINATION.MAX_LIMIT`, which is 100, so this asks for one page of 100 sorted by name. A platform
- * with more than 100 organizations would not find them all in this list. That is a real limit and it
- * is stated here rather than papered over, because the alternative — paging the whole table into a
- * dropdown on mount — is a worse thing to ship quietly.
+ * `PAGINATION.MAX_LIMIT`, which is 100, so one page of 100 sorted by name is all a request can hold.
+ *
+ * It used to be fetched with `api.get`, which keeps the rows and discards `meta.pagination` — so past
+ * 100 organizations the one the operator needed was simply absent, with nothing on screen to say so,
+ * and they would conclude it had never been created. It is `api.page` now: the total is kept, a
+ * filter box appears the first time the total exceeds the page, and `?q=` — which
+ * `organizations.service.js` matches against name and code — reaches the rest. The same shape the
+ * school picker on the New Principal screen already had.
  *
  * ## Platform scope is a second condition this screen cannot test
  *
@@ -68,14 +70,17 @@
  */
 
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { splitApiErrors } from '@/lib/formErrors';
 import {
   Field,
   Notice,
+  SearchField,
   SelectField,
   SubmitButton,
   focusFirstInvalidField,
@@ -89,6 +94,23 @@ import type { Refusal } from '@/lib/useCollection';
 
 /** §9.2's three school states, mirroring `SCHOOL_STATUS` in `constants.js`. */
 const STATUSES = ['active', 'suspended', 'archived'];
+
+/** `PAGINATION.MAX_LIMIT`. Asking for more is a 422, not a bigger page — see the header. */
+const ORGANIZATION_LIMIT = 100;
+
+/** Every field this form has an input for, so `splitApiErrors` can send the rest to the banner. */
+const RENDERED = new Set([
+  'organization_id',
+  'name',
+  'code',
+  'email',
+  'phone',
+  'address',
+  'city',
+  'state',
+  'country',
+  'status',
+]);
 
 /** Only what the select needs. The endpoint sends every `organizations` column; this reads three. */
 interface OrganizationOption {
@@ -122,34 +144,58 @@ export default function NewSchoolPage() {
   const [organizations, setOrganizations] = useState<OrganizationOption[]>([]);
   const [organizationsLoading, setOrganizationsLoading] = useState(true);
   const [organizationsError, setOrganizationsError] = useState<string | null>(null);
+  const [organizationTotal, setOrganizationTotal] = useState(0);
+  const [organizationFilter, setOrganizationFilter] = useState('');
+  const [organizationQuery, setOrganizationQuery] = useState('');
+  const [organizationRetry, setOrganizationRetry] = useState(0);
+  /*
+   * Latched, never cleared — the New Principal screen's school picker gives the reason. Recomputed
+   * from each response, the filter box would vanish the moment a query narrowed the count under the
+   * cap, which is to say in the middle of typing into it.
+   */
+  const [organizationsTruncated, setOrganizationsTruncated] = useState(false);
+  const [chosenOrganization, setChosenOrganization] = useState<OrganizationOption | null>(null);
 
   const set = (key: keyof typeof values) => (event: { target: { value: string } }) =>
     setValues((prev) => ({ ...prev, [key]: event.target.value }));
 
+  /* The inline 300 ms debounce every search box here uses: `q` reaches a `LIKE` scan. */
+  useEffect(() => {
+    const timer = setTimeout(() => setOrganizationQuery(organizationFilter), 300);
+    return () => clearTimeout(timer);
+  }, [organizationFilter]);
+
   useEffect(() => {
     const controller = new AbortController();
+    setOrganizationsLoading(true);
+    setOrganizationsError(null);
 
     (async () => {
       try {
         /*
-         * `api.get` unwraps the envelope to `data`, which for a paginated route is the row array —
-         * `meta.pagination` is discarded, and it is not wanted: this is a one-page fetch by design.
-         * Sorted by name because a dropdown is scanned alphabetically rather than by insertion date,
-         * and `name` is in the service's `SORTABLE` allow-list, so the server will honour it instead
-         * of silently falling back to `created_at DESC`.
+         * `api.page`, not `api.get`: the total is the whole point — see the header. Sorted by name
+         * because a dropdown is scanned alphabetically rather than by insertion date, and `name` is in
+         * the service's `SORTABLE` allow-list, so the server will honour it instead of silently
+         * falling back to `created_at DESC`.
          */
-        const rows = await api.get<OrganizationOption[]>('/organizations', {
-          query: { limit: 100, sortBy: 'name', sortOrder: 'asc' },
+        const result = await api.page<OrganizationOption[]>('/organizations', {
+          query: {
+            limit: ORGANIZATION_LIMIT,
+            sortBy: 'name',
+            sortOrder: 'asc',
+            q: organizationQuery || undefined,
+          },
           signal: controller.signal,
         });
         if (controller.signal.aborted) return;
-        setOrganizations(rows ?? []);
+        const rows = result.data ?? [];
+        setOrganizations(rows);
+        setOrganizationTotal(result.meta?.total ?? rows.length);
+        if (result.meta && result.meta.total > rows.length) setOrganizationsTruncated(true);
       } catch (caught) {
         if (controller.signal.aborted || (caught as Error)?.name === 'AbortError') return;
         setOrganizationsError(
-          caught instanceof ApiError
-            ? caught.message
-            : 'Could not load the list of organizations. Reload the page to try again.'
+          caught instanceof ApiError ? caught.message : 'Could not load the list of organizations.'
         );
       } finally {
         if (!controller.signal.aborted) setOrganizationsLoading(false);
@@ -157,7 +203,7 @@ export default function NewSchoolPage() {
     })();
 
     return () => controller.abort();
-  }, []);
+  }, [organizationQuery, organizationRetry]);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -188,25 +234,14 @@ export default function NewSchoolPage() {
         setRefusal({ code: caught.code, message: caught.message });
       } else if (caught instanceof ApiError) {
         /*
-         * See the header: this endpoint's 409 carries `details` as an object, which `fieldErrors()`
-         * cannot walk. Anything not shaped like the 422's array is sent to the banner instead.
+         * Whole-object rules, a message keyed to a field this form has no input for, and a 409 whose
+         * `details` was an object (see the header) all have nowhere to sit but the top.
+         * `splitApiErrors` sorts them there and leaves the rest beside their inputs.
          */
-        const perField = Array.isArray(caught.details) ? caught.fieldErrors() : {};
+        const { perField, banner } = splitApiErrors(caught, RENDERED);
         setFieldErrors(perField);
         focusFirstInvalidField();
-        /*
-         * Whole-object rules ("expires_at must be after starts_at") report with an empty field and
-         * belong at the top; `formErrors()` returns exactly those. Without them a rejected submit
-         * showed nothing at all — the message went to a key no input renders.
-         */
-        const formLevel = caught.formErrors();
-        setError(
-          formLevel.length
-            ? formLevel.join(' ')
-            : Object.keys(perField).length
-              ? null
-              : caught.message
-        );
+        setError(banner);
       } else {
         setError('Could not reach the server. Check your connection and try again.');
       }
@@ -232,7 +267,22 @@ export default function NewSchoolPage() {
     );
   }
 
-  const noOrganizations = !organizationsLoading && !organizationsError && organizations.length === 0;
+  /*
+   * "None exist" only when nothing narrowed the list. An empty result for a filter is a filter with no
+   * match, and telling that operator to go and create an organization would be the wrong advice.
+   */
+  const noOrganizations =
+    !organizationsLoading && !organizationsError && organizations.length === 0 && !organizationQuery;
+
+  /*
+   * The chosen organization stays among the options while the filter moves. Without this, narrowing
+   * the list past the one already picked left the select showing its placeholder while the form
+   * still held — and would post — an id the operator could no longer see.
+   */
+  const options =
+    chosenOrganization && !organizations.some((row) => row.id === chosenOrganization.id)
+      ? [chosenOrganization, ...organizations]
+      : organizations;
 
   return (
     <div className="max-w-2xl">
@@ -251,38 +301,81 @@ export default function NewSchoolPage() {
         >
           <div>
             {/*
+              The filter appears once the server has reported more organizations than one page
+              holds, and sits above the select because it is used first. A search box submits
+              nothing, so it can carry no 422 and is not a second organization control.
+            */}
+            {organizationsTruncated ? (
+              <SearchField
+                id="organization-filter"
+                label="Filter organizations"
+                placeholder="Filter by organization name or code…"
+                value={organizationFilter}
+                onChange={setOrganizationFilter}
+                className="mb-3"
+              />
+            ) : null}
+
+            {/*
               `disabled` while the fetch is in flight or after it failed: nothing to choose is not the
               same as a choice not yet made, and an enabled control whose only option is the
               placeholder invites a submit that is guaranteed to come back 422.
 
-              Both failures share the field's single message slot, in the order the hand-rolled
-              paragraphs used to walk: a 422 on this field wins, and a fetch that failed leaves nothing
-              to pick from, so it is this control's problem rather than a note floating beside it.
-              `SelectField` drops the hint whenever an error is showing, so the two never stack.
+              A 422 on this field is the one message `SelectField` carries; a failed fetch is said
+              below the select instead, because it comes with a Try again button and `error` is a
+              string. `SelectField` drops the hint whenever an error is showing, so the two never
+              stack, and the hint is withheld while the fetch-failure line is up.
             */}
             <SelectField
               id="organization_id"
               label="Organization"
               required
               value={values.organization_id}
-              onChange={set('organization_id')}
-              error={fieldErrors.organization_id || organizationsError}
+              onChange={(event) => {
+                set('organization_id')(event);
+                setChosenOrganization(
+                  options.find((row) => String(row.id) === event.target.value) ?? null
+                );
+              }}
+              error={fieldErrors.organization_id}
               hint={
-                noOrganizations
+                noOrganizations || organizationsError
                   ? undefined
-                  : 'A school belongs to one organization and cannot be moved to another afterwards.'
+                  : organizationsTruncated && !organizationsLoading
+                    ? `Showing ${organizations.length} of ${organizationTotal} organizations — a page holds at most ${ORGANIZATION_LIMIT}. Filter above to reach the rest. A school cannot be moved to another organization afterwards.`
+                    : 'A school belongs to one organization and cannot be moved to another afterwards.'
               }
-              disabled={organizationsLoading || organizations.length === 0}
+              disabled={organizationsLoading || Boolean(organizationsError) || options.length === 0}
             >
               <option value="">
-                {organizationsLoading ? 'Loading organizations…' : 'Select an organization'}
+                {organizationsLoading
+                  ? 'Loading organizations…'
+                  : organizationsError
+                    ? 'Organizations unavailable'
+                    : options.length === 0
+                      ? organizationQuery
+                        ? 'No organization matches the filter'
+                        : 'No organizations yet'
+                      : 'Select an organization'}
               </option>
-              {organizations.map((organization) => (
+              {options.map((organization) => (
                 <option key={organization.id} value={organization.id}>
                   {organization.name} ({organization.code})
                 </option>
               ))}
             </SelectField>
+            {!fieldErrors.organization_id && organizationsError ? (
+              <p className="field-error mt-1.5">
+                {organizationsError}{' '}
+                <button
+                  type="button"
+                  onClick={() => setOrganizationRetry((attempt) => attempt + 1)}
+                  className="underline underline-offset-2"
+                >
+                  Try again
+                </button>
+              </p>
+            ) : null}
             {/*
               The one message that cannot become a `hint`: that prop is a `string`, and this sentence
               carries a link to the organization form. It keeps the hint's own class so it reads as the
@@ -292,10 +385,10 @@ export default function NewSchoolPage() {
             */}
             {noOrganizations && !fieldErrors.organization_id ? (
               <p className="field-hint mt-1.5">
-                No organizations exist yet, and FR-SADMIN-002 makes one the precondition for a school.{' '}
-                <a href="/super-admin/organizations/new" className="underline underline-offset-2">
+                No organizations exist yet, and every school belongs to one.{' '}
+                <Link href="/super-admin/organizations/new" className="underline underline-offset-2">
                   Create an organization
-                </a>{' '}
+                </Link>{' '}
                 first.
               </p>
             ) : null}
@@ -304,7 +397,7 @@ export default function NewSchoolPage() {
 
         <FormSection
           title="The school"
-          description="Its name and the code that identifies it across the platform."
+          description="Its name, and the code that identifies it within its organization."
         >
           <Field
             id="name"

@@ -703,6 +703,8 @@ async function issue(req, spec, options = {}) {
     event: 'create',
     after: snapshot(invoice),
     reason: spec.reason || null,
+    /* Issued by the scheduler (D6) there is no request; the invoice still belongs to its school. */
+    ...(req ? {} : { schoolId: spec.schoolId, organizationId: spec.organizationId }),
   });
 
   /*

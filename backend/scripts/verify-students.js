@@ -653,7 +653,7 @@ async function verifyHttp() {
 
     const subA = await subscribe(schoolA, withStudents);
     await subscribe(schoolB, withoutStudents);
-    const subD = await subscribe(schoolD, roomyStudents);
+    await subscribe(schoolD, roomyStudents);
     /* schoolC is deliberately left unsubscribed. */
 
     /* Academic structure for school A — created directly; §14's own suite covers its endpoints. */

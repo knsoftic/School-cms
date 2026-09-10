@@ -25,6 +25,19 @@
  * `POST /default/clear` is the other half: no tax at all is the default, which is a state the flag
  * alone cannot reach by setting.
  *
+ * Two consequences on this screen. "Make default" is offered only on an **active** tax that is not
+ * already the default: `setDefault()` refuses an inactive one with `TAX_INACTIVE`, because
+ * `resolveForInvoice()` only ever reads an active default, so the button used to promise a refusal.
+ * And whether a default exists at all is asked of the API — `GET /taxes?is_default=true` — rather than
+ * read off the rows in view: the list is paged at 25, and a default held by a tax on another page used
+ * to hide the "Clear default" button on this one.
+ *
+ * ## The create dialog's errors are shown in the dialog
+ *
+ * A failed create used to set the page-level notice, which sits behind the modal's backdrop — so a
+ * rejected rate or a taken code produced a dialog that did nothing visible. The message now renders
+ * inside the form, and the page-level notice is held back while any dialog is open.
+ *
  * ## Inclusive is not a rate, it is a reading of the amount
  *
  * `is_inclusive` says the invoice total already contains the tax rather than the tax being added to
@@ -37,6 +50,7 @@ import { useCallback, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { splitApiErrors } from '@/lib/formErrors';
 import { useCollection } from '@/lib/useCollection';
 import { EditDialog } from '@/components/editDialog';
 import {
@@ -73,6 +87,9 @@ interface Tax {
   description: string | null;
 }
 
+/** The create form's inputs. A 422 naming anything else is promoted to the dialog's banner. */
+const CREATE_FIELDS = new Set(['name', 'code', 'rate_percent', 'description']);
+
 export default function TaxesPage() {
   const { can } = useAuth();
   const { success } = useToast();
@@ -82,6 +99,22 @@ export default function TaxesPage() {
     '/taxes',
     useMemo(() => ({ page, limit: 25 }), [page])
   );
+
+  /*
+   * Whether any tax holds the default, across every page — see the header. `is_default` is a filter
+   * the list schema accepts, and one row answers the question.
+   */
+  const { rows: defaultRows, reload: reloadDefault } = useCollection<Tax>('/taxes', {
+    is_default: 'true',
+    limit: 1,
+  });
+  const hasDefault = defaultRows.length > 0;
+
+  /* Every write can move the default — making one, clearing it, deactivating or deleting its holder. */
+  const reloadAll = useCallback(() => {
+    reload();
+    reloadDefault();
+  }, [reload, reloadDefault]);
 
   const canManage = can('taxes.manage');
 
@@ -120,15 +153,12 @@ export default function TaxesPage() {
       setRate('');
       setInclusive(false);
       setDescription('');
-      reload();
+      reloadAll();
     } catch (caught) {
       if (caught instanceof ApiError) {
-        setFieldErrors(Array.isArray(caught.details) ? caught.fieldErrors() : {});
-        setError(
-          Array.isArray(caught.details)
-            ? caught.bannerFor(['name', 'code', 'rate_percent', 'description'])
-            : caught.message
-        );
+        const { perField, banner } = splitApiErrors(caught, CREATE_FIELDS);
+        setFieldErrors(perField);
+        setError(banner);
       } else {
         setError('Could not reach the server. Check your connection and try again.');
       }
@@ -148,7 +178,7 @@ export default function TaxesPage() {
     try {
       await api.post(`/taxes/${row.id}/default`, {});
       success(`${row.name} is now the default`, 'Whichever tax held it no longer does.');
-      reload();
+      reloadAll();
     } catch (caught) {
       setError(
         caught instanceof ApiError
@@ -158,7 +188,7 @@ export default function TaxesPage() {
     } finally {
       setBusy(false);
     }
-  }, [busy, reload, success]);
+  }, [busy, reloadAll, success]);
 
   async function clearDefault() {
     if (busy) return;
@@ -167,7 +197,7 @@ export default function TaxesPage() {
     try {
       await api.post('/taxes/default/clear', {});
       success('No default tax', 'New invoices are raised untaxed unless a tax is named on them.');
-      reload();
+      reloadAll();
     } catch (caught) {
       setError(
         caught instanceof ApiError
@@ -187,7 +217,7 @@ export default function TaxesPage() {
       await api.delete(`/taxes/${removing.id}`);
       success(`${removing.name} deleted`);
       setRemoving(null);
-      reload();
+      reloadAll();
     } catch (caught) {
       setError(
         caught instanceof ApiError
@@ -260,7 +290,8 @@ export default function TaxesPage() {
                   >
                     Edit
                   </button>
-                  {!row.is_default ? (
+                  {/* Active and not already the default — the API refuses an inactive one. */}
+                  {row.is_active && !row.is_default ? (
                     <button
                       type="button"
                       className="btn btn-sm btn-secondary"
@@ -289,7 +320,13 @@ export default function TaxesPage() {
     [canManage, busy, makeDefault]
   );
 
-  const hasDefault = rows.some((row) => row.is_default);
+  /* Closing a dialog takes its message with it, so it does not resurface on the page behind. */
+  function closeCreate() {
+    if (busy) return;
+    setCreating(false);
+    setError(null);
+    setFieldErrors({});
+  }
 
   return (
     <div>
@@ -312,7 +349,15 @@ export default function TaxesPage() {
               </button>
             ) : null}
             {canManage ? (
-              <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  setCreating(true);
+                  setError(null);
+                  setFieldErrors({});
+                }}
+              >
                 Add a tax
               </button>
             ) : null}
@@ -320,7 +365,8 @@ export default function TaxesPage() {
         }
       />
 
-      {error ? (
+      {/* Held back while a dialog is open: each dialog shows its own, above its backdrop. */}
+      {error && !creating && removing === null ? (
         <div className="mb-4">
           <Notice tone="error">{error}</Notice>
         </div>
@@ -352,9 +398,7 @@ export default function TaxesPage() {
 
       <Modal
         open={creating}
-        onClose={() => {
-          if (!busy) setCreating(false);
-        }}
+        onClose={closeCreate}
         title="Add a tax"
         description="A rate an invoice can be raised at. It is not applied to anything until it is made the default or named on an invoice."
         size="lg"
@@ -365,7 +409,7 @@ export default function TaxesPage() {
               type="button"
               className="btn btn-secondary"
               disabled={busy}
-              onClick={() => setCreating(false)}
+              onClick={closeCreate}
             >
               Cancel
             </button>
@@ -384,6 +428,8 @@ export default function TaxesPage() {
             void create();
           }}
         >
+          {error ? <Notice tone="error">{error}</Notice> : null}
+
           <FormGrid>
             <Field
               id="name"
@@ -450,7 +496,7 @@ export default function TaxesPage() {
         description="Changing a rate does not re-tax invoices already raised — each carries what it was taxed at."
         success="Tax updated"
         onClose={() => setEditing(null)}
-        onSaved={reload}
+        onSaved={reloadAll}
         save={(row, body) => api.patch(`/taxes/${row.id}`, body)}
         initial={(row) => ({
           name: row.name,
@@ -496,7 +542,9 @@ export default function TaxesPage() {
       <Modal
         open={removing !== null}
         onClose={() => {
-          if (!busy) setRemoving(null);
+          if (busy) return;
+          setRemoving(null);
+          setError(null);
         }}
         title={`Delete ${removing ? removing.name : 'this tax'}?`}
         description="An invoice that has already cited this tax keeps what it was taxed at. If the tax is in use the API refuses, and deactivating it instead takes it out of circulation."
@@ -508,7 +556,10 @@ export default function TaxesPage() {
               type="button"
               className="btn btn-secondary"
               disabled={busy}
-              onClick={() => setRemoving(null)}
+              onClick={() => {
+                setRemoving(null);
+                setError(null);
+              }}
             >
               Cancel
             </button>

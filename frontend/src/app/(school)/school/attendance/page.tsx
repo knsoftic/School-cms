@@ -288,9 +288,14 @@ function StudentsPanel() {
          * called Ali Khan in one section is the ordinary case, and the name alone then identifies
          * neither. `last_name` is nullable on the model, so it is joined conditionally rather than
          * interpolated into a trailing space.
+         *
+         * `primary`, so below `md` each card is headed by the child rather than by the date. With the
+         * date filter set — the screen's main workflow — every row carries the same date, and a list
+         * of cards all titled "5 Sep 2026" is a list with no headings at all.
          */
         key: 'student',
         header: 'Student',
+        primary: true,
         cell: (row) => {
           if (!row.student) return <span className="text-muted-soft">unknown student</span>;
           const name = [row.student.first_name, row.student.last_name].filter(Boolean).join(' ');
@@ -383,9 +388,12 @@ function StudentsPanel() {
          * it is: one is a calendar date and the other a UTC instant, so a register marked at 8pm
          * local anywhere west of UTC would be labelled a day late. A wrong badge on an audit column
          * is worse than no badge.
+         *
+         * Off the phone card: it is provenance, not attendance, and it is the row a card can lose.
          */
         key: 'marked_at',
         header: 'Marked',
+        hideOnMobile: true,
         cell: (row) => {
           const when = formatTimestamp(row.marked_at);
           return when ? (

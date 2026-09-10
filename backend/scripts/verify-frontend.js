@@ -31,7 +31,6 @@ const { createApp } = require('../src/app');
 const { buildDocument } = require('../src/docs/openapi');
 const { MODULES } = require('../src/config/constants');
 const { PERMISSION_KEY_SET } = require('../src/config/permissions');
-const permissionService = require('../src/services/permissionService');
 
 const FRONTEND = path.resolve(__dirname, '..', '..', 'frontend', 'src');
 
@@ -748,7 +747,7 @@ function main() {
        * the quotes on and the name unresolvable, which is what the first version of this did.
        */
       const raw = m[1].trim();
-      const unquoted = raw.replace(/^['\`"]|['\`"]$/g, '');
+      const unquoted = raw.replace(/^['`"]|['`"]$/g, '');
       const name = unquoted.replace(/^\$\{\s*|\s*\}$/g, '');
       storageKeys.add(consts.has(name) ? consts.get(name) : unquoted);
     }

@@ -70,7 +70,7 @@ interface ParentDashboard {
 }
 
 export default function ParentDashboard() {
-  const { profile } = useAuth();
+  const { profile, can } = useAuth();
 
   const [data, setData] = useState<ParentDashboard | null>(null);
   const [loading, setLoading] = useState(true);
@@ -157,10 +157,21 @@ export default function ParentDashboard() {
         title={`Welcome, ${profile?.user.name ?? 'parent'}`}
         description="The children linked to your account."
         action={
-          /* §23 addresses attendance alerts, fee reminders, receipts and results to a guardian. */
-          <Link href="/parent/notifications" className="btn btn-secondary">
-            Notifications
-          </Link>
+          /*
+           * The inbox — §23 addresses attendance alerts, fee reminders, receipts and results to a
+           * guardian — and the children's assignments (`assignments.view`, narrowed to their classes
+           * by the API). Links rather than nav entries, as the student dashboard does.
+           */
+          <div className="flex gap-2">
+            <Link href="/parent/notifications" className="btn btn-secondary">
+              Notifications
+            </Link>
+            {can('assignments.view') ? (
+              <Link href="/school/assignments" className="btn btn-secondary">
+                Assignments
+              </Link>
+            ) : null}
+          </div>
         }
       />
 

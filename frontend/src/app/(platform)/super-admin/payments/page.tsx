@@ -98,6 +98,13 @@ interface Payment {
   has_screenshot: boolean;
   /** Approval settles an invoice; a payment with none is refused with `PAYMENT_NO_INVOICE`. */
   invoice_id: number | null;
+  /**
+   * Derived by `present()`, not stored: `amount − refunded_amount` for a payment in one of the
+   * service's `RECEIVED_STATUSES`, and 0 for anything else. A number, like every DECIMAL here.
+   */
+  refundable_amount: number;
+  /** The server's own answer to "can a refund be raised?" — `refundable_amount` above zero. */
+  is_refundable: boolean;
 }
 
 /*
@@ -321,18 +328,17 @@ export default function PaymentsPage() {
               </button>
             ) : null}
             {/*
-              * Only money actually received can be given back. `RECEIVED_STATUSES` is what the
-              * service checks, and `partially_refunded` is in it: a payment refunded in part can be
-              * refunded again up to what is left, which is why it is offered here and not only on
-              * `approved`.
+              * Only money actually received and not yet given back can be refunded. `is_refundable`
+              * is the server's answer to exactly that — a payment in `RECEIVED_STATUSES` with
+              * something left — so a part-refunded payment is offered again and a fully refunded one
+              * is not, without this screen restating the rule from the status word.
               */}
-            {canRefund && (row.status === 'approved' || row.status === 'partially_refunded') ? (
+            {canRefund && row.is_refundable ? (
               <button type="button" className="btn btn-danger-ghost btn-sm" onClick={() => askRefund(row)}>
                 Refund
               </button>
             ) : null}
-            {(canReview && row.status === 'pending') ||
-            (canRefund && (row.status === 'approved' || row.status === 'partially_refunded')) ? null : (
+            {(canReview && row.status === 'pending') || (canRefund && row.is_refundable) ? null : (
               <span className="text-muted-soft">—</span>
             )}
           </div>
@@ -556,7 +562,9 @@ export default function PaymentsPage() {
             <p className="text-sm text-muted">
               {nameFor(refunding.school_id)} paid{' '}
               <strong>{formatAmountWithCode(refunding.amount, refunding.currency)}</strong> by{' '}
-              {spell(refunding.method)}.
+              {spell(refunding.method)}.{' '}
+              <strong>{formatAmountWithCode(refunding.refundable_amount, refunding.currency)}</strong>{' '}
+              of it is still refundable.
             </p>
           ) : null}
 
@@ -576,10 +584,10 @@ export default function PaymentsPage() {
             <p className="mt-1 text-xs text-muted">
               {/*
                 * Blank is a real answer and the useful default: `requestRefund()` refunds the whole
-                * remaining balance when no amount is given. The screen does not compute that balance
-                * itself — `GET /payments` returns `amount` but not `refunded_amount`, so a figure
-                * shown here would be the full payment rather than what is left on a partly refunded
-                * one, and would be wrong exactly where it mattered.
+                * remaining balance when no amount is given. The balance shown above is the server's
+                * `refundable_amount`, not worked out here — this comment used to say the list carried
+                * no such figure, but `payments.controller.js present()` derives it on every row, and on
+                * a part-refunded payment it is the number that matters.
                 */}
               Leave blank to refund everything still refundable on this payment. A larger amount is
               refused with the figure that is actually available.

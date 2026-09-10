@@ -89,7 +89,12 @@ import { EXPLAINED_CODES } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
 
 /**
- * `moneyField`'s ceiling — `DECIMAL(12,2)`, so `max(9999999999.99)` in the schema.
+ * `moneyField`'s ceiling — `Joi.number().max(9999999999.99)` in `library.validation.js`, which is
+ * **narrower** than the `DECIMAL(14,2)` column behind it (`models/columns.js` `money()`).
+ *
+ * The API's bound, not the column's, is the one that matters here: raising this to the column width
+ * would let the browser accept a figure the schema then refuses with a 422. (This comment used to
+ * call the column `DECIMAL(12,2)`, copying the same slip from the schema's own comment.)
  *
  * Written out rather than left implicit because the two money inputs below want it as their `max`,
  * and a literal repeated twice is a literal that gets edited once.

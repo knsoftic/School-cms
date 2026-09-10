@@ -11,8 +11,17 @@
  * set, adds and removes rows locally, and sends all of them — what is on screen when Save is pressed
  * is exactly what the plan will have.
  *
- * The consequence worth stating: a row deleted here and saved is **gone**, not deactivated. That is
- * why `is_active` exists as a control of its own — retiring a price while keeping its record is a
+ * The consequence worth stating: a row deleted here and saved is **gone** — unless something still
+ * points at it. `plans.service.js` `setPrices()` matches each submitted price to an existing row by
+ * its identity — cycle, days, pricing model and tier band — and updates a match in place. A row the
+ * set no longer holds is deleted, unless `pricesInUse()` finds it referenced (a subscription's current
+ * or scheduled price, or a quotation's): then it is switched to not offered instead, because deleting
+ * it would blank the pointer on a live subscription. The response counts those as `retired`, and the
+ * save toast says how many, since the row comes back on reload marked "Retired" and would otherwise
+ * look like a removal that did not take. A subscription keeps the amount it was sold at either way —
+ * renewal bills its own `cycle_amount`, not the price row's — until its quantity is changed, which
+ * re-reads the row. `is_active`
+ * still exists as a control of its own — retiring a price on purpose while keeping its record is a
  * different act from removing it, and the two must not be the same button.
  *
  * ## The pricing model decides which amount matters
@@ -35,7 +44,7 @@
  * defaults) have no row of their own and go to the banner.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
@@ -256,8 +265,17 @@ export function PricingEditor({
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState<PriceDraft | null>(null);
 
-  /* Re-sync when the plan is reloaded, so a save leaves the form showing what was stored. */
+  /*
+   * Re-sync when the plan is reloaded, so a save leaves the form showing what was stored — but only
+   * when the stored prices changed. The Details tab reloads the plan as well and stays mounted beside
+   * this one (`page.tsx`'s header), so re-seeding on every new `plan` object would throw away a price
+   * set the operator was still building because they saved the plan's name.
+   */
+  const seeded = useRef(JSON.stringify(plan.prices));
   useEffect(() => {
+    const key = JSON.stringify(plan.prices);
+    if (key === seeded.current) return;
+    seeded.current = key;
     setDrafts(plan.prices.map(toDraft));
     setRowErrors(new Map());
   }, [plan]);
@@ -279,13 +297,29 @@ export function PricingEditor({
     setRowErrors(new Map());
 
     try {
-      await api.put(`/plans/${plan.id}/prices`, { prices: drafts.map(toPayload) });
+      const result = await api.put<{ retired?: number }>(`/plans/${plan.id}/prices`, {
+        prices: drafts.map(toPayload),
+      });
+      /*
+       * `retired` is the server's count of referenced rows it kept instead of deleting — see the
+       * header. Said in the toast because each one reappears on the reload below, marked "Retired",
+       * and without the sentence that reads as a removal the save ignored.
+       */
+      const retired = result?.retired ?? 0;
+      const kept =
+        retired > 0
+          ? ` ${retired} price${retired === 1 ? ' is' : 's are'} still used by a subscription or quotation, so ${
+              retired === 1 ? 'it was' : 'they were'
+            } kept as retired — no longer offered — rather than deleted.`
+          : '';
       success(
         'Pricing saved',
-        drafts.length === 0
-          ? 'This plan now has no prices, so it cannot be offered until one is added.'
-          : `${drafts.length} price${drafts.length === 1 ? '' : 's'} stored.`
+        (drafts.length === 0
+          ? 'Nothing is on offer now, so the plan cannot be sold until a price is added.'
+          : `${drafts.length} price${drafts.length === 1 ? '' : 's'} stored.`) + kept
       );
+      /* This editor's own save always re-seeds from the reload — the retired rows come back in it. */
+      seeded.current = '';
       onSaved();
     } catch (caught) {
       if (!(caught instanceof ApiError)) {
@@ -621,7 +655,8 @@ export function PricingEditor({
       {/*
         * Removing is confirmed even though nothing leaves the database until Save, because the row
         * being removed may be the only thing keeping the plan sellable and its contents are gone from
-        * the screen the moment it goes.
+        * the screen the moment it goes. The copy names the one case where a save does not delete it —
+        * a price something still points at — because that row comes back after the save.
         */}
       <ConfirmDialog
         open={Boolean(removing)}
@@ -631,7 +666,7 @@ export function PricingEditor({
           setRemoving(null);
         }}
         title="Remove this price?"
-        description="It disappears from the list now and is deleted from the plan when you save. To stop offering a price while keeping its record, untick “Offered for new subscriptions” instead."
+        description="It disappears from the list now and is deleted from the plan when you save — unless a subscription or quotation still uses it. Then it is kept: if the prices you save include one with the same cycle, pricing model and tier band, that one takes its place and is updated in place; otherwise it is retired and shows again after the save as no longer offered. Either way, subscriptions already on it keep the amount they were sold at until their quantity is changed. To stop offering a price while keeping its record, untick “Offered for new subscriptions” instead."
         confirmLabel="Remove price"
       />
     </form>

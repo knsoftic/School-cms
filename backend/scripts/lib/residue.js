@@ -191,6 +191,13 @@ async function sweepResidue(db, { codes = [], domains = [], also = [], uploadsDi
     extras.push({ ...entry, ids });
   }
 
+  /*
+   * A dead run's failed sign-ins. They carry no user, so nothing below finds them, and the next run's
+   * own teardown is bounded by its own baseline, which they sit beneath. Keyed on the suite's domains,
+   * which only it uses — measured: a killed `verify-auth-module.js` left eleven behind its rerun.
+   */
+  if (domains.length) await removeFailedSignIns(db, { afterId: 0, domains });
+
   const found =
     schools.length + organizations.length + plans.length + users.length +
     extras.reduce((sum, entry) => sum + entry.ids.length, 0);
@@ -199,6 +206,19 @@ async function sweepResidue(db, { codes = [], domains = [], also = [], uploadsDi
   /* The dead run's own trail first, before anything SET-NULLs the `user_id` that would find it. */
   await deleteIn(db, 'activity_logs', 'user_id', users);
   await deleteIn(db, 'audit_logs', 'user_id', users);
+
+  /*
+   * The platform's copies of a leftover school's notifications (owner decision D15). They go to the
+   * Super Admins with no `school_id`, so `clearByColumn()` cannot see them, and they name the school
+   * only in `metadata.school_id`. Measured: a killed `verify-notifications.js` left eight, and a killed
+   * `verify-jobs.js` two, addressed to the seeded Super Admin, whom no teardown deletes.
+   */
+  if (schools.length) {
+    await db.sequelize.query(
+      "DELETE FROM notifications WHERE school_id IS NULL AND JSON_VALUE(metadata, '$.school_id') IN (:ids)",
+      { replacements: { ids: schools.map(String) } }
+    );
+  }
 
   /* Everything under the leftover tenants, children first, roots still alive — see clearByColumn. */
   await clearByColumn(db, 'school_id', schools, 'schools');
@@ -224,6 +244,40 @@ async function sweepResidue(db, { codes = [], domains = [], also = [], uploadsDi
   }
 
   return found;
+}
+
+/**
+ * Remove the failed sign-ins a **finished** run caused, which no tenant- or user-scoped teardown reaches.
+ *
+ * A failed sign-in has no `req.user`, so its `activity_logs` row carries no user, school or
+ * organization — only the identifier that was tried, in `metadata.identifier`. Every teardown scopes
+ * its log deletes by user or tenant (Known Issues #25), so these rows survived every clean run:
+ * measured on 2026-09-10 with `kill-test.js --control` at eleven per run of `verify-auth-module.js`
+ * and one each for `verify-parents.js` and `verify-users-roles.js`.
+ *
+ * Scoped twice, so another suite's rows can never match: above the run's own baseline id, and to
+ * identifiers on the suite's own email domains (or its own usernames).
+ *
+ * @param {object} db  the `src/models` export
+ * @param {object} scope
+ * @param {number} scope.afterId        the run's `activity_logs` high-water mark, taken at its start
+ * @param {string[]} [scope.domains]    email domains, without the `@`
+ * @param {string[]} [scope.usernames]  usernames the run signed in with
+ * @returns {Promise<number>} rows removed
+ */
+async function removeFailedSignIns(db, { afterId, domains = [], usernames = [] } = {}) {
+  if (!Number.isInteger(afterId)) throw new Error('removeFailedSignIns() needs the run\'s baseline id');
+  const rows = await db.sequelize.query(
+    "SELECT id, JSON_VALUE(metadata, '$.identifier') AS identifier FROM activity_logs " +
+      "WHERE id > :afterId AND action = 'login_failed' AND user_id IS NULL",
+    { replacements: { afterId }, type: db.sequelize.QueryTypes.SELECT }
+  );
+  const names = new Set(usernames.map((name) => name.toLowerCase()));
+  const ours = rows.filter((row) => {
+    const identifier = String(row.identifier || '').trim().toLowerCase();
+    return domains.some((domain) => identifier.endsWith(`@${domain}`)) || names.has(identifier);
+  });
+  return deleteIn(db, 'activity_logs', 'id', ours.map((row) => row.id));
 }
 
 /* ═══════════════════════ seeded rows a suite mutates in place ═══════════════════════ */
@@ -315,6 +369,7 @@ async function restoreSeededCatalogue(db) {
 
 module.exports = {
   sweepResidue,
+  removeFailedSignIns,
   readJournal,
   writeJournal,
   clearJournal,

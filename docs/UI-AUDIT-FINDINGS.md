@@ -1,7 +1,8 @@
 # Frontend audit — confirmed findings
 
 Produced in session 26 by a 24-agent sweep over the 59 screens that existed then — there are **79**
-now, and the twenty added since have not been through a sweep of this kind. Its method: twelve agents read a group of five
+now, and the twenty added since had a sweep of their own in session 28, recorded at the end of this
+file. The first sweep's method: twelve agents read a group of five
 against the backend module each `api.*` call reaches, and twelve more tried to **refute** what the
 first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
@@ -12,14 +13,17 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
   dropped for a fabricated quotation.
 - **A confirmed finding is still a claim.** Verify the quotation before acting on it — that is this
   project’s recorded doctrine and it caught a real fabrication in an earlier session.
-- `Closed` marks the ones fixed in session 26, parts 36–38. Each was re-verified by hand before
-  being acted on, and the ones with visible behaviour were reproduced in a browser first — both
-  before the change and after it.
+- `Closed` first marked the ones fixed in session 26, parts 36–38. Each was re-verified by hand
+  before being acted on, and the ones with visible behaviour were reproduced in a browser first —
+  both before the change and after it. Findings closed later say on their own status line how they
+  were checked, because the later ones were not all checked that way.
 - Nothing here authorises a new table, column, permission, module key or limit key. The catalogue is
   fixed at 109 permissions / 11 roles / 20 module keys / 8 limit keys / 64 domain tables (SRS §29,
   §35), and `docs/SRS-extracted.md` remains the sole source of truth.
 
-**94 closed, 80 open**, re-counted from the status lines on 2026-09-10 — this header read *"84 closed, 90 open"* and the four section lines below agreed with it, because ten findings closed in sessions 27 and 28 were marked closed on the finding and nowhere else. The **Wrong** category is now clear: all 42 of its findings are closed, as are all 17 **Broken** ones. What is left is 43 **Poor** and 37 **Minor** — none of which is a user meeting an error or a wrong answer.
+**174 closed, 0 open**, re-counted from the status lines on 2026-09-10. Later in session 28 the last 80 were closed — 43 **Poor** and 37 **Minor** — in one pass: 56 fixed, 18 found already fixed in the tree with only the status line left behind, and 6 half-fixed and finished. Those 80 were checked a different way from the 94 before them, and the status line of each says how: every change was reviewed against the backend it calls by a second, read-only reviewer whose findings were re-checked by hand before acting, the whole frontend type-checks and lints clean, and `verify-frontend.js` passes — but **none was reproduced in a browser**, because signing in needs a password this session does not enter. (Earlier in session 28 this header read *"94 closed, 80 open"*, and before that *"84 closed, 90 open"*, when ten findings closed in sessions 27 and 28 had been marked closed on the finding and nowhere else.)
+
+**The twenty screens added since this sweep have now had one of their own** — see *Session 28: the screens this sweep never saw* at the end of this file.
 
 ## Broken — a user meets an error, a dead end, or a wrong answer
 
@@ -562,11 +566,11 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ## Poor — works, but costs the user more than it should
 
-73 finding(s) — 30 closed, 43 open.
+73 finding(s) — 73 closed, 0 open (43 of them in session 28).
 
 ### The forced-password-change screen is a dead end: no sign-out control and no link off the page, even though the backend allow-lists logout for exactly this state. — `src/app/(auth)/change-password/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 120
 - **What a user sees:** A user who signed in as the wrong account, or who cannot satisfy the server's password policy, has no navigation and no sign-out; every other API call 403s with PASSWORD_CHANGE_REQUIRED. Their escape is clearing cookies or closing the browser. The backend built the exit; the UI never exposes it.
 - **Evidence:** The whole render is AuthCard + form, change-password/page.tsx:72-120, ending `<SubmitButton busy={submitting} busyLabel="Saving…">` / 'Change password' / `</form>` / `</AuthCard>`. I grepped the file for anchors: it is the only page in (auth) with no `<a href`, no Link and no logout button. Every sibling has an exit — login/page.tsx:101, forgot-password/page.tsx:71 and :105, reset-password/page.tsx:79 and :101, verify-email/page.tsx:79 and :102. The backend kept the door open for this state: auth.routes.js:115-116 is `/** FR-AUTH-002. Allow-listed in `enforcePasswordChange` — a user must be able to walk away. */` above `protectedRoutes.post('/logout', requireCsrfToken(), asyncHandler(controller.logout));`, and enforcePasswordChange (authenticate.js) refuses everything not in its allow-list. AppShell, which carries the sign-out button (shell.tsx:187 `logout().then(() => router.replace('/login'));`), is not rendered here.
@@ -575,7 +579,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### A malformed verification token renders the developer string 'Validation failed' to the user, and the comment beside it claims one message covers every failure. — `src/app/(auth)/verify-email/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 49
 - **What a user sees:** A user whose verification link was wrapped or truncated by their mail client sees a red box containing only the words 'Validation failed', with no indication that the problem is the link.
 - **Evidence:** verify-email/page.tsx:47-51 is verbatim `setMessage(caught instanceof ApiError ? caught.message : 'Could not reach the server. Check your connection and try again.');`, shown at line 96 as `<Notice tone="error">{message}</Notice>`. For a well-formed but unknown or expired token the service message is human — auth.service.js verifyEmail: `throw ApiError.badRequest('This verification link is not valid or has expired.', { code: 'VERIFICATION_TOKEN_INVALID' });`. For a token failing the shape rule (auth.validation.js:148 `verifyEmail: Joi.object({ token: singleUseToken })`, min 20 / max 200 / /^[A-Za-z0-9_-]+$/), the request never reaches the service: validate.js raises ApiError.validation, and ApiError.js:66-68 is `static validation(message = 'Validation failed', details) { return new ApiError(422, message, { code: 'VALIDATION_ERROR', details }); }`. errorHandler.js:265 sends `message: apiError.expose ? apiError.message : 'Internal server error'`, so 'Validation failed' reaches the client verbatim. The comment at lines 91-95 asserts 'One message covers an unknown token, a used one and an expired one — the service gives a single code for all three' — true of those three, but a fourth case carries VALIDATION_ERROR and a message written for a developer.
@@ -584,7 +588,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The only required field on the form is marked with an `aria-hidden` asterisk and carries no `required` or `aria-required`, so a screen reader is never told it is required. — `frontend/src/app/(platform)/super-admin/invoices/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `a11y` · line 404
 - **What a user sees:** A screen-reader user hears "Subscription, combo box" with no indication that leaving it blank is the one thing guaranteed to fail; the asterisk a sighted user sees is explicitly hidden from assistive tech.
 - **Evidence:** page.tsx:403-411 `<label htmlFor="subscription_id" className="block text-sm font-medium">` / `Subscription <span aria-hidden="true">*</span>` / `<select id="subscription_id" value={values.subscription_id} onChange={set('subscription_id')} aria-invalid={Boolean(fieldErrors.subscription_id)} className={INPUT_CLASS}>`. The form is `noValidate` (page.tsx:401). `grep -n required` on the file returns only prose lines 16/208/286 — no `required` attribute anywhere. components/form.tsx:16-17 "**A required field says so in words, not with a red asterisk alone.**", implemented in `FieldLabel` (`<span …>required</span>`) and `SelectField` (`required={required}` on the `<select>`); `SelectField` is not used here.
@@ -611,7 +615,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The coupon list has no per-row action and no detail route, so `PATCH /coupons/:id` and `DELETE /coupons/:id` are unreachable — a coupon can be created but never edited, deactivated or removed. — `frontend/src/app/(platform)/super-admin/coupons/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 246
 - **What a user sees:** A Super Admin who mistypes a discount value, or needs to stop honouring a live code, cannot do either from the product — while coupons/new:578-581 tells them "Use Inactive to stop honouring a coupon now." Their only recourse is the API directly.
 - **Evidence:** The Column[] ends at page.tsx:246 `{ key: 'status', header: 'Status', cell: (row) => <StatusBadge status={row.status} /> },` with no cell rendering a link or button; the only action is page.tsx:263-270 `can('coupons.manage') ? <a href="/super-admin/coupons/new" className="btn btn-primary">Add coupon</a> : null`. The endpoints exist behind `canManage()` (coupons.routes.js:77): :130 `router.patch(` and :143 `router.delete(`, controllers `update`/`destroy`. `grep -rn "'/coupons" frontend/src` returns only `api.post('/coupons')` in new/page.tsx:331, this list's `useCollection('/coupons')`, and the invoices picker's `api.get('/coupons')` — no PATCH or DELETE call anywhere, and no `[id]` route exists in the app.
@@ -620,7 +624,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The interface doc-block asserts that Sequelize returns DECIMAL as strings and that this would break arithmetic, which the database config contradicts. — `E:/School Managment System/frontend/src/app/(platform)/super-admin/invoices/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `stale-comment` · line 66
 - **What a user sees:** A maintainer is told, with a plausible proof, that money arrives as a string — the same false premise lib/money.ts:5-22 exists to record as already disproved. Two comments in one codebase now contradict each other about one wire format.
 - **Evidence:** invoices/page.tsx:66-69 is verbatim: `* The four money fields are `DECIMAL(14,2)` on MySQL and Sequelize hands DECIMALs back as **strings**` / `* — no getter in `models/columns.js` converts them. Typing them as `number` would compile and then` / `* produce `"1200.00" + "300.00" === "1200.00300.00"` at the first arithmetic, so they are strings` / `* here and are converted once, at the point of formatting.` The sub-clause about the getter is true — `money()` at columns.js:59-65 installs none, and `installJsonGetters` at columns.js:110-128 filters on `attribute.type instanceof DataTypes.JSON`. The conclusion is not: config/database.js:59 sets `decimalNumbers: true` below Sequelize.
@@ -629,7 +633,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The invoice list has no per-row action and no detail route exists, so a draft invoice created by the sibling screen can never be finalised, cancelled, or opened. — `E:/School Managment System/frontend/src/app/(platform)/super-admin/invoices/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 232
 - **What a user sees:** A Super Admin who generates a draft lands on this list, sees a Draft badge, and has no control anywhere in the product to turn it into a demand or cancel it — while the draft blocks re-billing that period with INVOICE_PERIOD_ALREADY_BILLED.
 - **Evidence:** invoices/page.tsx:232 is verbatim `cell: (row) => <StatusBadge status={row.status} />,` and no column in the 162-236 array renders a link or button. `find frontend/src/app -type d` returns no `[id]` directory anywhere in the app, and `grep -rn 'finalise\|finalize' frontend/src` returns zero hits — nothing in the product calls either operation. Backend invoices.routes.js:140-154 mounts `router.post('/:id/finalise', canManage(), ...)` and `router.post('/:id/cancel', canManage(), ...)`, and :131-136 mounts `GET /:id`. Drafts are reachable: invoices/new/page.tsx:90 is verbatim `const ISSUABLE_STATUSES = ['draft', 'unpaid'];` and both are offered in the select at :577; invoices.service.js:629 is verbatim `status: spec.status === STATUS.DRAFT ? STATUS.DRAFT : STATUS.UNPAID,`. The block is real: `alreadyBilled()` filters `status: { [Op.in]: LIVE_STATUSES }`, and the comment above LIVE_STATUSES says "Everything else does, including `draft`".
@@ -647,7 +651,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The School column renders a bare numeric id, and the comment justifying it is contradicted by a shared hook written for this very screen. — `E:/School Managment System/frontend/src/app/(platform)/super-admin/invoices/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — half was already fixed in the tree, the rest fixed now; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 178
 - **What a user sees:** An administrator scanning platform-wide invoices sees `#42` and cannot tell which school owes the money; payments, the sibling screen, shows the name, so the two billing lists disagree about what a school is called.
 - **Evidence:** invoices/page.tsx:172-178 is verbatim, ending `cell: (row) => <code className="text-xs text-muted">#{row.school_id}</code>,`. The join premise is right — invoices.service.js `detailInclude()` lists items, plan, coupon, tax and payments, no School. The cost premise is wrong: lib/useSchoolNames.ts:7-17 is verbatim ("Three billing screens — payments, invoices, subscriptions..." / "One cached lookup costs one request per session") and the cache is module-level at :43-44 (`let cache: Map<number, string> | null = null; let inFlight: ...`). payments/page.tsx:121 is verbatim `const { nameFor, schools } = useSchoolNames();` and :188 renders `nameFor(row.school_id)`. The comment's other claim is also false: there is no school control on this screen — the only two are the search input at :267 and the status select at :279. The filter the comment invokes exists server-side: invoices.service.js:230 is verbatim `if (query.school_id) where.school_id = query.school_id;`.
@@ -665,7 +669,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The list can create organizations but never change one: no row action, no detail route, and the status filter's stated purpose has no matching control. — `E:/School Managment System/frontend/src/app/(platform)/super-admin/organizations/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 222
 - **What a user sees:** A Super Admin can find the one suspended organization the filter was built to surface and then has nothing to do about it. Suspending, reactivating or fixing a typo in an organization is impossible from the product; `notes` and `address` can be written on create and never read back.
 - **Evidence:** organizations/page.tsx:215-217 is verbatim ("Status earns a control where the other parameters do not: `resolveTenant` refuses a suspended..."), and :159 is verbatim `{ key: 'status', header: 'Status', cell: (row) => <StatusBadge status={row.status} /> },`. No column carries an edit affordance and `grep -rn 'organizations/' frontend/src --include=*.tsx` shows the only organizations URL constructed anywhere is the `/new` link — nothing calls `PATCH /organizations/:id`. There is no `[id]` directory under frontend/src/app. Backend organizations.routes.js:60-61 mounts `router.get('/:id', requirePermission('organizations.view'), ...)` and :67-68 `router.patch('/:id', requirePlatformScope(), requirePermission('organizations.manage'), ...)`, and organizations.validation.js `update` accepts name, code, email, phone, address, website, status and notes with `.min(1)`.
@@ -683,7 +687,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The revenue cards' period hints print raw ISO-8601 timestamps because the API sends Date objects, not the calendar dates the interface implies. — `E:/School Managment System/frontend/src/app/(platform)/super-admin/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 138
 - **What a user sees:** The two most-read cards on the Super Admin's first screen carry a hint like '2026-09-01T00:00:00.000Z → 2026-09-30T23:59:59.999Z' — a hint added so the figure is checkable, in the one form a non-engineer cannot read.
 - **Evidence:** super-admin/page.tsx:135-144 is verbatim, including `hint={data.period ? `${data.period.month.from} → ${data.period.month.to}` : undefined}` and the same for `year`. platform.service.js returns verbatim `period: { month: { from: monthly.from, to: monthly.to }, year: { from: yearly.from, to: yearly.to } },` where `monthly = periodRange('monthly', at)`; utils/dates.js `periodRange` returns `{ from: startOfMonth(reference), to: endOfMonth(reference) }` and both are built with `new Date(Date.UTC(...))` — `endOfMonth` is `new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0, 23, 59, 59, 999))`. ApiResponse.ok ends in `res.status(...).json(body)`, so `Date.toJSON()` yields the ISO string; the interface at page.tsx:32-35 types them `string` and interpolates them raw.
@@ -710,7 +714,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### On all three plan-scoped screens the error state is never cleared when the plan picker is set back to 'Choose a plan…', so the ErrorNotice is stuck. — `(platform)/super-admin/plans/features/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `missing-state` · line 115
 - **What a user sees:** An operator on a stale link like /super-admin/plans/limits?plan=42 for a deleted plan gets 'Something went wrong'. Selecting 'Choose a plan…' does not clear it — the red panel stays and the 'Choose a plan above to see its limits' state is unreachable, because `!selected` is only tested after `error`. Only picking a different valid plan or reloading escapes.
 - **Evidence:** components/planScope.tsx:114-123 verbatim: `useEffect(() => { if (!planId) { setDetail(null); return undefined; }` followed by `setLoading(true); setError(null); setRefusal(null);` — the resets are all after the early return. The three screens order the error branch ahead of the 'no plan chosen' branch (features/page.tsx:112-119, limits/page.tsx:142-149, modules/page.tsx:100-107). The error is reachable: plans.service.js:329 `if (!plan) throw ApiError.notFound('Plan not found', { code: 'PLAN_NOT_FOUND' });` and PLAN_NOT_FOUND is absent from EXPLAINED_CODES (lib/useCollection.ts:75-99), so it lands in `error`.
@@ -719,7 +723,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Free-text report parameters are un-debounced, so every keystroke fires a full report query. — `(platform)/super-admin/reports/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 557
 - **What a user sees:** Typing USD into the Fee report's Currency box sends three /reports/fees requests; the two intermediate ones filter on a partial code and come back all-zero, so the screen shows a school with no fees between keystrokes, and each keystroke spends the pre-auth rate-limit budget on a grouped SUM over student_fees.
 - **Evidence:** reports/page.tsx:548-556: `<input id={param.key} type={param.kind === 'date' ? 'date' : 'text'} value={params[param.key] ?? ''} onChange={(event) => setParams((prev) => ({ ...prev, [param.key]: event.target.value }))}`. `params` feeds the `query` memo (326-334) which is a dependency of the read effect (383: `}, [allowed, missing.length, spec.path, query, nonce]);`). `grep -n setTimeout` on the file returns nothing. The exemplar states the rule this breaks — schools/page.tsx:19-21: "`apiLimiter` is mounted before authentication, so an unthrottled request per keystroke spends a real budget — and `q` reaches a `LIKE` scan. 300 ms is long enough to collapse a typed word into one request".
@@ -728,7 +732,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The seven report tabs convey which one is selected by background colour alone, with no aria-pressed/aria-current, and the explanation for a disabled tab lives only in a title. — `(platform)/super-admin/reports/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `a11y` · line 484
 - **What a user sees:** A screen-reader user hears seven plain buttons with no selected state, so nothing says which report is on screen; a user missing fees.view gets a greyed Fees button whose "Requires …" reason is in a title on an unfocusable control and so is never announced.
 - **Evidence:** reports/page.tsx:480-496, verbatim: `<button key={entry.type} type="button" onClick={() => { setSelected(entry.type); setParams({}); }} disabled={!reachable} title={reachable ? entry.summary : `Requires ${entry.permissions.join(' and ')}`} className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${entry.type === selected ? 'border-teal bg-teal text-white' : 'border-border-strong hover:border-teal disabled:cursor-not-allowed disabled:opacity-50'}`}>{entry.label}</button>`. There is no aria-pressed, aria-current, role="tab"/aria-selected anywhere in the block, and a disabled button is not focusable.
@@ -746,7 +750,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The required Organization select loads one page of 100 and throws away the total, so on a larger platform the organization simply is not in the list and nothing says so. — `(platform)/super-admin/schools/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 139
 - **What a user sees:** With more than 100 organizations the one the Super Admin needs can be absent from the only control that sets a required foreign key, with no on-screen message; the operator concludes the organization was never created.
 - **Evidence:** schools/new/page.tsx:139-142, verbatim: `const rows = await api.get<OrganizationOption[]>('/organizations', { query: { limit: 100, sortBy: 'name', sortOrder: 'asc' }, signal: controller.signal, });`. api.get keeps only the rows — apiClient.ts:363-364 `const body = (await response.json()) as ApiEnvelope<T>;` / `return body.data;` — so the meta.pagination.total that ApiResponse.paginated attaches (ApiResponse.js:43-56) is discarded. The screen renders no truncation notice and offers no filter (272-288 shows only the error/empty/hint branches).
@@ -755,7 +759,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The Schools list is read-only with no row action and no detail route, so five of the nine §9.2 operations have no reachable UI. — `(platform)/super-admin/schools/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 76
 - **What a user sees:** Once a school is created it can never be edited, activated, suspended, archived, deleted, given a Principal, or have its usage inspected from the UI.
 - **Evidence:** The column set (schools/page.tsx:76-95) is display-only — name, code, city, email, status, subscription — `row.id` is used only as rowKey at :145, no cell is a link, and there is no action column. `find src/app -name page.tsx` lists ./(platform)/super-admin/schools/page.tsx and ./schools/new/page.tsx and no [id] route. `grep -rn "'/schools" src` returns six call sites: the list (schools/page.tsx:74), the create (schools/new:181) and four select-fillers (coupons/new:278, principals/new:160, reports:295, subscriptions/new:186) plus lib/useSchoolNames.ts:56.
@@ -764,7 +768,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The Principals list exists to let a Super Admin select a Principal for a school, but it offers no selection action and no detail link. — `(platform)/super-admin/principals/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 125
 - **What a user sees:** A Super Admin can create principals and read them but can never attach one to a school — the operation the list was built to serve — and the ?school_id= narrowing the endpoint provides is not exposed.
 - **Evidence:** The columns array (principals/page.tsx:122-178) ends at last_login_at; no cell is a link, there is no action column, and row.id is used only as rowKey at :261. The only filters are the q search (204-213) and the status select (218-235) — no school_id control. `find src/app -name page.tsx` shows no principals/[id] route, and grepping the frontend for a principal assignment call returns nothing.
@@ -782,7 +786,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The price dropdown omits the tier-band columns that are part of a price's identity, so a Student-Based plan renders several identical options. — `(platform)/super-admin/subscriptions/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 443
 - **What a user sees:** Several options reading "monthly · student based · USD"; the operator cannot tell which enrolment band they are billing the school at.
 - **Evidence:** page.tsx:443-452 renders cycle · model · currency (+ default) only; `PriceOption` (:116-124) declares neither tier column.
@@ -800,7 +804,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The screen declares itself a work queue and filters to the rows needing action, then offers no action on any row and no route to one. — `(platform)/super-admin/subscriptions/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 189
 - **What a user sees:** The rows the copy says the system will not handle have nothing to click, and every lifecycle endpoint is unreachable from the UI.
 - **Evidence:** page.tsx:8-11 calls itself a work queue; `columns` (189-284) has six read-only cells and no action cell; DataTable at 378-383 gets no row link; no detail route exists.
@@ -818,7 +822,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### No column is marked `primary`, so below 768px every card is headed by the attendance date instead of the student's name. — `(school)/school/attendance/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `mobile` · line 216
 - **What a user sees:** On a phone with the date filter set — the screen's main workflow — every card is titled with the same bold date and the child's name is demoted to a dt/dd row.
 - **Evidence:** table.tsx picks `columns.find((c) => c.primary) ?? columns[0]` and renders it as the card heading; attendance/page.tsx's first column is `attendance_date` (:216) and the `student` column (:229) sets no `primary`.
@@ -845,7 +849,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The search box has no debounce, so every keystroke fires a request and blanks the table — every other search screen in this codebase debounces. — `(school)/school/documents/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 158
 - **What a user sees:** Typing a ten-character title fires ten requests and the results table vanishes and reappears on every character, so the user cannot read partial matches as they type.
 - **Evidence:** documents/page.tsx:74 `const [search, setSearch] = useState('');` feeds straight into the query at 77-80, and 158 writes it on every change: `onChange={(event) => { setSearch(event.target.value); setPage(1); }}`. The table is replaced wholesale at 184-185.
@@ -854,7 +858,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Internal navigation uses raw anchors instead of next/link, forcing a full document reload that discards the in-memory access token on every click. — `(school)/school/classes/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 253
 - **What a user sees:** Clicking "Add class", "Cancel" or "Add section" tears down the whole SPA: a white flash, a full JS re-parse, then a refresh-token round-trip plus `GET /auth/me` before the form can fetch its pickers.
 - **Evidence:** classes/page.tsx:252-257 `<a href="/school/classes/new" className="btn btn-primary">Add class</a>`; same at classes/new/page.tsx:551, exams/new/page.tsx:587 and sections/page.tsx:155. lib/apiClient.ts:153 `let accessToken: string | null = null;`
@@ -863,7 +867,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### A local money() helper duplicates lib/money.ts and drops thousands grouping, so large amounts render as an unreadable digit run. — `(school)/school/fees/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `money` · line 92
 - **What a user sees:** 1250000 renders as 1250000.00 rather than 1,250,000.00; in a column of such figures an order-of-magnitude misread is easy.
 - **Evidence:** fees/page.tsx:92-100 is verbatim, including `{value.toFixed(2)} <span className="text-muted-soft">{currency}</span>`, used at :128, :201, :202, :203 and :271. lib/money.ts:37-40 builds `const DECIMAL = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });` once, and :57-64 exports formatAmountWithCode; the file header at :1-2 says it exists "because three screens each had their own and two were wrong". money() is DECIMAL(14,2) — models/columns.js:60-61 `const money = (options = {}) => ({ type: DataTypes.DECIMAL(14, 2),` — so twelve digits before the point are possible.
@@ -872,7 +876,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The same local money() duplicate here drops thousands grouping from the ledgers and from the three Net Balance cards. — `(school)/school/finance/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `money` · line 85
 - **What a user sees:** The headline Net Balance prints as 4835000.00 with no separators — the hardest form to read and the easiest to misjudge by a factor of ten.
 - **Evidence:** finance/page.tsx:84-93 is verbatim, including the comment `/** DECIMAL arrives as a string; parse for display only, and never accumulate. */` and `{value.toFixed(2)}`. Used at :143 (Amount column) and :295, :299, :308 (Income / Expense / Net balance). lib/money.ts:50 exports formatMoney and :57 formatAmountWithCode, both grouped through the Intl formatter at :37-40. finance/page.tsx:288 is `  const currency = report.currency ?? '';`, so a null report currency renders the figure followed by a space and an empty span.
@@ -881,7 +885,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### All three tabs show the same "nothing here yet" message whether or not a filter is active, hiding the control that emptied the list. — `(school)/school/fees/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `missing-state` · line 161
 - **What a user sees:** Search "transport" with no match and the screen states the school has never defined a fee structure, sending an administrator after lost data.
 - **Evidence:** fees/page.tsx:161 is verbatim `        : rows.length === 0 ? <EmptyNotice>No fee structures have been defined yet.</EmptyNotice>` with search state at :113 and sent at :115; :293 is the identical Payments line with search at :259; :242-244 is the Ledger notice with status at :176. components/table.tsx:17-20 states the contract: "**Empty is not the same as filtered-empty.** … a screen that says the first when it means the second sends someone looking for a bug." The siblings do branch: exams/page.tsx:391-393 (`{debounced || status ? 'No exam matches these filters.' : …}`) and finance/page.tsx:210-212.
@@ -890,7 +894,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### `unplaced` is a single string, so when both model-level validators fail the user is shown only one of the two errors and has to submit twice to discover the second. — `(school)/school/fees/structures/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `missing-state` · line 328
 - **What a user sees:** Choose a fine type and a discount type, leave both amounts blank, and the banner reports only the second problem; fixing it reveals the first — two round trips for one form.
 - **Evidence:** fees/structures/new/page.tsx:321-329 is verbatim, including `let unplaced: string | null = null;` and `          else unplaced = message;`. Both validators exist and are independent — models/finance.js:86 `fineTypeNeedsAmount() {` and :91 `discountTypeNeedsAmount() {` — and fees.validation.js declares fine_amount/fine_type and discount_amount/discount_type as independent optional fields (:92-96), so Joi does not catch the pairing first. createStructure routes the failure through rethrow (fees.service.js:211), whose ValidationError branch at :133-134 maps `err.errors` one-to-one: `throw ApiError.validation(err.message, err.errors.map((e) => ({ field: e.path, message: e.message })));`. apiClient.ts fieldErrors() keys by field name and skips only empty fields, so both survive; formErrors() returns nothing for them, and the else branch overwrites.
@@ -917,7 +921,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The required class picker is capped at one page of 100 with no search, so homework cannot be set for any class beyond the hundredth. — `(school)/school/homework/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 274
 - **What a user sees:** At a school with more than 100 classes, classes ranked 101+ can never be given homework through the UI, and the form says so without offering a way through.
 - **Evidence:** homework/new/page.tsx:135-136 is verbatim (`/** `PAGINATION.MAX_LIMIT` … */` / `const OPTION_LIMIT = 100;`) and :274 is verbatim `        api.page<ClassOption[]>('/classes', { query: { limit: OPTION_LIMIT } }),`. The cap is real: constants.js:751-755 sets `MAX_LIMIT: 100` and validate.js:145-150 pins `limit` to `.max(PAGINATION.MAX_LIMIT)`. classes.service.js:85 orders `['numeric_order', 'ASC']`. class_id is required at homework.validation.js:70 `  class_id: fields.class_id.required(),`. The form's own shortfall message is at :458-462: "The first {classes.rows.length} of {classes.total} classes. A page cannot hold more." No text input, second page or type-ahead exists.
@@ -926,7 +930,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The ledger is ordered by a due date it never displays, so rows appear in an unexplained order and the user cannot see when an unpaid fee is due. — `(school)/school/fees/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 186
 - **What a user sees:** An accountant chasing arrears sees rows in an order nothing on screen explains and cannot tell which pending fee is overdue; "Period", blank on every one-off fee, reads like it should be the date.
 - **Evidence:** fees/page.tsx:70 declares `  due_date?: string | null;` and the column list at :182-204 is student, title, component, period, charged, paid, pending, status — no due date; :186 renders the raw DATEONLY `row.period_month`. The server sorts by the hidden column: fees.service.js:443 `      order: getSort({ query }, LEDGER_SORTABLE, ['due_date', 'ASC']),`. The column is NOT NULL — models/finance.js:141 `      due_date: { type: DataTypes.DATEONLY, allowNull: false },`.
@@ -935,7 +939,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Two of the three search boxes fire a request per keystroke with no debounce, and each in-flight response unmounts the table. — `(school)/school/fees/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 148
 - **What a user sees:** Typing "transport" issues nine requests and makes the table disappear and reappear nine times, losing scroll position each time.
 - **Evidence:** fees/page.tsx:147-148 is verbatim `          value={search}` / `          onChange={(event) => { setSearch(event.target.value); setPage(1); }}`, feeding :115 `const query = useMemo(() => ({ page, limit: 20, q: search || undefined }), [page, search]);` and :116's useCollection; Payments repeats it at :285. useCollection.ts:147-152 sets `setLoading(true)` on every query change (the key is JSON.stringify of the query, :132-137), and fees/page.tsx:160 then renders `: loading ? <p className="text-sm text-muted">Loading…</p>` in place of the table. No setTimeout exists in the file. table.tsx:12-14 records the intent — "`DataTable` now dims in place while `busy`" — and `busy` (table.tsx:161) is never passed at :164, :247 or :296.
@@ -944,7 +948,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The ledger search fires one request per keystroke and unmounts the table each time, instead of debouncing and dimming. — `(school)/school/finance/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 160
 - **What a user sees:** Each character blanks the ledger and loses scroll position; the placeholder understates what is searched.
 - **Evidence:** finance/page.tsx:155-160 is verbatim through `onChange={(event) => { setSearch(event.target.value); setPage(1); }}`; search feeds the query at :101-104 and useCollection refetches on every change (useCollection.ts:147-183). loading then takes :206-207 `<p className="text-sm text-muted">Loading…</p>`, and DataTable at :216-221 is rendered without busy. The server also LIKEs subcategory, which the placeholder does not mention — finance.service.js:312-318 searches title, subcategory and reference.
@@ -953,7 +957,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The limit cards drop `limit.unit`, so a megabyte allowance and a headcount render as indistinguishable bare numbers. — `(school)/school/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 84
 - **What a user sees:** "STORAGE LIMIT / 5,000" sits beside "STUDENT LIMIT / 5,000" in the same grid, claiming to be the same kind of quantity.
 - **Evidence:** page.tsx:17-20 `function formatLimit(limit: Limit): string { if (limit.type === 'unlimited' || limit.value === null) return 'Unlimited'; return new Intl.NumberFormat().format(limit.value); }` and :83-85 `<MetricCard key={key} label={key.replace(/_/g, ' ')} value={formatLimit(limit)} />`. The unit is on the type (lib/entitlements.tsx:42 `unit: string | null;`) and always filled by the server (entitlementService.js `unit: row.unit || LIMIT_UNITS[row.limit_key] || null`), with LIMIT_UNITS at constants.js:233-248 mapping `storage_limit: 'megabytes'`, `ai_limit: 'requests'` and the headcounts to `'count'`.
@@ -971,7 +975,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The Attachment column reports "file attached" for a file no screen in the product can retrieve, and the comment defers the download to a homework detail screen that does not exist. — `(school)/school/homework/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 324
 - **What a user sees:** A coordinator sees that a teacher attached a worksheet and has no way to open it, from this row or anywhere else — the indicator advertises a capability the product does not have.
 - **Evidence:** homework/page.tsx:315-326 `Not a link, and that is a deduction rather than a preference. The bytes come from GET /homework/:id/attachment … which belongs on the detail screen that can also show attachment_name.` then `cell: (row) => row.has_attachment ? (<span className="whitespace-nowrap text-xs text-muted">file attached</span>`. The route works — homework.routes.js:90-96 mounts `router.get('/:id/attachment', requirePermission('homework.view'), …)` and homework.controller.js:59-72 ends `return sendStoredFile(res, row.attachment_path, { filename: row.attachment_name, schoolId: row.school_id });`. lib/apiClient.ts exports `download()` (:461) and `saveFile()` (:504), used as a pair in super-admin/reports/page.tsx:392-397.
@@ -1007,7 +1011,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The catalogue search is not debounced — every keystroke changes the query object and fires a request — while the two sibling screens in this group both debounce at 300 ms. — `(school)/school/library/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 125
 - **What a user sees:** Typing an eight-character title sends eight scanning queries and, because of the `loading` branch at :156, collapses and re-renders the table eight times; on a slow connection the results flicker between prefixes.
 - **Evidence:** library/page.tsx:120-127 `<input id="book-search" type="search" placeholder="Title, author or ISBN…" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }}` with `search` a direct dependency of the query at :82-86. lib/useCollection.ts:132-137 keys the effect on `JSON.stringify(query)` and :147-183 refetches on every new key. homework/page.tsx:152-162 and parents/new/page.tsx:185-188 (`const timer = setTimeout(() => setDebounced(search), 300);`) both debounce. The server cost is a triple leading-wildcard LIKE — library.service.js:203-209 ORs `title`, `author` and `isbn`.
@@ -1016,7 +1020,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Primary in-app navigation uses raw `<a href>` rather than next/link, which triggers a full document load — and the access token is in memory only, so every such click discards it and forces a refresh round trip. — `(school)/school/homework/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 351
 - **What a user sees:** Clicking "Set homework" or "Add book" reloads the whole application: the shell shows "Loading your workspace…" (shell.tsx:190-202) while /auth/me and /auth/refresh complete, and the list's filters and scroll position are gone. Cancel does the same in reverse.
 - **Evidence:** homework/page.tsx:350-357 `can('homework.manage') ? (<a href="/school/homework/new" className="btn btn-primary">Set homework</a>`; same in library/page.tsx:142-149 and on both Cancel links (books/new:469, parents/new:701). apiClient.ts:148 "In memory, never in `localStorage`. A token in local storage is readable by any script" with :153 `let accessToken: string | null = null;`; a hard navigation destroys it, so lib/auth.tsx:133-146 re-runs `loadProfile()`, whose 401 drives the refresh at apiClient.ts:342-357. next/link is already used one directory up — (school)/school/page.tsx:10 and :113-119.
@@ -1025,7 +1029,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Both empty states misreport why the list is empty: the catalogue tests only `search` and ignores the availability filter, and the loans panel blames filters that may not be set. — `(school)/school/library/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `missing-state` · line 159
 - **What a user sees:** A librarian who selects "All copies out" on a fully-shelved catalogue is told "The catalogue is empty" and goes looking for lost data; a school with no loans is told nothing "matches these filters" when it has set none.
 - **Evidence:** library/page.tsx:158-159 `) : rows.length === 0 ? (` / `<EmptyNotice>{search ? \`No book matches “${search}”.\` : 'The catalogue is empty.'}</EmptyNotice>` — while `available` is a second filter on the same query (:83) that the server applies hard: library.service.js:200-202 `if (query.available !== undefined) { where.available_quantity = query.available ? { [Op.gt]: 0 } : 0; }`. The inverse fault at :266-267 `<EmptyNotice>No loans match these filters.</EmptyNotice>`, rendered unchanged when `status` is '' and `outstanding` is false. table.tsx:18-20 states the rule, and homework/page.tsx:336 does it correctly (`const filtered = Boolean(debounced || published || dueFrom);`).
@@ -1043,7 +1047,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### No column sets `primary`, so below 768px the mobile card for each staff member is headed by the monospace employee ID and the person's name is demoted to a label/value row. — `(school)/school/staff/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `mobile` · line 172
 - **What a user sees:** On a phone the staff directory is a stack of cards titled `EMP-0041`, `EMP-0042`… in small muted monospace, with the person's name buried in the detail grid below. Scanning for a person requires reading every card body.
 - **Evidence:** staff/page.tsx:171-181 makes `employee_id` the first column, `cell: (row) => <code className="text-xs text-muted">{row.employee_id}</code>` (:180), with `name` second at :182-198. components/table.tsx:166 `const heading = columns.find((c) => c.primary) ?? columns[0];` and :224 `<div className="text-sm font-semibold text-ink">{heading.cell(row)}</div>`. The `Column` interface documents the requirement at components/table.tsx:40: "Used as the card's heading on mobile. Exactly one column per table should set it."
@@ -1070,7 +1074,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### When the session fetch fails, the "Current session" select is disabled and empty but keeps the hint that describes a working control — only the "Admission session" select above it explains the failure. — `(school)/school/students/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `missing-state` · line 710
 - **What a user sees:** A receptionist without `sessions.view` sees a greyed-out "Current session" dropdown showing "Not tied to a session", under a paragraph confidently explaining how to use it. The first select says why it is dead; the second looks broken.
 - **Evidence:** Both selects share `disabled={loadingOptions || sessions.failed}` (:568 and :699), fed by one `Promise.allSettled` at :302-309. The admission-session block handles the failure at :586-591 `) : sessions.failed ? (<p className="mt-1 text-sm text-muted">The session list could not be loaded, so neither session can be chosen here...` — the current-session chain at :710-720 goes straight from `fieldErrors.academic_session_id` to the descriptive hint with no `sessions.failed` branch. `GET /sessions` needs a separate grant: sessions.routes.js:31-33 `requirePermission('sessions.view')`.
@@ -1106,7 +1110,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### A 422 whose details all bind to inputs sets the top-level banner to null, so an 18-field form reports failure only far above the submit button, with no scroll or focus. — `(school)/school/staff/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `missing-state` · line 328
 - **What a user sees:** The user presses "Create staff member", the spinner stops, and nothing near the button changes. The rejection is a red line several hundred pixels above the fold, so the form reads as unresponsive.
 - **Evidence:** staff/new/page.tsx:328-335 `setFieldErrors(perField); setError(homeless.length ? homeless.join(' ') : Object.keys(perField).length ? null : caught.message);` — the `null` branch means `{error ? <Notice tone="error">{error}</Notice> : null}` at :378 renders nothing. The submit button is at :696 and the four required fields are `employee_id` (:381), `category` (:396), `first_name` (:422) and `joining_date` (:459). No `scrollIntoView`, `focus()` or `useRef` appears anywhere in the file.
@@ -1115,7 +1119,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The parent directory has no row action at all, so the sub-resource §15.2 and the permission name are built around — a parent's children — is reachable only at creation time and never afterwards. — `(school)/school/parents/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 40
 - **What a user sees:** Once a parent is created, a child can never be added to or removed from their account. A parent whose second child enrols cannot be linked, and a mis-linked child cannot be unlinked — the parent portal then shows the wrong family permanently.
 - **Evidence:** The file header at :42-46 acknowledges the gap: "§15.2's headline feature is *Multiple Children*, so the column this list most wants is 'how many children, and which'... The children live at `GET /parents/:id/children`, a sub-resource". The routes exist — parents.routes.js:77-82 (children list, `requirePermission('parents.view')`), :84-90 `POST '/:id/children'` with `requirePermission('parents.manage')` (:86), :92-98 `DELETE '/:id/children/:linkId'` with `requirePermission('parents.manage')` (:94) — and parents.controller.js:43-45 answers with `ApiResponse.ok(res, { children: rows })`. config/permissions.js:91 is `{ key: 'parents.manage', group: 'People', name: 'Create parents & link children', module: MODULES.PARENT_PORTAL }`. The columns array ends at the Status badge (:181-197), there is no `parents/[id]` route, and no request in the app targets `/parents/:id/children`.
@@ -1151,7 +1155,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### All three lists unmount the table and print "Loading…" on every refetch, which is the regression `DataTable`'s `busy` prop was added to fix; `busy` is never passed and `LoadingBlock` is never used. — `frontend/src/app/(school)/school/students/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 390
 - **What a user sees:** Each debounced commit (300 ms, students:167, teachers:153) tears the table out of the DOM and replaces it with one line of text, collapsing the page and losing scroll position; changing a filter or paging does the same. First load gets a bare "Loading…" instead of the skeleton.
 - **Evidence:** students/page.tsx:389-390 is `      ) : loading ? (` / `        <p className="text-sm text-muted">Loading…</p>`, identical at teachers/page.tsx:340-341 and subjects/page.tsx:363-364. The table is rendered bare at students/page.tsx:403: `          <DataTable columns={columns} rows={rows} rowKey={(row) => row.id} caption="Students" />`. useCollection.ts:147-150 is `  useEffect(() => {` / `    const controller = new AbortController();` / (blank) / `    setLoading(true);`, with deps `}, [path, stableQuery, nonce]);` — so loading rises on every query change, not only the first. table.tsx:12-15 is verbatim, including "`DataTable` now dims in place while `busy`, and the skeleton is only for the first load".
@@ -1160,7 +1164,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The page description sends the reader to per-class and per-teacher timetable screens that do not exist anywhere in the app. — `(school)/school/timetable/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `dead-link` · line 311
 - **What a user sees:** An administrator reads that a single class's week is "on their own timetable", looks for it in the nav and finds nothing. There is no way in the product to see one class's or one teacher's week; the only view is a paginated register of the whole school.
 - **Evidence:** Line 311 is verbatim `description="Every scheduled period in the school. A single class or teacher’s week is on their own timetable."`, and the file header at :19-20 is verbatim "So the register is rendered as a register, and the grid belongs to the two per-class and per-teacher screens." `ls -R` on `(school)/school/timetable` returns only `page.tsx` and `new/page.tsx`; a tree-wide grep for `timetable` across `frontend/src` finds no call to `/timetable/class/` or `/timetable/teacher/` anywhere — only `lib/nav.ts:158` and `:209` pointing at this register, plus prose in unrelated screens. Both endpoints are live: `timetable.routes.js:81-86` and `:88-93` mount `GET /class/:classId` and `GET /teacher/:teacherId` behind `requirePermission('timetable.view')`.
@@ -1169,7 +1173,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The Timetable shortcut is captioned "Your teaching periods" but lands on the whole-school register, which offers no teacher filter control at all. — `(teacher)/teacher/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 75
 - **What a user sees:** A teacher clicks a card promising their own periods and gets page 1 of a 20-row register of the whole school ordered by weekday, with no control that can narrow it to them and a search box that only matches period labels and rooms.
 - **Evidence:** Line 75 is verbatim `{ href: '/school/timetable', label: 'Timetable', description: 'Your teaching periods.', permission: 'timetable.view', module: 'timetable' },` and it survives the filter at line 76 because Teacher holds `timetable.view` (`config/permissions.js`, Teacher block) and the module gate. The destination's header at :311 says "Every scheduled period in the school", and its query object (lines 157-170) sends only `page`, `limit: 20`, `q`, `day_of_week` and `is_active` — the file's own comment at :143-146 explains the six id filters are unwired. `timetable.service.js:338-343` is verbatim `if (query.q) { where[Op.or] = [ { period_label: { [Op.like]: ... } }, { room: { [Op.like]: ... } }, ]; }`, so the search cannot match a teacher name. `GET /timetable/teacher/:teacherId` is mounted at `timetable.routes.js:88-93` and no screen calls it.
@@ -1178,7 +1182,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Five NOT NULL columns are typed nullable and three DECIMALs are typed as possibly `string`, contradicting `decimalNumbers: true` and leaving a dead null branch in the table. — `(student)/student/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `type-lie` · line 54
 - **What a user sees:** The `row.subjects_failed === null` branch at line 131 is unreachable dead code, and the phantom `string` half of the union is what justifies the `toFixed` rounding above it — two screens over one table now disagree about the type of the same column.
 - **Evidence:** Lines 54-60 are verbatim (`total_full_marks: string | number | null;` through `subjects_failed: number | null;`) and line 64 is verbatim `/** DECIMAL columns arrive as strings; parsed for display only. */`. `config/database.js:57-59` is verbatim `dialectOptions: { // Return DECIMAL as string-free numbers where safe; money is handled via the money util.` / `decimalNumbers: true,`. `models/exams.js:297-305` shows all five as NOT NULL with defaults: `total_full_marks: { type: DataTypes.DECIMAL(9, 2), allowNull: false, defaultValue: 0 }`, `total_marks_obtained` likewise, `percentage: { type: DataTypes.DECIMAL(6, 3), allowNull: false, defaultValue: 0 }`, `subjects_count` and `subjects_failed` as `INTEGER.UNSIGNED, allowNull: false, defaultValue: 0`. `exams.controller.js:213` sends the rows unmapped (`ApiResponse.paginated(res, result, pagination)`), so nothing can introduce a null. The school screen reading the same rows declares `total_full_marks: number;` at `(school)/school/results/page.tsx:123` and states the reason at :116.
@@ -1205,7 +1209,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Every foreign-key picker is capped at 100 rows with no search, so in a school of more than 100 teachers or subjects the missing rows are unselectable and the form says so without offering a remedy. — `(school)/school/timetable/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 265
 - **What a user sees:** In a school with 140 teachers, the 40 sorting after the cut-off cannot be assigned to a period at all. The form states "Showing the first 100 of 140 by first name" and offers no way to reach the rest.
 - **Evidence:** Line 107 is verbatim `const OPTION_LIMIT = 100;` and line 265 is verbatim `const page = await api.page<T[]>(path, { query: { limit: OPTION_LIMIT } });`, used by all four loaders at 275-278. The truncation notices are exact: classes at 487, subjects at 668 (`… of ${subjects.total} by name.`), teachers at 722 (`… of ${teachers.total} by first name.`), sessions at 773. Grep for `type="search"` or any `<input` bound to a `q` in the file returns nothing but the two `<input type="time">` fields, so no picker has a filter. The cap is real: `config/constants.js:751-755` is `const PAGINATION = Object.freeze({ DEFAULT_PAGE: 1, DEFAULT_LIMIT: 25, MAX_LIMIT: 100 });`, enforced by `validate.js` `pagination` (`.max(PAGINATION.MAX_LIMIT)`), so raising the limit is a 422. The fix is available: `listQuery` concats `commonSchemas.search` (`search: Joi.object({ q: Joi.string().trim().allow('').max(120) })`) and `teachers.service.js:203-207` LIKEs `first_name`, `last_name` and `employee_id`, with default order `['first_name', 'ASC']` (:213).
@@ -1214,7 +1218,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### With no `sortBy` sent, `getSort` appends an `id` tiebreaker, so within each weekday the register lists periods in creation order and there is no sort control. — `(school)/school/timetable/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — half was already fixed in the tree, the rest fixed now; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 156
 - **What a user sees:** Within a weekday the rows appear in creation order, so period 7 can sit above period 1; an administrator scanning for a free period must read every row of the day, and a page boundary can split a day mid-sequence.
 - **Evidence:** The query object at 157-170 sends only `page`, `limit: 20`, `q`, `day_of_week` and `is_active`, and the comment at :149-154 is verbatim, including "Sending nothing lets the route's own fallback — `['day_of_week', 'ASC']` — stand, which is the natural week." `timetable.service.js:347` is verbatim `{ where, include: INCLUDES, order: getSort({ query }, SORTABLE, ['day_of_week', 'ASC']) },`. `utils/pagination.js:62-65` is verbatim `const column = primary[primary.length - 2];` / `if (column === 'id') return [primary];` / `return [primary, ['id', primary[primary.length - 1]]];` — with the fallback, `column` is `day_of_week`, so the emitted order is `day_of_week ASC, id ASC`. The proper week order exists but is used only by the unpaginated views: `timetable.service.js:116` is `const WEEK_ORDER = Object.freeze([['day_of_week', 'ASC'], ['period_number', 'ASC']]);`, applied at :452 and :466 only.
@@ -1223,11 +1227,11 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ## Minor — polish, wording, and stale comments
 
-42 finding(s) — 5 closed, 37 open.
+42 finding(s) — 42 closed, 0 open (37 of them in session 28).
 
 ### The User interface — and its comment — omit the `role` object that GET /auth/me actually returns, which is why the auth screens route by isPlatform instead of by role. — `src/lib/auth.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `type-lie` · line 25
 - **What a user sees:** No crash — the field is simply invisible to TypeScript. The cost is the routing defect above: login/page.tsx:51 and change-password/page.tsx:59 fall back to tenant.isPlatform, a two-way flag, to choose between five surfaces, because the field that distinguishes a parent from a principal is not declared.
 - **Evidence:** auth.tsx:25 is verbatim `/** The user, as `PUBLIC_USER_FIELDS` in `auth.service.js` defines it. */` and the interface at 26-41 ends at `must_change_password: boolean;` with no `role`. But publicUser() emits more than PUBLIC_USER_FIELDS (auth.service.js:109-119 is the field list; the function then adds) — `if (user.role) { out.role = { id: user.role.id, slug: user.role.slug, name: user.role.name, isPlatformRole: Boolean(user.role.is_platform_role), isSchoolRole: Boolean(user.role.is_school_role) }; }` — and user.role is always loaded for /auth/me: authenticate.js:118 `include: [{ model: db.Role, as: 'role', attributes: ['id', 'slug', 'name', 'is_platform_role', 'is_school_role'] }],`.
@@ -1236,7 +1240,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The client-side password-match check returns before setError(null), so a stale server error banner stays on screen beside the new field error. — `src/app/(auth)/change-password/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `missing-state` · line 48
 - **What a user sees:** After a failed submit ('The new password must be different from the current one.', or a wrong current password — both arrive with no details array, so they land in the banner), the user corrects that field but mistypes the confirmation. They now see the old red banner about the already-fixed problem above a field error about a different one, and cannot tell which complaint is current.
 - **Evidence:** change-password/page.tsx:48-55 is verbatim: `if (password !== confirmation) { setFieldErrors({ confirmation: 'The two passwords do not match.' }); return; }` then `setSubmitting(true); setError(null); setFieldErrors({});`. The early return at 50 precedes setError(null) at 54, so the banner rendered by line 114 `{error ? <Notice tone="error">{error}</Notice> : null}` survives. reset-password/page.tsx:38-45 has the identical ordering (`return;` at 40, `setError(null);` at 44) with its banner at line 134.
@@ -1245,7 +1249,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Two doc comments assert DECIMAL columns arrive as strings; `decimalNumbers: true` means they arrive as JS numbers, and both typed fields (`credit_balance`, `rate_percent`) are wrong as a result. — `frontend/src/app/(platform)/super-admin/invoices/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — half was already fixed in the tree, the rest fixed now; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `stale-comment` · line 112
 - **What a user sees:** The false premise is the direct cause of the `credit_balance` money bug in the same file; the next reader of these comments inherits the belief lib/money.ts was written to kill. (The `rate_percent` consequence is cosmetic only — "12.5%" is a correct rendering of 12.5000.)
 - **Evidence:** page.tsx:112-113 "`credit_balance` is `money()` — `DECIMAL(14,2)`, which Sequelize hands back as a **string**. It is displayed and never added to anything, so it stays a string here." and page.tsx:129 "/** One row of `GET /taxes`. `rate_percent` is `DECIMAL(7,4)`, so a string over the wire. */" with page.tsx:134 `rate_percent: string;`. Contradicted by config/database.js `decimalNumbers: true` and by lib/money.ts's measured note. models/billing.js:42 `rate_percent: { type: DataTypes.DECIMAL(7, 4), allowNull: false, defaultValue: 0 },`; taxes.controller.js passes the model through `ApiResponse.paginated`/`ok` unchanged.
@@ -1254,7 +1258,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The coupon money fields are typed `string`, but DECIMAL columns arrive as JS numbers; the local formatters survive only because they call `Number()` first. — `frontend/src/app/(platform)/super-admin/coupons/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — half was already fixed in the tree, the rest fixed now; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `type-lie` · line 72
 - **What a user sees:** No visible breakage today (page.tsx:105 `const amount = Number(value);` and :119 `const percent = Number(value);` coerce first), but the declared contract is false, so the next change that treats these as strings drops cents — the bug lib/money.ts documents already shipping once.
 - **Evidence:** page.tsx:71-76 `/** DECIMAL over the wire — see the header. Percent when percentage, money when fixed_amount. */` / `discount_value: string;` / `currency: string | null;` / `max_discount_amount: string | null;`. models/billing.js:69 `discount_value: money({ comment: 'Percent when percentage, currency amount when fixed_amount' }),` and :72 `max_discount_amount: money({ allowNull: true, defaultValue: null }),` — `DECIMAL(14,2)` via columns.js — returned as numbers because database.js sets `decimalNumbers: true`. coupons.controller.js `present()` is `{ ...coupon.toJSON(), remaining_uses: ... }`.
@@ -1263,7 +1267,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The file header states as fact that the driver hands DECIMAL over as a string and that interpolating one prints "15.00%" — both false under this project's database config. — `frontend/src/app/(platform)/super-admin/coupons/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `stale-comment` · line 33
 - **What a user sees:** The most-read explanation of coupon money handling teaches the opposite of measured behaviour, and is the stated justification for a second, file-local `formatMoney` that shadows lib/money.ts.
 - **Evidence:** page.tsx:30-35 "## Money is a string, and a percentage has no currency" … "`money()`), which the driver hands over as a **string** — `"15.00"`, not `15`. Interpolating one straight into a cell prints "15.00%" where the operator typed 15, so every amount goes through the helpers below." Contradicted by config/database.js `decimalNumbers: true` under `dialect: 'mysql'` and by lib/money.ts's measurement note ("`Subscription.cycle_amount` reads back as the number `499` from both `.get()` and `.toJSON()`").
@@ -1281,7 +1285,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The three option lookups fire for a caller the page is about to refuse, because the effect has no permission guard — the sibling create screen documents and guards this exact case. — `frontend/src/app/(platform)/super-admin/invoices/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 214
 - **What a user sees:** Any signed-in non-platform user (or one lacking invoices.manage) who opens this URL spends three requests against the pre-auth apiLimiter before the refusal renders. No visible breakage — the refusal still shows — so the cost is wasted requests and an inconsistency with the project's own documented standard.
 - **Evidence:** page.tsx:214 `useEffect(() => {` runs unconditionally and issues `api.page('/subscriptions')` (:223), `api.get('/taxes')` (:241) and `api.get('/coupons')` (:251); the gate is a post-hooks return at page.tsx:369-370 `const isPlatform = profile?.tenant.isPlatform ?? false;` / `if (!isPlatform || !can('invoices.manage')) {`. Nothing above the page stops a non-platform caller: `(platform)/super-admin/layout.tsx` only renders `<AppShell nav={PLATFORM_NAV}>` and there is no `(platform)/layout.tsx`. coupons/new/page.tsx:254-260 has the guard and the reason: "The permission gate below is a `return` *after* the hooks, so without this the two lists would still be fetched for a caller who is about to be told no." then `if (!can('coupons.manage')) return;`
@@ -1290,7 +1294,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### An internal SRS section reference is shipped as user-facing card copy. — `E:/School Managment System/frontend/src/app/(platform)/super-admin/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 124
 - **What a user sees:** A Super Admin reads '§9.1' on the platform dashboard with no way to know what document that cites. It is the only card on the screen with an explanation, and the explanation is addressed to a developer.
 - **Evidence:** super-admin/page.tsx:124 is verbatim `<MetricCard label="Archived schools" value={count(data.archivedSchools)} hint="Not in the §9.1 eleven — shown so totals reconcile" />`. table.tsx:425 renders it as visible body text, verbatim `{hint ? <p className="mt-1 text-xs leading-relaxed text-muted">{hint}</p> : null}`. The underlying fact is real and the service already keeps it as a comment — platform.service.js:160-161 is verbatim `/* Not a §9.1 line. Included because Total minus Active minus Suspended is otherwise an unexplained` / `* remainder on the screen, and `schools.status` has exactly three values. */`.
@@ -1299,7 +1303,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The Code field's hint omits two rules the schema enforces, so inputs it describes as valid are rejected with a 422. — `E:/School Managment System/frontend/src/app/(platform)/super-admin/organizations/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 171
 - **What a user sees:** A user who types `-ACME` or `_A` — both described as allowed by the hint — fills in the form, submits, and gets a validation error under the field. Small, but the hint exists precisely to prevent that round trip.
 - **Evidence:** organizations/new/page.tsx:164-172 is verbatim, ending `hint="Letters, digits, hyphens and underscores. Stored in upper case."`. organizations.validation.js:61 is verbatim `const CODE_PATTERN = /^[A-Z0-9][A-Z0-9_-]*$/;` and the field is verbatim `code: Joi.string().trim().uppercase().min(2).max(40).pattern(CODE_PATTERN).messages({ 'string.pattern.base': '"code" must start with a letter or digit and may contain only letters, digits, hyphens and underscores' })`. So a leading hyphen or underscore is refused, and so is a single character.
@@ -1308,7 +1312,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The payments ledger surfaces per-row refundability from the API but offers no refund control, and no refunds screen exists anywhere in the app. — `E:/School Managment System/frontend/src/app/(platform)/super-admin/payments/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — half was already fixed in the tree, the rest fixed now; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 250
 - **What a user sees:** An approved payment that needs reversing has no path in the product; the reviewer sees 'approved' and there is nothing to click, so the refund is issued out of band.
 - **Evidence:** payments.controller.js `present()` ends verbatim `return { ...rest, has_screenshot: Boolean(screenshotPath), refundable_amount: refundable, is_refundable: money.toMinor(refundable) > 0, };`, and payments.routes.js:180-186 mounts `router.post('/:id/refunds', platformOnly('refunds.manage'), ...)` where `platformOnly` is `[requirePlatformScope(), requirePermission(permission)]`. The `Payment` interface at payments/page.tsx:81-95 declares neither field, and the columns array at 171-267 appends only the `review` action, gated `row.status === 'pending'`. `grep -rni refund frontend/src` returns only status-string literals and comments — no refund call anywhere — and there is no refunds directory under (platform)/super-admin.
@@ -1317,7 +1321,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### username is typed nullable although the column is NOT NULL and uniquely indexed, making the em-dash branch dead code. — `(platform)/super-admin/principals/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `type-lie` · line 69
 - **What a user sees:** No visible breakage, but the interface asserts that principals without usernames exist, so the next reader writes null-safe filtering or search against a state the database forbids.
 - **Evidence:** principals/page.tsx:69 `  username: string | null;`, with the cell rendering a placeholder for the impossible case (138-143): `cell: (row) => row.username ? (<code className="text-xs text-muted">{row.username}</code>) : (<span className="text-muted-soft">—</span>),`.
@@ -1326,7 +1330,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The header claims fieldErrors() throws on the 409's object-shaped details and that apiClient.ts was left alone, but the client already normalises details to an array, so the local guard is dead. — `(platform)/super-admin/schools/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `stale-comment` · line 41
 - **What a user sees:** None at runtime; the next maintainer is told the shared client is unsafe when it is not, and keeps copying a redundant guard into new forms.
 - **Evidence:** schools/new/page.tsx:38-46 verbatim: "Calling `fieldErrors()` on that throws `TypeError: … is not iterable` from inside this catch block, so the rejection escapes, `saving` is never cleared, and the button sticks on \"Creating…\" with nothing on screen" and "The `Array.isArray` guard below is deliberately local to this page rather than a fix in `apiClient.ts`: that client is shared by thirty screens and is not this change's to alter." apiClient.ts:104-111 is that fix: `this.details = Array.isArray(details) ? (details as unknown[]).filter((d): d is FieldError => ...) : [];`.
@@ -1335,7 +1339,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The header asserts the row carries nothing beyond PUBLIC_USER_FIELDS plus school, but publicUser() also emits a nested role object because the service includes the association. — `(platform)/super-admin/principals/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `stale-comment` · line 15
 - **What a user sees:** A maintainer who wants a Role column is told by this comment that the key does not exist and will not try.
 - **Evidence:** principals/page.tsx:14-16 verbatim: "fields it includes. So the columns below are drawn from `PUBLIC_USER_FIELDS` plus that `school` object, and from nothing else — the response carries no other key, and a column for one would render `undefined` on every row." auth.service.js:119-127: `if (user.role) { out.role = { id: user.role.id, slug: user.role.slug, name: user.role.name, isPlatformRole: Boolean(user.role.is_platform_role), isSchoolRole: Boolean(user.role.is_school_role), }; }`.
@@ -1344,7 +1348,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### loading starts false while a fetch is guaranteed, so the first paint shows the "nothing was returned" empty state instead of a loading state. — `(platform)/super-admin/reports/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `missing-state` · line 274
 - **What a user sees:** Opening Reports paints "Nothing was returned for this report." before the Subscription report arrives — the one message that tells the operator their data is missing is shown every time it is not.
 - **Evidence:** reports/page.tsx:269-270: `const [report, setReport] = useState<AnyReport | null>(null);` / `const [loading, setLoading] = useState(false);`. The default tab is subscription (:261) with needsSchool false and no params, so `missing` is empty (316-323) and the effect will fetch — but setLoading(true) is inside that effect (:346), after the first commit. The render chain therefore reaches 632-633 `) : !report ? (<EmptyNotice>Nothing was returned for this report.</EmptyNotice>`.
@@ -1362,7 +1366,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The search placeholder names two of the three columns the endpoint actually searches, hiding the city search. — `(platform)/super-admin/schools/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 125
 - **What a user sees:** An operator looking for every school in a city does not learn that this box would find them, and filters by hand instead.
 - **Evidence:** schools/page.tsx:125: `        placeholder="Search by name or code…"`. schools.service.js:185-191: `if (query.q) { where[Op.or] = [ { name: { [Op.like]: `%${query.q}%` } }, { code: { [Op.like]: `%${query.q}%` } }, { city: { [Op.like]: `%${query.q}%` } }, ]; }`.
@@ -1371,7 +1375,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The primary action is a raw anchor, so it does a full document load and destroys the in-memory access token. — `(platform)/super-admin/subscriptions/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 306
 - **What a user sees:** Clicking the button reboots the SPA — blank shell, a refresh-token round trip, then the form — instead of a client transition.
 - **Evidence:** page.tsx:306-312 `<a href="/super-admin/subscriptions/new" className="btn btn-primary">New subscription</a>`; the token is module state (apiClient.ts:153).
@@ -1380,7 +1384,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The list shows account status but offers no way to change it, and FR-AUTH-007's endpoint has no UI path. — `(platform)/super-admin/users/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 161
 - **What a user sees:** A Super Admin sees a suspended or never-signed-in account and cannot act, and the per-user override picture published by GET /users/:id has nowhere to be shown.
 - **Evidence:** The `columns` memo (161-206) ends at `last_login_at` with no action cell and DataTable gets no row link; no `/super-admin/users/[id]` route exists; users.routes.js:84-89 GET /:id and :91-97 PATCH /:id (accepting `status`) are both mounted.
@@ -1389,7 +1393,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The class picker silently truncates at 100 classes with no notice, unlike the two create forms that report the same cap. — `(school)/school/classes/sections/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 172
 - **What a user sees:** A large school with more than 100 classes across several academic sessions finds some classes simply absent from the picker with no explanation, and their sections unreachable.
 - **Evidence:** sections/page.tsx:172 `const classes = useCollection<ClassRow>('/classes', useMemo(() => ({ limit: 100 }), []));` — and `classes.meta` is never read anywhere in the file.
@@ -1398,7 +1402,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### A non-numeric ?class= in the URL produces a request to /classes/NaN/sections and an error banner whose Retry can never succeed. — `(school)/school/classes/sections/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 221
 - **What a user sees:** A stale or hand-edited bookmark shows a red error with a "Try again" button that fails identically forever, and the picker above reads "Choose a class…" because no option matches.
 - **Evidence:** sections/page.tsx:170 `const selected = params.get('class');` and 221 `<SectionsPanel classId={Number(selected)} />`, which builds the path unguarded at 96-99 `api.get<{ sections: SectionRow[] }>(`/classes/${classId}/sections`, ...)`.
@@ -1407,7 +1411,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The header asserts that sections/page.tsx reads the sections endpoint through useCollection; it stopped doing that and its own header records the fix. — `(school)/school/exams/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `stale-comment` · line 38
 - **What a user sees:** No runtime effect, but the comment tells the next maintainer that a live bug exists in a sibling file that was fixed, which either sends them chasing a phantom or leads them to trust a second stale claim in the same header.
 - **Evidence:** exams/new/page.tsx:36-40 says "`sections/page.tsx` reads it through `useCollection`, which assigns `data` straight to `rows`; that is not this file's to fix". sections/page.tsx:96-101 now reads it with `api.get<{ sections: SectionRow[] }>(...)` and `setRows(result.sections ?? []);`
@@ -1416,7 +1420,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The file header asserts DECIMAL arrives as a string and that this is deliberate; the database config makes it a number, and lib/money.ts documents that this exact belief was a bug. — `(school)/school/finance/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `stale-comment` · line 19
 - **What a user sees:** No user-visible symptom alone, but it is the premise that produced the wrong money helpers lib/money.ts replaced.
 - **Evidence:** finance/page.tsx:18-22 is verbatim ("## Money is a string, and treating it as a number is the bug this file avoids" … "The driver returns it as a **string** — deliberately"), repeated at :84. database.js:57-59 is `  dialectOptions: {` / `    // Return DECIMAL as string-free numbers where safe; money is handled via the money util.` / `    decimalNumbers: true,`. lib/money.ts:14-19 records the measurement that a DECIMAL does not arrive as a string. The report figures are numbers before the driver question at all — finance.service.js:442 and :444 run each through `money.toNumber(row.total)` — which is why finance/page.tsx:229-234 types them `number` while :69 types the row amount `string | number`.
@@ -1425,7 +1429,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The header repeats the false "every amount is a DECIMAL and arrives as a string" claim that lib/money.ts exists to correct. — `(school)/school/fees/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `stale-comment` · line 19
 - **What a user sees:** Invisible today, but it is the stated justification for the local money() at :92 instead of lib/money.ts, and it invites the String(value).split('.') formatter that drops cents.
 - **Evidence:** fees/page.tsx:19-22 is verbatim: "## Money is a string here too" / "Every amount is a DECIMAL and arrives as a string. Parsed for display only, never summed across a page — see `finance/page.tsx`…". database.js:57-59 sets decimalNumbers: true; money.ts:14-19 documents the measured consequence of believing otherwise ("the cell rendered **`499`**"). The interfaces in the same file hedge against the header — fees/page.tsx:49 `  amount: string | number;`.
@@ -1434,7 +1438,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The Charged/Paid/Pending comment cites fees.service.js:448 for the pending computation; line 448 is a closing brace and the computation is at 466. — `(school)/school/fees/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `stale-comment` · line 196
 - **What a user sees:** A reader verifying the three-column money change follows the pointer into the seam between two functions and must decide whether the claim or the line number is wrong.
 - **Evidence:** fees/page.tsx:194-195 is verbatim: "`pending_amount` is what they owe, and `fees.service.js:448` computes and stores exactly that as `max(0, net − paid)`." Numbered output of fees.service.js gives 446 `  );`, 447 `}`, 448 (blank), 449 `/* ── FR-FEE-002 — collection ── */`. The computation is at 466: `  const pending = money.clampNonNegative(money.subtract(studentFee.net_amount, paidAmount));`.
@@ -1443,7 +1447,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The Class cell justifies hiding the section id by deferring to "the exam's own detail screen", which does not exist — an exam row is a dead end. — `(school)/school/exams/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — half was already fixed in the tree, the rest fixed now; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `dead-link` · line 227
 - **What a user sees:** A user reading "one section" has nowhere to go to learn which one, and an exam can be created and listed but never opened, marked or published from the UI.
 - **Evidence:** exams/page.tsx:224-227 is verbatim, ending "Which section it is has to come from the exam's own detail screen." A full directory listing of frontend/src/app shows `(school)/school/exams` and `(school)/school/exams/new` and nothing else; no [id] segment exists anywhere under app. I read the whole column array (:196-306): every cell renders text or a StatusBadge, no cell is a link. No screen posts marks or publishes results either — the Results screen only reads, at results/page.tsx:205 `'/exams/results'`.
@@ -1452,7 +1456,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Navigation uses bare <a href> instead of next/link, so every in-app jump is a full document reload that drops the in-memory token and shows the workspace splash. — `(school)/school/exams/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 324
 - **What a user sees:** Clicking Add exam or Cancel tears down the app, shows a centred splash, refreshes the session over the network and rebuilds the shell — for a jump between sibling screens.
 - **Evidence:** exams/page.tsx:324-329 is verbatim (`<a href="/school/exams/new" className="btn btn-primary">Add exam</a>`), and the same pattern is at fees/page.tsx:152, finance/page.tsx:193-198, fees/structures/new/page.tsx:731 and homework/new/page.tsx:715. next/link is the convention elsewhere: it is imported at components/shell.tsx:24, app/(school)/school/page.tsx:10 and app/(teacher)/teacher/page.tsx:10. The token is a module variable — apiClient.ts:153 `let accessToken: string | null = null;` — and auth.tsx:95 `const [loading, setLoading] = useState(true);` with the bootstrap refresh at :134-135, so shell.tsx:189-196 renders the full-screen "Loading your workspace…" interstitial after every such navigation.
@@ -1479,7 +1483,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### `fine_amount` is typed as possibly a string and possibly null when it is a NOT NULL DECIMAL arriving as a number, and it is formatted by hand with toFixed(2) instead of the shared helper, so a large fine loses its thousands separator. — `(school)/school/library/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `money` · line 62
 - **What a user sees:** A 1234.50 fine renders "1234.50 USD" where every other money cell renders "1,234.50 USD", and the nullable typing invites a null branch for a state the column cannot reach.
 - **Evidence:** library/page.tsx:62 `  fine_amount: string | number | null;`, :65 `  currency: string | null;`, and :221-225 `return (<span className="font-medium">{amount.toFixed(2)} {row.currency ?? ''}</span>);`. models/other.js:404 is `fine_amount: money({ defaultValue: 0 })` — DECIMAL(14,2) `allowNull: false` per columns.js:60-62 — and other.js:407 `currency: { type: DataTypes.STRING(10), allowNull: false, defaultValue: 'USD' }`. lib/money.ts:28-30 states "Formatting is the only thing done here", and formatAmountWithCode (:58-65) returns `1,200.00 USD` from a pinned en-US grouped formatter (:38-41).
@@ -1488,7 +1492,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### `limits.slice(0, 8)` silently drops the ninth limit the API sends, so a school's purchased SMS credit balance can never appear on the dashboard. — `(school)/school/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 83
 - **What a user sees:** A school that has bought SMS credits sees no balance on its dashboard, and nothing on screen suggests a card was withheld — the heading just says "Limits".
 - **Evidence:** page.tsx:82-84 `<dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">` / `{limits.slice(0, 8).map(([key, limit]) => (` / `<MetricCard key={key} label={key.replace(/_/g, ' ')} value={formatLimit(limit)} />`. Every snapshot carries nine keys: constants.js:204 `const USAGE_LIMIT_KEYS = Object.freeze([...LIMIT_LIST, ...ADDON_ONLY_LIMITS]);` with LIMIT_LIST the eight §11.2 limits (175-186) and `ADDON_ONLY_LIMITS = Object.freeze(['sms_limit'])` (:198). emptyLimits (entitlementService.js:229-246) iterates USAGE_LIMIT_KEYS and both the unsubscribed path (:270) and the resolved path (:378) start from it, so `sms_limit` is always present and always last in insertion order. constants.js:216 labels it `'SMS Credits'` and 188-197 explains that `subscription_addons` can grant units against it.
@@ -1497,7 +1501,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The "Included modules" section renders a heading over an empty list for a school with no subscription, which is the ordinary pre-billing state. — `(school)/school/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `missing-state` · line 93
 - **What a user sees:** A newly created school's principal sees the heading "Included modules" with blank space under it, indistinguishable from a rendering failure.
 - **Evidence:** page.tsx:89-94 `<section className="mb-8" aria-label="Included modules"> <h2 …>Included modules</h2> <ul className="flex flex-wrap gap-2"> {enabled.map(([key]) => (`, where `enabled` is `modules.filter(([, on]) => on)` (:27). For an unsubscribed school every value is false: entitlementService.js:248-253 `function emptyModules() { … for (const key of MODULE_LIST) modules[key] = false; return modules; }`, returned by unsubscribedSnapshot at :268, whose comment (255-261) confirms the state is expected — "A school exists before it is subscribed (FR-SADMIN-002 creates it, the subscription comes after)".
@@ -1506,7 +1510,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Two source citations in this file point at lines that contain something else, and one of them is the evidence for a design decision the file argues at length. — `(school)/school/homework/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `stale-comment` · line 318
 - **What a user sees:** No runtime effect, but the next reader who follows either citation lands on unrelated code — and in the first case that citation is the whole argument for why the Attachment cell is an indicator instead of a control.
 - **Evidence:** homework/page.tsx:317-318 `the access token is held in memory and attached as an \`Authorization: Bearer\` header by` / `\`apiClient\` (\`apiClient.ts:274\`). A plain \`<a href>\` is a browser navigation that carries`. apiClient.ts:274 is `}` — the close of the RequestOptions interface; the header is set at :318, :374, :383 and :470, and a grep for `Authorization` in that file returns exactly those four. Second, homework/page.tsx:58-61 cites `models/index.js:466-470` for five `Homework.belongsTo(...)` declarations that are actually at 468-472.
@@ -1515,7 +1519,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The comment naming the money column's precision contradicts the model, and another file in the same codebase states the correct width. — `(school)/school/library/books/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `stale-comment` · line 87
 - **What a user sees:** No runtime effect, but a later edit that "corrects" the ceiling to the column width would raise the browser limit past what the API accepts and turn a blocked input into a 422.
 - **Evidence:** books/new/page.tsx:86-92 `/** * \`moneyField\`'s ceiling — \`DECIMAL(12,2)\`, so \`max(9999999999.99)\` in the schema. * * Written out rather than left implicit because the two money inputs below want it as their \`max\`, * and a literal repeated twice is a literal that gets edited once. */ const MONEY_MAX = 9999999999.99;`. models/columns.js:59-61 `/** Money column. All amounts share one precision so arithmetic is predictable. */ const money = (options = {}) => ({ type: DataTypes.DECIMAL(14, 2),`, and frontend/src/lib/money.ts:26 says the same. The constant itself is right — library.validation.js:44 `const moneyField = Joi.number().min(0).max(9999999999.99).precision(2);` — so only the stated reason is wrong.
@@ -1524,7 +1528,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The "Linked account" label points at `user_id`, an element that is not rendered when the account fetch fails. — `(school)/school/students/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `a11y` · line 871
 - **What a user sees:** A user without `users.view` gets a labelled form control that does not exist; assistive technology announces "Linked account" with nothing behind it.
 - **Evidence:** students/new/page.tsx:870-880 `<label htmlFor="user_id" className="block text-sm font-medium">Linked account</label>` then `{users.failed ? (<p className="mt-1 text-sm text-muted">The account list could not be loaded, so a login cannot be linked here...</p>) : (<>...<select id="user_id"` — the only `id="user_id"` in the file is at :897, inside the skipped branch. `users.failed` is set by `settle()` (:209-213) whenever `GET /users` rejects, and users.routes.js:66-68 gates that list on `requirePermission('users.view')`, a different grant from the `students.manage` that opens this screen (:294).
@@ -1533,7 +1537,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The primary action is a raw `<a href>` rather than a `Link`, so it triggers a full document reload that discards the in-memory access token and re-runs the whole auth bootstrap. — `(school)/school/parents/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 217
 - **What a user sees:** Clicking "Add parent" gives a full-page reload and the shell's loading state before the form appears, instead of an instant client transition, and costs an extra token-refresh round trip.
 - **Evidence:** parents/page.tsx:215-222 `manageable ? (<a href="/school/parents/new" className="btn btn-primary">Add parent</a>) : null`. The token lives in module scope — lib/apiClient.ts:153 `let accessToken: string | null = null;` — so a document navigation resets it and the next request takes the 401-then-refresh path at lib/apiClient.ts:379-384. The shell remounts and shows its loading branch (components/shell.tsx:190 `if (loading) {`) while `/auth/me` refetches. `Link` is the pattern next door: (school)/school/page.tsx:10 and :113.
@@ -1542,7 +1546,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The "Add staff member" action is a raw `<a href>`, forcing a full document reload instead of a client-side transition. — `(school)/school/staff/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `ux` · line 261
 - **What a user sees:** A full reload and a shell spinner between the staff list and the create form, on the most-used button on the screen.
 - **Evidence:** staff/page.tsx:259-266 `can('staff.manage') ? (<a href="/school/staff/new" className="btn btn-primary">Add staff member</a>) : null`. lib/apiClient.ts:153 keeps `accessToken` in module scope, so the reload drops it and the next call takes the 401-then-refresh path at lib/apiClient.ts:379-384; components/shell.tsx:190 re-renders its loading state while `/auth/me` refetches. `next/link` is already the pattern in components/shell.tsx:24 and (school)/school/page.tsx:113.
@@ -1551,7 +1555,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The Cancel link is a raw `<a href>`, so abandoning the form triggers a full page reload rather than a client-side navigation. — `(school)/school/staff/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 699
 - **What a user sees:** Cancelling out of the form reloads the whole application and shows the shell spinner before the staff list reappears.
 - **Evidence:** staff/new/page.tsx:699-701 `<a href="/school/staff" className="text-sm underline underline-offset-2">Cancel</a>`. lib/apiClient.ts:153 `let accessToken: string | null = null;` is module-scoped, so the document navigation discards it and the staff list's first request takes the refresh path (lib/apiClient.ts:379-384) after the shell re-renders its loading branch (components/shell.tsx:190).
@@ -1560,7 +1564,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The Cancel link is a raw `<a href>`, forcing a full document reload out of the admission form. — `(school)/school/students/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 1018
 - **What a user sees:** Cancelling a 28-field admission form reloads the entire app rather than returning instantly to the list.
 - **Evidence:** students/new/page.tsx:1018-1020 `<a href="/school/students" className="text-sm underline underline-offset-2">Cancel</a>`. The in-memory token at lib/apiClient.ts:153 is discarded by a document navigation, so the students list's first request 401s and refreshes (lib/apiClient.ts:379-384) after components/shell.tsx:190 shows its loading state again. `next/link` is already imported in components/shell.tsx:24 and (school)/school/page.tsx:10.
@@ -1569,7 +1573,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Internal navigation on all five screens uses raw `<a href>` rather than `next/link`, forcing a full document load that discards the in-memory access token. — `frontend/src/app/(school)/school/students/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 302
 - **What a user sees:** Clicking Add teacher or Cancel reloads the whole application: the bundle is re-fetched, AppShell renders its loading gate, and the session is re-bootstrapped through a refresh-token rotation, where a client-side transition would have been instant.
 - **Evidence:** students/page.tsx:301-306, teachers/page.tsx:259-266 and subjects/page.tsx:298-305 are all `<a href="/school/…/new" className="btn btn-primary">`; the Cancel links are verbatim as quoted — teachers/new/page.tsx:714 and subjects/new/page.tsx:352 are both `          <a href="/school/…" className="text-sm underline underline-offset-2">`. None of the five imports next/link, while app/(school)/school/page.tsx:10 is `import Link from 'next/link';`, used at 113-119 for the same routes. apiClient.ts:153 is `let accessToken: string | null = null;` (module state, with the docblock at 149-151 confirming the session is recovered by refreshing, not by storage), and shell.tsx:190 is `  if (loading) {`.
@@ -1578,7 +1582,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### Cancel and Add entry are raw `<a href>` rather than `next/link`, forcing a full document reload that discards the in-memory access token and re-bootstraps the session. — `(school)/school/timetable/new/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — found already fixed when re-checked against the tree; the status line had not been updated
 - **Category:** `ux` · line 868
 - **What a user sees:** Clicking Cancel or Add entry replaces the whole shell with the "Loading your workspace…" splash for the duration of a refresh plus `/auth/me`, instead of an instant client-side transition.
 - **Evidence:** Line 868 is verbatim `<a href="/school/timetable" className="text-sm underline underline-offset-2">` / `Cancel` / `</a>`, and the register's action at 324-329 is verbatim `<a href="/school/timetable/new" className="btn btn-primary">Add entry</a>`. `lib/apiClient.ts:153` is verbatim `let accessToken: string | null = null;`, described at :147-152 as "In memory, never in `localStorage`" with "a page reload recovers the session by refreshing". `lib/auth.tsx:106` re-fetches on mount (`const next = await api.get<Profile>('/auth/me');`), and `components/shell.tsx:190-201` is verbatim the `if (loading)` splash ending in "Loading your workspace…". The teacher dashboard does it correctly (`(teacher)/teacher/page.tsx:10`: `import Link from 'next/link';`). The systemic count checks out: 27 inline `<a href="/` in `frontend/src/app` (plus 18 more with the href on the next line) against 6 files importing `next/link`.
@@ -1596,7 +1600,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ### The comment names `/academic-sessions` as the endpoint a session picker would read; no such path is mounted — it is `/sessions`, which is what the sibling create page actually calls. — `(school)/school/timetable/page.tsx`
 
-- **Status:** Open
+- **Status:** **Closed** in session 28 — fixed; reviewed against the backend it calls, type-checked and linted; not reproduced in a browser (signing in needs a password this session does not enter)
 - **Category:** `stale-comment` · line 145
 - **What a user sees:** No runtime effect, but the next developer wiring the session filter this note describes will call a path that 404s and look for the fault in their own code.
 - **Evidence:** Lines 143-146 are verbatim, including "another collection (`/classes`, `/subjects`, `/teachers`, `/academic-sessions`)" at line 144. `app.js:501` is `api.use('/sessions', sessionRoutes);` and `grep -rn "academic-sessions" backend/src` returns nothing at all. The create form calls the real path: `(school)/school/timetable/new/page.tsx:278` is `void load<SessionOption>('/sessions', setSessions);`.
@@ -1668,3 +1672,174 @@ prove, and because a refutation can itself be wrong.
   - Refuted because: Fabricated quotation. Lines 367 and 395 both read `className="field-select"`; the string `bg-white px-3 py-2 text-sm text-ink` occurs nowhere in the file or in `frontend/src` at all.
 - **`(student)/student/page.tsx`** — The portal tells the student their timetable is held by the school office, but the catalogue grants Student `timetable.view` and the backend mounts a class-timetable route documented as the student's way to read it.
   - Refuted because: The quotations are all real, but the impact does not follow: `STUDENT_NAV` (nav.ts:240-245) contains exactly one item, 'My results', and no student-reachable timetable screen exists anywhere in `frontend/src`, so no user is turned away by this sentence — a permission grant on the API is not product access.
+
+## Session 28: the screens this sweep never saw
+
+The twenty screens built after the sweep above — the detail and create screens of sessions 27 and 28,
+and the three panels of the subscription detail screen — had never been read against their backend.
+Five read-only agents did it, one group each, the way the first sweep did: each screen against the
+routes, Joi schemas and services it calls. **132 findings.** They were treated as claims: every one
+was re-read against the tree before it was acted on, and the backend half of each was fixed and
+asserted here rather than papered over in the screen.
+
+Six agents then fixed the frontend half, one group of screens each, and **three more read-only
+reviewers** read every diff they produced against the backend. The reviewers found fifteen defects
+the fixes had introduced or left — among them a plan-change panel that still offered prices the API
+had just started refusing, an attendance register that wrote one day's marks onto the next when the
+date was changed, and a reports screen that fetched every report twice. All fifteen were re-checked
+by hand and fixed. The whole frontend type-checks and lints clean and `verify-frontend.js` passes; as
+with the 80 closed above in the same session, **nothing here was reproduced in a browser**, because
+signing in needs a password this session does not enter.
+
+**All 132 are closed.** Where the fix was on the server, the row says so and names the suite that
+now asserts it. Two rows leave a question for the product owner rather than an answer, and say which.
+
+### Group A — platform billing: `coupons/[id]`, `payments/new`, `plans/[id]`, `quotations`, `taxes` (25)
+
+| # | Finding | Outcome |
+|---|---|---|
+| C1 | A coupon edit's "Reason" was silently stripped — the update schema lacked it | Backend: `coupons.validation` update accepts `reason`, and the service passes it to the audit row (`verify-billing.js`). Frontend shows its errors |
+| C2 | Validity dates sent zoneless from `datetime-local` | `isoInstant` (now `lib/instants.ts`, shared with the create screen) |
+| C3 | Switching to a fixed amount with no currency was accepted | Backend: `coupons.service.update()` checks the merged row (`verify-billing.js`). Frontend refuses it under Currency, and a switch to percentage sends `currency: null` |
+| C4 | An expired coupon showed "Active" in its status select | A disabled "Expired (set by the system)" option, and a hint that extending the window does not reactivate it |
+| C5 | Plan and school restrictions not shown or editable | Both pickers added; ids the picker cannot list are kept, not dropped |
+| C6 | Copy mentioned a "used up" status that does not exist | Removed |
+| PM1 | Record offered `online_gateway`, which no shipped adapter can take | Removed from Record, with the reason in the source; `gateway_failed` now shows as a failure |
+| PM2 | The invoice picker stopped at 100 with no search | The total is shown and a debounced search filters by number |
+| PM3 | The submit hint called the screenshot optional after D8 | Hint follows D8, and the form requires a transaction id or a screenshot (wallet excepted) |
+| PM4 | No confirmation when Record overpays an invoice | Confirm dialog above the amount due, and an inline warning |
+| PM5 | A failed invoice load read "Nothing is outstanding" | An error on the select with Try again |
+| P1 | Saving prices re-created every row; an in-use row was kept *and* duplicated, and the next save was refused | Backend: `plans.service.setPrices()` updates a row in place by identity and retires only what the set drops (`verify-plans.js`). Frontend reads `retired`, and the Remove dialog says what happens to a price in use |
+| P2 | Switching tabs unmounted the form and lost its edits | Both panels stay mounted; each re-seeds only from its own part of the plan |
+| P3 | Stale comment: `status` is refused, not stripped | Corrected |
+| Q1 | Accept sent `convert: true` for a quotation with no school, which is refused | A School picker; Accept sends `convert: false` when there is none, and says no invoice follows. The service header, which claimed the opposite, is corrected |
+| Q2 | A lapsed "sent" quote looked live | Expired badge and no Accept. Backend: the `expireLapsed()` sweep existed and **nothing scheduled it** — `jobs/tasks/quotationExpiry.js` now runs it daily (`verify-jobs.js`) |
+| Q3 | "Amount" was the line total, not a unit price | Labelled "Line total" |
+| Q4 | Lines without a description were dropped silently | Only fully blank lines are dropped; a line's server errors show under it |
+| Q5 | An edit could not clear a field | Cleared fields are sent as `null` (or 0 for discount and tax); only changes are sent |
+| Q6 | Notes opened empty on edit | Loaded from the row |
+| Q7 | Line items were not editable on a draft | Seeded from `line_items` and editable, keeping each line's type and metadata |
+| Q8 | Toast said "sended" | Past-tense map |
+| T1 | The create dialog's error rendered behind its backdrop | Errors inside the dialog |
+| T2 | "Make default" offered on inactive taxes, always refused | Only on active taxes that are not the default |
+| T3 | "A default exists" read from the current page only | Its own `?is_default=true&limit=1` query |
+
+### Group B — platform detail screens: `schools/[id]`, `subscriptions/[id]`, `users/[id]`, `forgot-password` (27)
+
+| # | Finding | Outcome |
+|---|---|---|
+| S1 | Clearing an optional school field sent `''`, which the schema drops | Blank optional fields send `null`; a blank name or code is sent so the server names the field |
+| S2 | FR-SADMIN-008 "View School Usage" had no screen | A Usage tab on `schools.usage.view`, from `GET /schools/:id/usage` |
+| S3 | The delete copy promised more than a delete does | Truthful copy, and a warning while the subscription is still open |
+| S4 | A failed Principal lookup read as "no Principals" | Its own message, with retry |
+| S5 | A reason over 255 characters met "Validation failed" | Capped at 255, error on the field (the lifecycle panel too) |
+| S6 | Suspension and archive dates and reason never shown | Shown, with a hint per action |
+| S7 | "Create one on the Principals screen" lost the school | Links with `?school_id=`, which preselects it and returns |
+| S8–S10 | Code "unique across the platform" (it is per organization); a nonexistent archived filter; a stale comment | Corrected — the create screen's identical claim too, found by the reviewer |
+| B1 | "The school has no access" on an old subscription of a school with a newer live one | "This subscription grants no entitlement in its current state" |
+| B2 | "Trial ends in −3 day(s)" | "Has passed; the sweep has not moved it on yet", and "within a day" |
+| B3 | Credit balance shown without its currency | Formatted with the code |
+| B4 | "Per cycle" on a one-time subscription | Only when recurring |
+| B5 | "Nightly sweep" — it runs hourly | Corrected in both places |
+| B6 | Stale guard comment | Corrected |
+| U1 | The verification toast ignored `verificationEmailSent`; the form never re-seeded | Keyed on the flag; re-seeds from the saved user |
+| U2 | A blank required field was skipped silently | Sent, and refused on the field; Save disabled when nothing changed |
+| U3 | Own status and permissions looked editable but are refused | Read-only on your own account, with the reason |
+| U4 | The `super_admin` role matrix looked editable but is refused | Read-only |
+| U5 | Role label errors read "Validation failed" | On their fields |
+| U6 | Saving role permissions discarded other tabs' edits | Re-reads only the account |
+| U7 | The account's school or organization never shown | In the header |
+| U8–U12 | Wording, read failures blamed on permissions, sign-in rule, header counts, literal backticks | Corrected |
+| F1 | The reset confirmation hid the address and offered no retry | Shows the address and "Use a different address" |
+| F2 | Comment said 200; the route answers 202 | Corrected |
+| X1 | A bad or missing id read "Something went wrong" | A not-found state with a way back, on all three detail screens |
+| X2 | SRS section numbers in user-facing copy | Removed from the copy; kept in comments |
+
+### Group C — school: `ai`, `assignments`, `attendance/mark`, `exams/grade-scales`, `notifications` (37)
+
+| # | Finding | Outcome |
+|---|---|---|
+| C-1 | An AI bank stuck at `generated`: review needs `preview`, and the one call that moves it sat in an unreachable branch | A "Set the difficulty" step for `ai.approve`; review offered only at `preview` |
+| C-2 | Uploading without a file did nothing visible | Required, checked, and its error shown |
+| C-3 | The preview hid options, the correct answer and the explanation | Rendered |
+| C-4 | "Can be decided later" was false — review rejects every unmarked question | Save disabled until every question has a verdict; Approve all / Reject all |
+| C-5 | A rejected bank showed "Pending" | Mapped |
+| C-6 | Step failures read "Validation failed" and did not reload | The server's detail, and a reload |
+| C-7 | The at-limit notice stayed informational | Warning tone, saying "blocked" or "billed as overage" from `at_limit` / `overage_allowed` |
+| C-8–C-10 | "The file is checked against it" (no `accept`); "1 marks"; stale header | File types restricted; singular; header corrected |
+| C-11 | The Mark dialog showed neither the answer nor the file | Title, total, written answer and a download |
+| C-12 | Clearing a due date was refused as "must be a valid date" | Backend: `due_date` accepts `null` — the column is nullable (`verify-assignments.js`) |
+| C-13 | Students and parents could not reach assignments or notifications | Linked from both dashboards — the parent's assignments link added after the review |
+| C-14 | A submission's student read "undefined undefined" | Backend: the list includes the student's name (`verify-assignments.js`); the screen falls back to the admission number |
+| C-15 | "Submit work" on work already submitted | "Submit work", "Resubmit" or "Handed in", from the student's own submissions |
+| C-16 | Stale header | Corrected |
+| C-17 | Clearing the scale on edit kept the old one | Sends `default` |
+| C-18 | The scale filter lost names off-screen; mixed scales interleaved | Names kept across pages; sorted by scale, then band |
+| C-19 | The overlap refusal did not say which band | Backend: the message names the band and its range, and the lookup is ordered so it always names the same one (`verify-exams.js`); the screen reads `conflicts_with` as well |
+| C-20 | The client allowed min = max, which the model refuses | Refused |
+| C-21 | A notice promised platform bands were editable | Removed; no Edit on them |
+| C-22 | The hint said re-marking a day is refused — it overwrites; a section save reset the register | Hint corrected, section kept. The reviewer then found that changing the date kept the previous day's marks — now reset to everybody present, as the hint says |
+| C-23 | The register's "Reason" was accepted and dropped | Backend: kept in the activity row's metadata (`verify-attendance.js`); the copy says the activity log, not an audit entry |
+| C-24 | The register stopped at 100 | Read page by page to 500, with a warning past it |
+| C-25–C-28 | A dropped connection was silent; `entries` errors swallowed; errors doubled in the banner; load failures mis-explained | The fallback message; `entries` out of `FORM_FIELDS` and submit disabled until the roster is ready; one place per error; each failure said as what it was |
+| C-29 | Every notification's "Open" went to an API path no screen answers | `destinationFor()` maps each to its screen, and hides Open when none |
+| C-30 | "Mark read" on a failed email killed its retry | In-app rows only |
+| C-31 | "Mark all read" did nothing on the email view | Hidden there |
+| C-32 | "All channels" showed in-app only | "Inbox (in app)" |
+| C-33 | Mark all was gated on the current page | An unread count across every page |
+| C-34 | Long messages were cut with no way to read them | Two lines, the whole text on hover |
+| C-35 | A failure-reason line the server never fills | Removed |
+| C-36 | Timestamps sliced to the UTC day | The viewer's zone |
+| C-37 | Status colours backwards — "returned" green, "reviewed" amber, a sent email amber | `StatusBadge` `tone`; each corrected |
+
+### Group D — school: `settings`, `students/[id]`, `subjects/[id]`, `subjects/new`, `timetable/[id]` (25)
+
+| # | Finding | Outcome |
+|---|---|---|
+| B1 | Classes and teachers loaded together, so a school without the Teachers module lost both lists | Loaded independently; each dialog says which failed |
+| B2 | Passing marks above full marks was refused silently | `splitApiErrors`, with the error on Passing marks |
+| W1 | Logo and favicon withheld as "no route uploads one", though the schema takes URLs | URL fields |
+| W2 | Hints promised the name, currency and timezone are used elsewhere; nothing reads them | Hints now say they are stored and not yet read. **Open question for the owner:** FR-SCHOOL-001 says settings are "applied within the school's tenant scope" — recorded in its checklist row |
+| W3 | A receptionist saw "Not recorded" for a recorded session | The stored session is offered when the list cannot show it |
+| W4 | Copy claimed inactive subjects vanish from timetables and mark sheets | Reworded to what the services do |
+| W5 | Failed or cut pickers showed blank for stored values | The stored value is always an option; lists read past 100 |
+| P1 | Clearing theme, currency or timezone sent `null` | Sends `''`, so the field says it is required |
+| P2 | Session create errors read "Validation failed" | On the name, start and end fields |
+| P3 | A teacher saw an editable subject form that 403s | Read-only without `subjects.manage` |
+| P4 | Assigning reloaded the page and discarded unsaved edits | Re-reads only the two lists |
+| P5 | A refused delete lost its advice | Its own dialog listing what blocks it, with the deactivate advice |
+| P6 | After creating a subject the screen went to the list | Goes to the subject |
+| P7 | A timetable clash did not say with what | Reads `ApiError.context.with` and links to the clashing entry |
+| P8 | Network failures were silent | "Could not reach the server…" — in the screens and in `useRowAction` |
+| M1–M10 | Shared dialog errors; silent no-op Save; `EditDialog` dropping an emptied required field; unmarked required fields; clearing a class sent 0; retired-entry copy; stale comments; developer vocabulary; an unenforced "http(s)" | Each corrected — `EditDialog` now refuses an emptied required field on the field, for all ten screens that use it |
+
+### Group E — the subscription panels: plan change, add-ons, overrides (18)
+
+| # | Finding | Outcome |
+|---|---|---|
+| E-1 | A plan change sent only `plan_id`, so a yearly school could be moved onto a monthly price | Backend: the cycle is kept unless a price or cycle is named, and refused when the plan has none on it. The panel names a price, and lists only the ones the API accepts |
+| E-2 | The prorated amount due was shown and never billed | Backend: issued as its own invoice in the same transaction, returned as `change.invoice` (`verify-subscriptions.js`); the panel names it |
+| E-3 | The new price ignored an active price override (D7) | Both shown |
+| E-4 | "Next billing cycle" offered on a one-time subscription, where it can never land | Backend: refused (`SUBSCRIPTION_NO_NEXT_CYCLE`, `verify-subscriptions.js`); the timing is not offered |
+| E-5 | Add-on prices on another cycle or currency were offered and billed wrongly | Backend: refused (`ADDON_PRICE_CYCLE_MISMATCH`, `verify-billing.js`); the list is filtered |
+| E-6 | Cancelling one of two purchases of an add-on stopped billing both | Backend: each billing line names its purchase and only that one closes (`verify-subscriptions.js`, proved against the old behaviour) |
+| E-7 | A feature override key was not normalised, and a mixed-case one rewrote the lower-case row | Backend: lower-cased and pattern-checked like a plan feature key (`verify-subscriptions.js`); the form suggests known keys |
+| E-8 | "Effective until" ended at 00:00 UTC | Local day bounds, labelled inclusive |
+| E-9 | Re-applying a revoked target overwrote it silently | Warned, and the toast says whether it replaced a row |
+| E-10 | The limit hint said an override replaces the whole allowance; add-on units stack | Corrected, with the units held |
+| E-11 | The price hint overstated D7 | Plan line only |
+| E-12 | 422s read "Validation failed"; submit enabled with blanks | Field errors; submit disabled until filled; reasons capped |
+| E-13 | Forms shown on unusable subscriptions; "Reactivate it first" wrong for pending or paused | A notice naming the transition that brings it into use. Backend: the refusal message is per state |
+| E-14 | A scheduled downgrade dropped or replaced silently | Warned |
+| E-15–E-18 | "No invoice line" for a free purchase (a 0.00 line prints); the carried credit not shown; an empty dropdown on a refusal; raw keys | Each corrected |
+
+**Found while fixing E-1, and fixed with it.** Naming another price opened two more mistakes the
+audit had not reached. The proration multiplied the *new* price by the *old* period's fraction, so a
+yearly school moved halfway onto a monthly price paid half of one month for six months — `prorate()`
+now charges the remaining days at the new price's own daily rate (unchanged on the same cycle). And a
+price in another currency carried the credit across as the same number relabelled. **The service now
+refuses a plan change onto another currency, and between one-time and recurring**, since nothing in
+the platform converts currency and a one-time subscription is never renewed. That refusal is a
+judgement about arithmetic the SRS never describes, not a requirement — the owner may prefer to allow
+a currency change with some rule for the credit, and is asked. `verify-subscriptions.js` asserts the
+daily rate, the unchanged same-cycle figure and both refusals.

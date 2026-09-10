@@ -142,6 +142,14 @@ import type { Refusal } from '@/lib/useCollection';
 const OPTION_LIMIT = 100;
 
 /**
+ * How many pages of one option list this form will read — an operational ceiling, not an SRS one.
+ *
+ * A thousand options is more than any school's classes, subjects or sessions, and ten requests stay
+ * well inside `apiLimiter`'s budget. Past it the hints below still say how many were left out.
+ */
+const MAX_PAGES = 10;
+
+/**
  * The multipart field name `uploadSingle(UPLOAD_PROFILES.HOMEWORK, 'attachment')` listens on. A file
  * sent under any other name is not `req.file`, and the homework would save with no attachment and no
  * complaint.
@@ -212,6 +220,40 @@ function settle<T>(result: PromiseSettledResult<{ data: T[]; meta: PageMeta | nu
   return { rows, total: result.value.meta?.total ?? rows.length, failed: false };
 }
 
+/**
+ * Every page of an option list, not only the first.
+ *
+ * This form used to stop at one page of `OPTION_LIMIT`, so at a school with more than a hundred
+ * classes the 101st could never be given homework: `class_id` is required, and no search can reach
+ * the rest because `classes.service.list()` ignores `q`. The class picker said so in words and
+ * offered no way through. So the remaining pages are read too, in the server's own order — the `id`
+ * tiebreaker `getSort` appends keeps every row on exactly one page — up to `MAX_PAGES`.
+ *
+ * `meta` is the first page's, so `total` is still the whole count and `settle()` can still tell a
+ * list that was cut short at the ceiling from one that was read in full.
+ *
+ * `allSettled`, not `all`: a later page that fails is left out rather than failing the whole list.
+ * With `all`, one dropped request among pages two to ten emptied the picker — a school past a hundred
+ * classes lost even the first hundred, and the required class could not be chosen at all. The first
+ * page still stands, and the shortfall hint says how many are missing, as `useWholeList` does.
+ */
+async function allPages<T>(path: string): Promise<{ data: T[]; meta: PageMeta | null }> {
+  const first = await api.page<T[]>(path, { query: { limit: OPTION_LIMIT } });
+  const pages = Math.min(first.meta?.totalPages ?? 1, MAX_PAGES);
+  const rest = await Promise.allSettled(
+    Array.from({ length: Math.max(0, pages - 1) }, (_, index) =>
+      api.page<T[]>(path, { query: { page: index + 2, limit: OPTION_LIMIT } })
+    )
+  );
+  return {
+    data: [
+      ...(first.data ?? []),
+      ...rest.flatMap((next) => (next.status === 'fulfilled' ? next.value.data ?? [] : [])),
+    ],
+    meta: first.meta,
+  };
+}
+
 /** `teachers.controller.js:8-10` joins the two names and drops the null. */
 function teacherName(row: TeacherOption): string {
   return [row.first_name, row.last_name].filter(Boolean).join(' ');
@@ -276,12 +318,13 @@ export default function NewHomeworkPage() {
 
     (async () => {
       /* `allSettled`, not `all` — see the header on the four separate grants. No `school_id` on any
-         of them: `tenantWhere()` has already pinned every one to the caller's school. */
+         of them: `tenantWhere()` has already pinned every one to the caller's school. Each list is
+         read to its end rather than to one page — see `allPages()`. */
       const [classResult, subjectResult, teacherResult, sessionResult] = await Promise.allSettled([
-        api.page<ClassOption[]>('/classes', { query: { limit: OPTION_LIMIT } }),
-        api.page<SubjectOption[]>('/subjects', { query: { limit: OPTION_LIMIT } }),
-        api.page<TeacherOption[]>('/teachers', { query: { limit: OPTION_LIMIT } }),
-        api.page<SessionOption[]>('/sessions', { query: { limit: OPTION_LIMIT } }),
+        allPages<ClassOption>('/classes'),
+        allPages<SubjectOption>('/subjects'),
+        allPages<TeacherOption>('/teachers'),
+        allPages<SessionOption>('/sessions'),
       ]);
       if (!live) return;
 
@@ -449,7 +492,7 @@ export default function NewHomeworkPage() {
               !loadingOptions && !classes.failed && classes.rows.length === 0
                 ? 'This school has no classes yet, and homework has to be set for one. Create a class first.'
                 : classes.total > classes.rows.length
-                  ? `The first ${classes.rows.length} of ${classes.total} classes. A page cannot hold more.`
+                  ? `Only the first ${classes.rows.length} of ${classes.total} classes could be listed here.`
                   : undefined
             }
           >

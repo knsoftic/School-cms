@@ -74,7 +74,7 @@ process.env.MAIL_DRIVER = 'log';
  */
 
 const db = require('../src/models');
-const { sweepResidue } = require('./lib/residue');
+const { sweepResidue, removeFailedSignIns } = require('./lib/residue');
 const config = require('../src/config/env');
 const logger = require('../src/config/logger');
 const jwt = require('jsonwebtoken');
@@ -474,6 +474,12 @@ async function removeFixtures() {
   });
   await db.AuditLog.destroy({
     where: { id: { [db.Op.gt]: baseline.auditLog }, user_id: ids },
+  });
+  /* And the failed sign-ins, which carry no user at all — see `removeFailedSignIns()`. */
+  await removeFailedSignIns(db, {
+    afterId: baseline.activityLog,
+    domains: [DOMAIN],
+    usernames: Object.values(fixtures).map((u) => u.username),
   });
 
   /* `force` because `users` is paranoid — a soft delete would leave the addresses taken. */

@@ -140,12 +140,10 @@ const { sweepResidue, readJournal, writeJournal, clearJournal } = require('./lib
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
-const permissionService = require('../src/services/permissionService');
 const entitlementService = require('../src/services/entitlementService');
 const tenantService = require('../src/services/tenantService');
 const subscriptionsService = require('../src/modules/subscriptions/subscriptions.service');
 const money = require('../src/utils/money');
-const dates = require('../src/utils/dates');
 const { settle, settleDistinct } = require('./lib/settle');
 const {
   ROLES,
@@ -157,9 +155,7 @@ const {
   LIMIT_UNITS,
   LIMIT_LABELS,
   LIMIT_LIST,
-  MODULE_LIST,
   USAGE_LIMIT_KEYS,
-  ADDONS,
   SUBSCRIPTION_STATES,
   SUBSCRIPTION_STATE_LIST,
   SUBSCRIPTION_USABLE_STATES,
@@ -935,6 +931,31 @@ function verifyPricing() {
       amountDue: 0,
       creditBalance: 8,
     }
+  );
+
+  /*
+   * A new price on another recurring cycle. Its amount pays for a period of its own length, so the
+   * remainder is priced at its daily rate: 60 per 10 days is 6 a day, for 15 days, 90. Multiplying by
+   * the old period's fraction instead gave 30 — a third of the service for the price.
+   */
+  check(
+    'moving onto another cycle prices the remaining days at the new price’s own daily rate',
+    subscriptionsService.prorate(halfway, 60, at, { billing_cycle: BILLING_CYCLES.CUSTOM_DAYS, cycle_days: 10 }),
+    {
+      periodDays: 30,
+      elapsedDays: 15,
+      remainingDays: 15,
+      unusedCredit: 15,
+      prorationDue: 90,
+      creditApplied: 15,
+      amountDue: 75,
+      creditBalance: 0,
+    }
+  );
+  check(
+    'and naming a price on the same cycle changes nothing',
+    subscriptionsService.prorate(halfway, 60, at, { billing_cycle: BILLING_CYCLES.CUSTOM_DAYS, cycle_days: 30 }),
+    subscriptionsService.prorate(halfway, 60, at)
   );
 }
 
@@ -2238,6 +2259,37 @@ async function verifyHttp() {
     );
 
     /*
+     * A feature key is free text, but it has the shape a plan feature key has. Entitlement keys features
+     * by the exact string while the lookup that finds a row to replace is case-insensitive, so a
+     * mixed-case key has to be folded before it is stored, not after.
+     */
+    const featureMixed = await call(`/subscriptions/${sub.id}/overrides`, {
+      method: 'POST',
+      token: platform,
+      body: { override_type: OVERRIDE_TYPES.FEATURE, target_key: '  Custom_Branding ', is_enabled: true },
+    });
+    const featureBad = await call(`/subscriptions/${sub.id}/overrides`, {
+      method: 'POST',
+      token: platform,
+      body: { override_type: OVERRIDE_TYPES.FEATURE, target_key: 'custom branding!', is_enabled: true },
+    });
+    check(
+      'a feature override key is stored lower-case and reaches the snapshot under that key; one with spaces is refused',
+      {
+        status: featureMixed.status,
+        stored: dataOf(featureMixed).override.target_key,
+        snapshot: (await snapshotOf(fixtures.school.id)).features.custom_branding,
+        refused: [featureBad.status, codeOf(featureBad)],
+      },
+      {
+        status: 201,
+        stored: 'custom_branding',
+        snapshot: { enabled: true, value: null, source: 'override' },
+        refused: [422, 'VALIDATION_ERROR'],
+      }
+    );
+
+    /*
      * §33's Custom Pricing changes what the school is *charged*, not what it may do, so it is
      * deliberately absent from the entitlement snapshot and does not touch the row's own
      * `cycle_amount` — §13's invoice generation is what will read it.
@@ -2416,6 +2468,40 @@ async function verifyHttp() {
       { direction: 'upgrade', remainingDays: 15, amountDue: 15 }
     );
 
+    /*
+     * FR-SUB-013's outcome is "upgraded with correctly prorated billing". The amount due used to be
+     * reported and then billed by nothing — `generateForSubscription()` bills items at full price and
+     * refuses a period it has already billed. It is now issued as its own invoice in the same
+     * transaction as the switch.
+     */
+    const prorationInvoices = await db.Invoice.findAll({
+      where: { subscription_id: sub.id },
+      include: [{ model: db.InvoiceItem, as: 'items' }],
+    });
+    const prorationInvoice = prorationInvoices[0];
+    check(
+      'the amount due is invoiced once, on one line for the rest of the period, and the body names the invoice',
+      {
+        invoices: prorationInvoices.length,
+        named: Boolean(change.invoice) && Number(change.invoice.id) === Number(prorationInvoice.id),
+        lines: prorationInvoice.items.map((item) => [item.item_type, money.toNumber(item.amount)]),
+        subtotal: money.toNumber(prorationInvoice.subtotal),
+        creditApplied: money.toNumber(prorationInvoice.credit_applied),
+        periodEndsWithCycle:
+          minutesBetween(prorationInvoice.billing_period_end, periodEndBeforeUpgrade) === 0,
+        plan: Number(prorationInvoice.plan_id) === planIds.pro,
+      },
+      {
+        invoices: 1,
+        named: true,
+        lines: [['custom', 15]],
+        subtotal: 15,
+        creditApplied: 0,
+        periodEndsWithCycle: true,
+        plan: true,
+      }
+    );
+
     const snap6 = await snapshotOf(fixtures.school.id);
     check(
       'the upgrade takes effect in the resolved entitlement, add-on units intact',
@@ -2457,6 +2543,133 @@ async function verifyHttp() {
       'a different plan at the same tier is neither an upgrade nor a downgrade, and says so',
       [sideways.status, codeOf(sideways)],
       [409, 'SUBSCRIPTION_SAME_TIER']
+    );
+
+    /*
+     * A plan change keeps the subscription's billing cycle unless the caller names another. Asked with
+     * neither a price nor a cycle, the price used to be the target plan's default on any cycle — so this
+     * `custom_days` subscription would have been moved onto a monthly price mid-period. A higher tier
+     * priced only monthly is built here, after the fixture count above, so nothing else sees it.
+     */
+    await makePlan(
+      'monthlyOnly',
+      { name: 'Verify Subs Monthly', code: 'VSB-MONTHLY', tier_rank: 30, trial_days: 0 },
+      90,
+      900,
+      ['students', 'teachers', 'library']
+    );
+    const monthlyPrices = await call(`/plans/${planIds.monthlyOnly}/prices`, {
+      method: 'PUT',
+      token: platform,
+      body: {
+        prices: [
+          {
+            billing_cycle: BILLING_CYCLES.MONTHLY,
+            pricing_model: PRICING_MODELS.FIXED,
+            currency: 'USD',
+            base_amount: 90,
+            is_default: true,
+          },
+        ],
+      },
+    });
+    const monthlyActivated = await call(`/plans/${planIds.monthlyOnly}/activate`, {
+      method: 'POST',
+      token: platform,
+    });
+    if (monthlyPrices.status !== 200 || monthlyActivated.status !== 200) {
+      throw new Error(`fixture plan monthlyOnly failed: ${monthlyPrices.raw} ${monthlyActivated.raw}`);
+    }
+    const cycleBefore = await db.Subscription.findByPk(sub.id);
+    const offCycle = await call(`/subscriptions/${sub.id}/upgrade`, {
+      method: 'POST',
+      token: platform,
+      body: { plan_id: planIds.monthlyOnly },
+    });
+    const cycleAfter = await db.Subscription.findByPk(sub.id);
+    check(
+      'an upgrade to a plan with no price on this billing cycle is refused, not switched to another cycle',
+      {
+        status: offCycle.status,
+        code: codeOf(offCycle),
+        planUnchanged: Number(cycleAfter.plan_id) === Number(cycleBefore.plan_id),
+        cycle: cycleAfter.billing_cycle,
+      },
+      {
+        status: 409,
+        code: 'PLAN_PRICE_CYCLE_UNAVAILABLE',
+        planUnchanged: true,
+        cycle: BILLING_CYCLES.CUSTOM_DAYS,
+      }
+    );
+
+    /*
+     * Naming a price carries a different recurring cycle (the arithmetic is Part 3's), but not a
+     * different currency — credit and proration would be relabelled, not converted — and not a switch
+     * between one-time and recurring, where there is no period to prorate or none that renews.
+     */
+    const odd = await call(`/plans/${planIds.monthlyOnly}/prices`, {
+      method: 'PUT',
+      token: platform,
+      body: {
+        prices: [
+          { billing_cycle: BILLING_CYCLES.MONTHLY, pricing_model: PRICING_MODELS.FIXED, currency: 'USD', base_amount: 90, is_default: true },
+          { billing_cycle: BILLING_CYCLES.CUSTOM_DAYS, cycle_days: 30, pricing_model: PRICING_MODELS.FIXED, currency: 'EUR', base_amount: 80 },
+          { billing_cycle: BILLING_CYCLES.ONE_TIME, pricing_model: PRICING_MODELS.FIXED, currency: 'USD', base_amount: 900 },
+        ],
+      },
+    });
+    if (odd.status !== 200) throw new Error(`fixture prices for monthlyOnly failed: ${odd.raw}`);
+    const oddPrices = await db.PlanPrice.findAll({ where: { plan_id: planIds.monthlyOnly, is_active: true } });
+    const priceOn = (cycle, currency) =>
+      oddPrices.find((row) => row.billing_cycle === cycle && row.currency === currency).id;
+    const inEuros = await call(`/subscriptions/${sub.id}/upgrade`, {
+      method: 'POST',
+      token: platform,
+      body: { plan_id: planIds.monthlyOnly, plan_price_id: priceOn(BILLING_CYCLES.CUSTOM_DAYS, 'EUR') },
+    });
+    const oneTime = await call(`/subscriptions/${sub.id}/upgrade`, {
+      method: 'POST',
+      token: platform,
+      body: { plan_id: planIds.monthlyOnly, plan_price_id: priceOn(BILLING_CYCLES.ONE_TIME, 'USD') },
+    });
+    const afterRefusals = await db.Subscription.findByPk(sub.id);
+    check(
+      'a plan change onto another currency, or from recurring onto one-time, is refused and changes nothing',
+      {
+        currency: [inEuros.status, codeOf(inEuros)],
+        oneTime: [oneTime.status, codeOf(oneTime)],
+        planUnchanged: Number(afterRefusals.plan_id) === Number(cycleBefore.plan_id),
+        stillBilled: [afterRefusals.currency, afterRefusals.billing_cycle],
+      },
+      {
+        currency: [409, 'PLAN_PRICE_CURRENCY_MISMATCH'],
+        oneTime: [409, 'PLAN_PRICE_CYCLE_KIND_MISMATCH'],
+        planUnchanged: true,
+        stillBilled: ['USD', BILLING_CYCLES.CUSTOM_DAYS],
+      }
+    );
+
+    /*
+     * A one-time subscription has no next cycle for a scheduled downgrade to land on — `renew()` refuses
+     * one and the sweep never renews one — so scheduling one is refused rather than recorded and never
+     * applied. The cycle is flipped on the row for the one request and put back.
+     */
+    await db.Subscription.update({ billing_cycle: BILLING_CYCLES.ONE_TIME }, { where: { id: sub.id } });
+    const noNextCycle = await call(`/subscriptions/${sub.id}/downgrade`, {
+      method: 'POST',
+      token: platform,
+      body: { plan_id: planIds.basic, timing: DOWNGRADE_TIMING.NEXT_BILLING_CYCLE },
+    });
+    const noNextRow = await db.Subscription.findByPk(sub.id);
+    await db.Subscription.update(
+      { billing_cycle: cycleBefore.billing_cycle },
+      { where: { id: sub.id } }
+    );
+    check(
+      'a downgrade cannot be scheduled on a one-time subscription, and nothing is scheduled',
+      [noNextCycle.status, codeOf(noNextCycle), noNextRow.scheduled_plan_id],
+      [409, 'SUBSCRIPTION_NO_NEXT_CYCLE', null]
     );
 
     /* ────────── FR-SUB-014 / §12.4 — the deferred downgrade, then renewal ────────── */
@@ -2720,6 +2933,66 @@ async function verifyHttp() {
       'cancelling it twice is refused rather than repeated',
       [withdrawTwice.status, codeOf(withdrawTwice)],
       [409, 'SUBSCRIPTION_ADDON_NOT_ACTIVE']
+    );
+
+    /*
+     * Two purchases of one add-on, and one of them cancelled. Cancelling used to close every recurring
+     * line with the same `addon_id`, so the purchase still in force kept its units and was never
+     * invoiced for them again. Each line now names the purchase it bills in
+     * `metadata.subscription_addon_id`, and cancelling closes that line only. The later purchase is the
+     * one cancelled, so an implementation that closes the oldest matching line fails here too.
+     */
+    const buyBlock = (quantity) =>
+      call(`/subscriptions/${sub.id}/addons`, {
+        method: 'POST',
+        token: platform,
+        body: { addon_id: extraStudents.id, addon_price_id: openPrice.id, quantity },
+      });
+    const kept = dataOf(await buyBlock(1)).purchase;
+    const dropped = dataOf(await buyBlock(2)).purchase;
+    const lineFor = async (purchaseId) =>
+      (
+        await db.SubscriptionItem.findAll({
+          where: { subscription_id: sub.id, item_type: 'addon', addon_id: extraStudents.id },
+        })
+      ).find((row) => row.metadata && Number(row.metadata.subscription_addon_id) === Number(purchaseId));
+    check(
+      'each purchase is billed on a line of its own, tagged with the purchase it bills',
+      [
+        Boolean(await lineFor(kept.id)),
+        Boolean(await lineFor(dropped.id)),
+        (await lineFor(kept.id)).id !== (await lineFor(dropped.id)).id,
+      ],
+      [true, true, true]
+    );
+    const dropOne = await call(`/subscriptions/${sub.id}/addons/${dropped.id}/cancel`, {
+      method: 'POST',
+      token: platform,
+    });
+    check(
+      'cancelling one of two purchases of the same add-on closes its own line and leaves the other billing',
+      {
+        status: dropOne.status,
+        droppedRecurring: Boolean((await lineFor(dropped.id)).is_recurring),
+        keptRecurring: Boolean((await lineFor(kept.id)).is_recurring),
+        keptStatus: (await db.SubscriptionAddon.findByPk(kept.id)).status,
+        addonUnits: (await snapshotOf(fixtures.school.id)).limits.student_limit.addonUnits,
+      },
+      { status: 200, droppedRecurring: false, keptRecurring: true, keptStatus: 'active', addonUnits: 50 }
+    );
+    /* Put the allowance back where the rest of the suite expects it. */
+    const dropKept = await call(`/subscriptions/${sub.id}/addons/${kept.id}/cancel`, {
+      method: 'POST',
+      token: platform,
+    });
+    check(
+      'and cancelling the other closes its line too, leaving no add-on units',
+      [
+        dropKept.status,
+        Boolean((await lineFor(kept.id)).is_recurring),
+        (await snapshotOf(fixtures.school.id)).limits.student_limit.addonUnits,
+      ],
+      [200, false, 0]
     );
 
     /* ──────────────────── FR-SUB-010 — cancellation is terminal ──────────────────── */

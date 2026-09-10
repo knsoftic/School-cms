@@ -50,6 +50,7 @@
  * key up as information.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
@@ -153,6 +154,14 @@ export default function ParentsPage() {
   const [studentId, setStudentId] = useState('');
   const [relation, setRelation] = useState('');
   const [isPrimary, setIsPrimary] = useState(false);
+  /*
+   * The link awaiting a second press. Unlinking was one click, and it is not a small thing to do by
+   * accident: the parent stops seeing that child at once, and the link's relation and
+   * primary-guardian flag go with it. Asked in the row rather than in a `ConfirmDialog`, because the
+   * row is already inside a modal and a dialog stacked on a dialog is harder to follow than a row
+   * that asks.
+   */
+  const [confirmUnlink, setConfirmUnlink] = useState<number | null>(null);
 
   /*
    * Read once, outside the column memo and outside every cell. `can()` inside a cell would run per
@@ -217,6 +226,7 @@ export default function ParentsPage() {
     setStudentId('');
     setRelation('');
     setIsPrimary(false);
+    setConfirmUnlink(null);
     setLinkError(null);
     setLinkBusy(true);
     try {
@@ -274,6 +284,7 @@ export default function ParentsPage() {
       await api.delete(`/parents/${linking.id}/children/${link.id}`);
       success('Child unlinked');
       setChildren((current) => current.filter((row) => row.id !== link.id));
+      setConfirmUnlink(null);
       reload();
     } catch (caught) {
       setLinkError(
@@ -375,14 +386,14 @@ export default function ParentsPage() {
            * than a control — `requirePermission('parents.manage')` re-reads the grant on the request
            * itself, so a user who forced this link into existence still gets a 403 from `POST
            * /parents`.
+           *
+           * `Link`, not a raw `<a>`: a plain anchor is a document navigation, which throws away the
+           * in-memory access token and re-runs the whole session bootstrap before the form appears.
            */
           manageable ? (
-            <a
-              href="/school/parents/new"
-              className="btn btn-primary"
-            >
+            <Link href="/school/parents/new" className="btn btn-primary">
               Add parent
-            </a>
+            </Link>
           ) : null
         }
       />
@@ -531,14 +542,37 @@ export default function ParentsPage() {
                       <span className="text-success"> · primary guardian</span>
                     ) : null}
                   </span>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-danger-ghost"
-                    disabled={linkBusy}
-                    onClick={() => void unlinkChild(link)}
-                  >
-                    Unlink
-                  </button>
+                  {confirmUnlink === link.id ? (
+                    <span className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                      <span className="text-xs text-muted">This parent stops seeing them.</span>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        disabled={linkBusy}
+                        onClick={() => setConfirmUnlink(null)}
+                      >
+                        Keep
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-danger"
+                        disabled={linkBusy}
+                        aria-busy={linkBusy}
+                        onClick={() => void unlinkChild(link)}
+                      >
+                        Unlink
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger-ghost"
+                      disabled={linkBusy}
+                      onClick={() => setConfirmUnlink(link.id)}
+                    >
+                      Unlink
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>

@@ -375,6 +375,9 @@ function diff(before = {}, after = {}) {
  * @param {object} [entry.before]  from `snapshot()`
  * @param {object} [entry.after]   from `snapshot()`
  * @param {string} [entry.reason]
+ * @param {number} [entry.schoolId]        the tenant the change belongs to, when the request cannot say
+ * @param {number} [entry.organizationId]  — a sweep has no request, and an emailed-link request has
+ * @param {number} [entry.userId]          no signed-in user; the request's own values win when present
  * @returns {Promise<void>}
  */
 async function recordAudit(req, entry = {}) {
@@ -390,11 +393,17 @@ async function recordAudit(req, entry = {}) {
 
   const context = req ? requestFields(req) : {};
 
+  /*
+   * A change made with no tenant in the request context — the lifecycle sweep, a scheduled invoice, a
+   * password reset through an emailed link — still belongs to a school. Without these the row carried
+   * no school, organization or user: invisible to the tenant it is about, and outside every
+   * tenant-scoped cleanup (`school_id` and `organization_id` cascade from their tables; nothing else does).
+   */
   try {
     await db.AuditLog.create({
-      school_id: context.school_id || null,
-      organization_id: context.organization_id || null,
-      user_id: context.user_id || null,
+      school_id: context.school_id || toId(entry.schoolId) || null,
+      organization_id: context.organization_id || toId(entry.organizationId) || null,
+      user_id: context.user_id || toId(entry.userId) || null,
       table_name: trim(tableName, WIDTHS.tableName),
       record_id: toId(recordId),
       event,

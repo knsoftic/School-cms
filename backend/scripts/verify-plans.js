@@ -1166,32 +1166,53 @@ async function verifyHttp() {
     const afterRename = await entitlementService.getSnapshot(fixtures.school.id);
     check('and a plain rename flushes it as well', afterRename.plan.name, 'Verify Plans Starter Renamed');
 
-    /* ───────────── FR-SUB-006 — a price in use is retired, not deleted ───────────── */
+    /* ──────── FR-SUB-006 — a price in use is kept: updated in place, or retired when omitted ──────── */
 
-    console.log('\n--- FR-SUB-006: a price a subscription points at survives its own removal ---');
+    console.log('\n--- FR-SUB-006: a price a subscription points at survives a replacement ---');
 
+    /*
+     * Half one — the loop the audit of the pricing screen found. Re-saving a set that still offers the
+     * in-use price's identity (monthly, fixed, no band) used to retire the row AND create a copy with
+     * the same identity, and the next save of that set was then refused as a duplicate. The row is now
+     * updated in place.
+     */
     const inUsePriceId = priced.plan.prices[0].id;
+    const monthly59 = {
+      billing_cycle: BILLING_CYCLES.MONTHLY,
+      pricing_model: PRICING_MODELS.FIXED,
+      base_amount: 59,
+      is_default: true,
+    };
     const replaced = await call(`/plans/${plan.id}/prices`, {
       method: 'PUT',
       token: platform,
-      body: {
-        prices: [
-          {
-            billing_cycle: BILLING_CYCLES.MONTHLY,
-            pricing_model: PRICING_MODELS.FIXED,
-            base_amount: 59,
-            is_default: true,
-          },
-        ],
-      },
+      body: { prices: [monthly59] },
     });
     check('the replacement succeeds', replaced.status, 200);
-    check('one new price created', dataOf(replaced).created, 1);
-    check('the two unreferenced rows deleted', dataOf(replaced).deleted, 2);
-    check('and the referenced one retired instead', dataOf(replaced).retired, 1);
+    check('the referenced row is updated in place, the two unreferenced ones deleted, nothing retired',
+      [dataOf(replaced).created, dataOf(replaced).updated, dataOf(replaced).deleted, dataOf(replaced).retired],
+      [0, 1, 2, 0]);
+    const updatedRow = await db.PlanPrice.findByPk(inUsePriceId);
+    check('  carrying the new amount, active and still the default',
+      [Number(updatedRow.base_amount), updatedRow.is_active, updatedRow.is_default], [59, true, true]);
+    check('  so the plan holds that identity once, not a retired row and a copy',
+      await db.PlanPrice.count({ where: { plan_id: plan.id } }), 1);
+    const savedAgain = await call(`/plans/${plan.id}/prices`, {
+      method: 'PUT', token: platform, body: { prices: [monthly59] },
+    });
+    check('  and saving the same set again is accepted — the duplicate refusal loop is gone', savedAgain.status, 200);
+
+    /* Half two — a set that no longer offers the in-use identity retires it rather than deleting it. */
+    const retiring = await call(`/plans/${plan.id}/prices`, {
+      method: 'PUT',
+      token: platform,
+      body: { prices: [{ billing_cycle: BILLING_CYCLES.YEARLY, pricing_model: PRICING_MODELS.FIXED, base_amount: 599, is_default: true }] },
+    });
+    check('a set that omits the referenced price creates the new one and retires the old',
+      [retiring.status, dataOf(retiring).created, dataOf(retiring).retired], [200, 1, 1]);
     check(
       'the message says so, rather than leaving an operator to count rows',
-      replaced.body.message.includes('deactivated rather than removed'),
+      retiring.body.message.includes('deactivated rather than removed'),
       true
     );
 

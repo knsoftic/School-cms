@@ -23,15 +23,22 @@
  * time would therefore record a change to every field on a save that touched one.
  *
  * A field left blank is sent as `null` when it is nullable and **left out entirely** when it is not.
- * That distinction is `nullable`, and it has to be per field rather than inferred: a required field
- * emptied by mistake should fail on the field, not be silently dropped, and a nullable one cleared
- * on purpose must actually clear.
+ * That distinction is `nullable`, and it has to be per field rather than inferred: a nullable one
+ * cleared on purpose must actually clear.
+ *
+ * A `required` field emptied by mistake is the third case, and it fails **on the field**. It used to
+ * fall into "left out entirely" with every other non-nullable blank, so the edit was silently dropped:
+ * alone it left Save disabled with nothing said, and beside another change it saved that change and
+ * quietly kept the old value. Sending the blank would not do either — most `update` schemas carry
+ * `.empty('')`, which turns `""` back into "absent" before a rule can see it — so the check is made
+ * here, before anything is sent.
  *
  * ## What it deliberately does not do
  *
- * No validation of its own beyond required-ness, which is the browser's. The API validates with Joi
- * and its refusals are precise; a second rule engine here would be a copy that drifts from the one
- * that decides. It also does not know how to *fetch* the row — the caller already has it, because
+ * No validation of its own beyond that required-ness — made here rather than left to the browser,
+ * because the form is `noValidate` and the browser therefore checks nothing. The API validates with
+ * Joi and its refusals are precise; a second rule engine here would be a copy that drifts from the
+ * one that decides. It also does not know how to *fetch* the row — the caller already has it, because
  * the caller is a list.
  */
 
@@ -44,6 +51,7 @@ import {
   SelectField,
   SubmitButton,
   TextAreaField,
+  focusFirstInvalidField,
 } from '@/components/form';
 import { Modal } from '@/components/overlay';
 import { useToast } from '@/components/toast';
@@ -121,6 +129,8 @@ export function EditDialog<T>({
   }
 
   const changed: Record<string, unknown> = {};
+  /* Required fields the user has emptied — refused on the field in `submit`. See the header. */
+  const emptiedRequired: EditField[] = [];
   for (const field of fields) {
     const now = values[field.name];
     if (now === base[field.name]) continue;
@@ -130,16 +140,29 @@ export function EditDialog<T>({
     }
     const trimmed = (now ?? '').trim();
     if (trimmed === '') {
-      /* Blank clears a nullable column and is not sent at all for one that cannot be null. */
+      /*
+       * Blank clears a nullable column. For a required one it is a mistake to report, not a value
+       * to send; for anything else that cannot be null it is not sent at all.
+       */
       if (field.nullable) changed[field.name] = null;
+      else if (field.required) emptiedRequired.push(field);
       continue;
     }
     changed[field.name] = trimmed;
   }
-  const nothingChanged = Object.keys(changed).length === 0;
+  /* An emptied required field is a change too — it is what makes Save say something rather than grey out. */
+  const nothingChanged = Object.keys(changed).length === 0 && emptiedRequired.length === 0;
 
   async function submit() {
     if (!row || busy || nothingChanged) return;
+    if (emptiedRequired.length > 0) {
+      setError(null);
+      setFieldErrors(
+        Object.fromEntries(emptiedRequired.map((field) => [field.name, `${field.label} is required`]))
+      );
+      focusFirstInvalidField();
+      return;
+    }
     setBusy(true);
     setError(null);
     setFieldErrors({});

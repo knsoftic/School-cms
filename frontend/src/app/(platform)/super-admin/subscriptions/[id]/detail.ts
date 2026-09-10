@@ -192,6 +192,14 @@ export interface SubscriptionScope {
   loading: boolean;
   error: string | null;
   refusal: Refusal | null;
+  /**
+   * The id names no subscription this caller can see — a 404, or an id the route refuses to parse.
+   *
+   * Kept apart from `error` because the two want different screens. `error` offers "Try again", and
+   * for a subscription that does not exist that button can only fail the same way forever; what the
+   * operator needs is the way back to the list.
+   */
+  notFound: boolean;
   /** Re-read from the server. */
   reload: () => void;
   /**
@@ -211,6 +219,7 @@ export function useSubscriptionDetail(id: string | null): SubscriptionScope {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -223,6 +232,7 @@ export function useSubscriptionDetail(id: string | null): SubscriptionScope {
     setLoading(true);
     setError(null);
     setRefusal(null);
+    setNotFound(false);
 
     (async () => {
       try {
@@ -242,6 +252,19 @@ export function useSubscriptionDetail(id: string | null): SubscriptionScope {
         if (controller.signal.aborted) return;
         if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
           setRefusal({ code: caught.code, message: caught.message });
+        } else if (
+          caught instanceof ApiError &&
+          (caught.status === 404 || caught.code === 'VALIDATION_ERROR')
+        ) {
+          /*
+           * Two ways to reach a subscription that is not there, and retrying changes neither.
+           * `findById()` folds the tenant scope into its `where`, so a row this caller may not see is
+           * a 404 exactly like a row that never existed — `SUBSCRIPTION_NOT_FOUND` either way. And the
+           * id in the address is validated before the service runs: `/subscriptions/abc` is refused
+           * by the `idParam` schema with a 422. The catalogue read takes no parameter, so neither of
+           * these can have come from it.
+           */
+          setNotFound(true);
         } else if (caught instanceof ApiError) {
           setError(caught.message);
         } else if ((caught as Error)?.name !== 'AbortError') {
@@ -258,7 +281,7 @@ export function useSubscriptionDetail(id: string | null): SubscriptionScope {
   const reload = useCallback(() => setNonce((n) => n + 1), []);
   const adopt = useCallback((subscription: SubscriptionDetail) => setDetail(subscription), []);
 
-  return { detail, catalogue, loading, error, refusal, reload, adopt };
+  return { detail, catalogue, loading, error, refusal, notFound, reload, adopt };
 }
 
 /* ───────────────────────────── shared formatting ───────────────────────────── */
@@ -290,4 +313,64 @@ export function allowedTransitions(
 ): TransitionSpec[] {
   if (!catalogue) return [];
   return catalogue.transitions.filter((transition) => transition.from.includes(state));
+}
+
+/**
+ * What an operator has to do before a plan change or an add-on purchase can happen — `"Activate it
+ * first."`, `"Resume it first."`, `"Reactivate it first."`.
+ *
+ * Both routes refuse a subscription outside `usableStates`, and the remedy differs by state: a
+ * pending subscription is activated, a paused one resumed, and only suspended, expired or cancelled
+ * ones reactivated. The API's own refusal once said "Reactivate it first" to all five, which sent an
+ * operator looking for a button this screen does not show on a pending row. So the answer is read off
+ * the transition table — the edges out of this state that land in a usable one — rather than written
+ * out a second time here.
+ */
+export function howToBringIntoUse(catalogue: SubscriptionCatalogue | null, state: string): string {
+  if (!catalogue) return 'It has to be brought back into use first.';
+  const actions = allowedTransitions(catalogue, state)
+    .filter((transition) => catalogue.usableStates.includes(transition.to))
+    .map((transition) => humanise(transition.action));
+  return actions.length === 0
+    ? 'It has to be brought back into use first.'
+    : `${actions.join(' or ')} it first.`;
+}
+
+/**
+ * A limit key as the catalogue labels it — `student_limit` → `Student Limit` — or the key itself.
+ *
+ * `limitTargets` is `LIMIT_LABELS` over all nine `USAGE_LIMIT_KEYS`, the add-on-only `sms_limit`
+ * included, so an add-on's `effect_target` and a limit override's `target_key` both resolve here.
+ */
+export function limitLabel(catalogue: SubscriptionCatalogue | null, key: string): string {
+  return catalogue?.limitTargets.find((limit) => limit.key === key)?.label ?? key;
+}
+
+/** The fields a plan or add-on price shares with a subscription about when and how it bills. */
+interface Billing {
+  billing_cycle: string;
+  cycle_days: number | null;
+  currency: string;
+}
+
+/**
+ * Whether a price row bills on the same cycle this subscription bills on now.
+ *
+ * `cycle_days` counts only for `custom_days`, the one cycle whose length its name does not imply —
+ * `plans.validation` lets a monthly row carry a stray `cycle_days`, and nothing reads it there. The
+ * same rule `purchaseAddon()` applies when it refuses a price on another cycle.
+ */
+export function sameCycle(price: Billing, subscription: Billing): boolean {
+  if (price.billing_cycle !== subscription.billing_cycle) return false;
+  return (
+    price.billing_cycle !== 'custom_days' ||
+    Number(price.cycle_days) === Number(subscription.cycle_days)
+  );
+}
+
+/** `Monthly`, or `Custom days (45)` — the length is part of what a custom cycle is. */
+export function cycleLabel(billing: Pick<Billing, 'billing_cycle' | 'cycle_days'>): string {
+  return billing.billing_cycle === 'custom_days' && billing.cycle_days
+    ? `${humanise(billing.billing_cycle)} (${billing.cycle_days})`
+    : humanise(billing.billing_cycle);
 }

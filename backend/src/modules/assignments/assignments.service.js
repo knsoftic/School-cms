@@ -482,7 +482,12 @@ async function listSubmissions(req, query, pagination) {
           as: 'parentAssignment',
           attributes: ['id', 'title', 'due_date', 'total_marks', 'class_id', 'subject_id'],
         },
-        { model: db.Student, as: 'student', attributes: ['id', 'admission_number', 'roll_number'] },
+        /* The name as well: a reviewer marks a person, and the screen has nothing else to call one by. */
+        {
+          model: db.Student,
+          as: 'student',
+          attributes: ['id', 'admission_number', 'roll_number', 'first_name', 'last_name'],
+        },
       ],
       order: getSort({ query }, SUBMISSION_SORTABLE, ['submitted_at', 'DESC']),
     },

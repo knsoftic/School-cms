@@ -682,6 +682,11 @@ export default function NewStudentPage() {
             ))}
           </SelectField>
 
+          {/*
+            * Disabled by the same `sessions.failed` as the admission session above, so it says why in
+            * the same way. It used to keep the hint that describes a working control, which left the
+            * second of two dead selects looking broken rather than explained.
+            */}
           <SelectField
             id="academic_session_id"
             label="Current session"
@@ -689,7 +694,11 @@ export default function NewStudentPage() {
             onChange={set('academic_session_id')}
             disabled={loadingOptions || sessions.failed}
             error={fieldErrors.academic_session_id}
-            hint="The session the student is sitting in now. Promotion moves this one and leaves the admission session alone. Blank ties the record to no session at all — the server does not fall back to the current one, even though it is marked in the list."
+            hint={
+              sessions.failed
+                ? 'The session list could not be loaded, so this cannot be chosen either — see Admission session above. Someone who can view sessions can set it later on the student’s own record.'
+                : 'The session the student is sitting in now. Promotion moves this one and leaves the admission session alone. Blank ties the record to no session at all — the server does not fall back to the current one, even though it is marked in the list.'
+            }
           >
             <option value="">{loadingOptions ? 'Loading…' : 'Not tied to a session'}</option>
             {sessions.rows.map((session) => (

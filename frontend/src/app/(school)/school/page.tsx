@@ -14,9 +14,23 @@ import { useEntitlements } from '@/lib/entitlements';
 import type { Limit } from '@/lib/entitlements';
 import { MetricCard, PageHeader, StatusBadge } from '@/components/table';
 
+/* Pinned to `en-US`, as `lib/money.ts` pins its own, so a figure is grouped the same way everywhere. */
+const COUNT = new Intl.NumberFormat('en-US');
+
 function formatLimit(limit: Limit): string {
   if (limit.type === 'unlimited' || limit.value === null) return 'Unlimited';
-  return new Intl.NumberFormat().format(limit.value);
+  return COUNT.format(limit.value);
+}
+
+/*
+ * The unit under each figure. `entitlementService` fills `limit.unit` on every limit — `megabytes`
+ * for storage and file uploads, `requests` for AI and API, `count` for the headcounts and SMS — and
+ * the cards used to drop it, so "5,000" of storage and "5,000" students sat side by side as if they
+ * were the same kind of number. An unlimited card has no figure for a unit to qualify.
+ */
+function limitUnit(limit: Limit): string | undefined {
+  if (limit.type === 'unlimited' || limit.value === null) return undefined;
+  return limit.unit ?? undefined;
 }
 
 export default function SchoolDashboard() {
@@ -125,9 +139,20 @@ export default function SchoolDashboard() {
 
           <section className="mb-8" aria-label="Key limits">
             <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">Limits</h2>
+            {/*
+              * Every limit the snapshot carries. This was `limits.slice(0, 8)`, and the snapshot has
+              * nine — the eight §11.2 plan limits and `sms_limit`, an add-on-only allowance that
+              * `emptyLimits()` inserts last — so the cut always fell on SMS credits, the one a school
+              * buys, and nothing said a card was missing. The grid wraps.
+              */}
             <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              {limits.slice(0, 8).map(([key, limit]) => (
-                <MetricCard key={key} label={key.replace(/_/g, ' ')} value={formatLimit(limit)} />
+              {limits.map(([key, limit]) => (
+                <MetricCard
+                  key={key}
+                  label={key.replace(/_/g, ' ')}
+                  value={formatLimit(limit)}
+                  hint={limitUnit(limit)}
+                />
               ))}
             </dl>
           </section>
@@ -136,16 +161,30 @@ export default function SchoolDashboard() {
             <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
               Included modules
             </h2>
-            <ul className="flex flex-wrap gap-2">
-              {enabled.map(([key]) => (
-                <li
-                  key={key}
-                  className="rounded-full border border-teal/30 bg-teal-mist px-3 py-1 text-xs font-medium capitalize text-teal-deep"
-                >
-                  {key.replace(/_/g, ' ')}
-                </li>
-              ))}
-            </ul>
+            {/*
+              * An unsubscribed school has every module off — `unsubscribedSnapshot()` returns
+              * `emptyModules()` — which is the ordinary state before billing starts, and it used to
+              * render this heading over blank space. The plan card above already words it; this says
+              * the same in its own place.
+              */}
+            {enabled.length > 0 ? (
+              <ul className="flex flex-wrap gap-2">
+                {enabled.map(([key]) => (
+                  <li
+                    key={key}
+                    className="rounded-full border border-teal/30 bg-teal-mist px-3 py-1 text-xs font-medium capitalize text-teal-deep"
+                  >
+                    {key.replace(/_/g, ' ')}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted">
+                {entitlements.plan
+                  ? 'No modules are included at the moment.'
+                  : 'No modules are included yet. They come with a plan, which a platform administrator sets up.'}
+              </p>
+            )}
           </section>
 
           {shortcuts.length > 0 ? (

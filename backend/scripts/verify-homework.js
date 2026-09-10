@@ -58,7 +58,6 @@ const { settleRows } = require('./lib/settle');
 
 const homeworkRoutes = require('../src/modules/homework/homework.routes');
 const { schemas } = require('../src/modules/homework/homework.validation');
-const homeworkService = require('../src/modules/homework/homework.service');
 
 const {
   ROLES,
@@ -491,7 +490,7 @@ async function verifyHttp() {
     const parentUser = await mkUser('parent', ROLES.PARENT, org.id, schoolA.id);
 
     /* Amina sits in Grade 1; Bilal sits in Grade 2 — Bilal is the counter-example. */
-    const amina = await db.Student.create({
+    await db.Student.create({
       school_id: schoolA.id, organization_id: org.id, student_id: `${CODE_PREFIX}S1`, first_name: 'Amina',
       admission_date: '2025-04-01', status: STUDENT_STATUS.ACTIVE,
       class_id: A.klass.id, section_id: A.section.id, academic_session_id: A.session.id, user_id: studentUser.id,

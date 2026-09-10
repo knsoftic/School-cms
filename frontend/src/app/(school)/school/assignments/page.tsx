@@ -10,9 +10,11 @@
  * ## §33 does not list this screen, and §20.3 does require the capability
  *
  * The same shape as school settings and academic sessions: §33's School list is fixed at seventeen
- * entries and `verify-frontend.js` asserts the count in both directions, so this is reached from
- * **Homework** — its nearest sibling, and the other half of §20's student work — rather than from
- * the sidebar. Adding an eighteenth nav entry would be this product editing a list the source fixes.
+ * entries and `verify-frontend.js` asserts the count in both directions, so this is reached from the
+ * **school dashboard**'s shortcuts (for `assignments.view`) and from the **student dashboard** (for
+ * `assignments.submit`) rather than from the sidebar. Adding an eighteenth nav entry would be this
+ * product editing a list the source fixes. (This used to say it was reached from Homework; Homework
+ * has never linked here.)
  *
  * ## One table, two record types
  *
@@ -27,18 +29,31 @@
  * it. A teacher typically holds the first and third and a student the second, so each control is
  * gated on its own key and the tabs render for whoever can use them.
  *
+ * ## Handing in once, and again only when it is returned
+ *
+ * `assignments_submission_unique (parent_assignment_id, student_id)` allows one submission per
+ * student per assignment, and `submit()` refuses a second with 409 unless the first was **returned**
+ * — in which case it replaces it. So "Submit work" is offered only where the student has not handed
+ * in, "Resubmit" where the work came back, and neither where it is waiting to be marked or has been.
+ * It used to be offered on every published assignment, and pressing it a second time was a 409.
+ *
  * ## Marking a submission is where the care is
  *
  * `review` takes `marks_obtained`, `feedback` and an `outcome` of **reviewed** or **returned** —
  * those two and no others, because §20.3 offers no third verdict. `marks_obtained` is nullable and
  * that is not the same as zero: a returned submission is one sent back to be done again, and giving
  * it a zero would record a mark the student was never given. The form says so.
+ *
+ * The dialog shows the work being marked — which assignment, out of how much, the written answer and
+ * the file. It used to show none of it: a teacher was asked for a mark with nothing to mark, although
+ * the list response carries all of it and `GET /assignments/submissions/:id/attachment` serves the
+ * file.
  */
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import { ApiError, api } from '@/lib/apiClient';
+import { ApiError, api, saveFile } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
 import { EditDialog } from '@/components/editDialog';
@@ -52,6 +67,7 @@ import {
   SubmitButton,
   TextAreaField,
 } from '@/components/form';
+import { Icon } from '@/components/icon';
 import { Modal } from '@/components/overlay';
 import { TabPanel, Tabs, useActiveTab } from '@/components/tabs';
 import {
@@ -96,7 +112,34 @@ interface Submission {
   is_late: boolean;
   marks_obtained: number | string | null;
   feedback: string | null;
-  student?: { id: number; first_name: string; last_name: string; roll_number: string | null } | null;
+  /** The written answer, up to 20000 characters (`submit` schema). Null when only a file came. */
+  submission_text: string | null;
+  /** `present()` swaps the stored path for this boolean; the original filename stays. */
+  has_attachment: boolean;
+  attachment_name: string | null;
+  /**
+   * The assignment it answers. `listSubmissions()` includes it as `parentAssignment` (not
+   * `assignment` — MySQL's case-insensitive aliases, see the service) with `id`, `title`,
+   * `due_date`, `total_marks`, `class_id` and `subject_id`.
+   */
+  parentAssignment?: {
+    id: number;
+    title: string;
+    due_date: string | null;
+    total_marks: number | string | null;
+  } | null;
+  /**
+   * The student, as the include selects it. The names are optional on purpose: the include carried
+   * only `id`, `admission_number` and `roll_number` for a while, and this row printed
+   * "undefined undefined" for every student. `studentName()` joins whatever is there.
+   */
+  student?: {
+    id: number;
+    admission_number?: string | null;
+    first_name?: string | null;
+    last_name?: string | null;
+    roll_number: string | null;
+  } | null;
 }
 
 interface ClassOption {
@@ -105,6 +148,38 @@ interface ClassOption {
 }
 
 const STATUSES = ['draft', 'published', 'closed'];
+
+/** A student's name, or the most identifying thing the row does carry. Never "undefined". */
+function studentName(row: Submission): string {
+  const name = row.student
+    ? [row.student.first_name, row.student.last_name].filter(Boolean).join(' ')
+    : '';
+  if (name) return name;
+  if (row.student?.admission_number) return `Admission no. ${row.student.admission_number}`;
+  return `Student #${row.student_id}`;
+}
+
+/**
+ * `submitted_at` — an instant, not a calendar day — in the viewer's zone.
+ *
+ * It used to be `slice(0, 10)` of the ISO string, which is the **UTC** date: work handed in just
+ * after midnight anywhere east of UTC read as the day before. The time is shown too, because on the
+ * due date the time is the question. Rows only exist after the client fetch, so the server render
+ * never formats one and there is no hydration mismatch.
+ */
+const HANDED_IN = new Intl.DateTimeFormat(undefined, {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+function handedIn(value: string | null): string | null {
+  if (!value) return null;
+  const when = new Date(value);
+  return Number.isNaN(when.getTime()) ? null : HANDED_IN.format(when);
+}
 
 export default function AssignmentsPage() {
   const { can } = useAuth();
@@ -157,6 +232,42 @@ export default function AssignmentsPage() {
   const [outcome, setOutcome] = useState('reviewed');
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  /*
+   * What this caller has already handed in, by assignment — for the "Submit work" button.
+   *
+   * Read only for a caller who submits and does not review. `listSubmissions()` narrows to the
+   * caller's own rows for a student (`selfScope()`), and to nobody's for staff — so for anyone who
+   * can also review (a Super Admin holds `assignments.submit` by the catalogue's construction) the
+   * list is the whole school's, and cross-checking against it would hide the button wherever *any*
+   * student had answered. Such a caller keeps the button and meets the service's own `NOT_A_STUDENT`.
+   *
+   * One page of a hundred, newest first. A student with more submissions than that sees "Submit
+   * work" on an old one it already answered, and the 409 says so — the failure it was before, now
+   * confined to the edge.
+   */
+  const ownSubmissions = canSubmit && !canReview;
+  const [mine, setMine] = useState<Map<number, string>>(() => new Map());
+  const [mineAttempt, setMineAttempt] = useState(0);
+
+  useEffect(() => {
+    if (!ownSubmissions) return;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const result = await api.page<Submission[]>('/assignments/submissions', {
+          query: { limit: 100 },
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        setMine(new Map((result.data ?? []).map((row) => [row.parent_assignment_id, row.submission_status])));
+      } catch {
+        /* Without it the button shows as it always did, and a duplicate is still refused with a 409. */
+      }
+    })();
+    return () => controller.abort();
+  }, [ownSubmissions, mineAttempt]);
 
   async function create() {
     if (busy) return;
@@ -223,6 +334,7 @@ export default function AssignmentsPage() {
       setSubmissionText('');
       setAttachment(null);
       submissions.reload();
+      setMineAttempt((n) => n + 1);
     } catch (caught) {
       setError(
         caught instanceof ApiError
@@ -265,6 +377,34 @@ export default function AssignmentsPage() {
     }
   }
 
+  /*
+   * The submitted file, through the authenticated client — an `<a href>` would carry no bearer token
+   * and 401. The API exposes `Content-Disposition` to the browser (`app.js` CORS `exposedHeaders`), so
+   * the server's filename is used; the original filename is passed as the fallback for a response that
+   * carries none.
+   */
+  async function downloadSubmission(row: Submission) {
+    if (downloading) return;
+    setDownloading(true);
+    setReviewError(null);
+    try {
+      const file = await api.download(
+        `/assignments/submissions/${row.id}/attachment`,
+        {},
+        row.attachment_name ?? `submission-${row.id}`
+      );
+      saveFile(file);
+    } catch (caught) {
+      setReviewError(
+        caught instanceof ApiError
+          ? caught.message
+          : 'Could not reach the server. Check your connection and try again.'
+      );
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   const columns = useMemo<Column<Assignment>[]>(
     () => [
       {
@@ -303,39 +443,49 @@ export default function AssignmentsPage() {
             {
               key: 'actions',
               header: 'Actions',
-              cell: (row: Assignment) => (
-                <div className="flex flex-wrap gap-1">
-                  {canManage ? (
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-secondary"
-                      onClick={() => setEditing(row)}
-                    >
-                      Edit
-                    </button>
-                  ) : null}
-                  {/* Only published work can be handed in; a draft is not visible to a student. */}
-                  {canSubmit && row.status === 'published' ? (
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-primary"
-                      onClick={() => {
-                        setSubmitting(row);
-                        setSubmissionText('');
-                        setAttachment(null);
-                        setError(null);
-                      }}
-                    >
-                      Submit work
-                    </button>
-                  ) : null}
-                </div>
-              ),
+              cell: (row: Assignment) => {
+                /* What this student has already done with it — see `mine`. Undefined: nothing yet. */
+                const handed = mine.get(row.id);
+                return (
+                  <div className="flex flex-wrap gap-1">
+                    {canManage ? (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => setEditing(row)}
+                      >
+                        Edit
+                      </button>
+                    ) : null}
+                    {/* Only published work can be handed in; a draft is not visible to a student. */}
+                    {canSubmit && row.status === 'published' ? (
+                      handed !== undefined && handed !== 'returned' ? (
+                        <span className="inline-flex items-center px-2 text-xs text-muted-soft">
+                          {handed === 'reviewed' ? 'Handed in · marked' : 'Handed in'}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary"
+                          onClick={() => {
+                            setSubmitting(row);
+                            setSubmissionText('');
+                            setAttachment(null);
+                            setError(null);
+                          }}
+                        >
+                          {handed === 'returned' ? 'Resubmit' : 'Submit work'}
+                        </button>
+                      )
+                    ) : null}
+                  </div>
+                );
+              },
             } as Column<Assignment>,
           ]
         : []),
     ],
-    [canManage, canSubmit]
+    [canManage, canSubmit, mine]
   );
 
   const submissionColumns = useMemo<Column<Submission>[]>(
@@ -345,11 +495,7 @@ export default function AssignmentsPage() {
         header: 'Student',
         cell: (row) => (
           <div>
-            <span className="font-medium">
-              {row.student
-                ? `${row.student.first_name} ${row.student.last_name}`
-                : `Student #${row.student_id}`}
-            </span>
+            <span className="font-medium">{studentName(row)}</span>
             {row.student?.roll_number ? (
               <span className="block text-xs text-muted-soft">roll {row.student.roll_number}</span>
             ) : null}
@@ -357,13 +503,22 @@ export default function AssignmentsPage() {
         ),
       },
       {
+        /* Which piece of work this is — without it a teacher's list is names and marks for nothing. */
+        key: 'assignment',
+        header: 'Assignment',
+        cell: (row) =>
+          row.parentAssignment ? (
+            <span>{row.parentAssignment.title}</span>
+          ) : (
+            <span className="text-muted-soft">assignment #{row.parent_assignment_id}</span>
+          ),
+      },
+      {
         key: 'submitted',
         header: 'Handed in',
         cell: (row) => (
           <div className="text-xs text-muted">
-            <span className="block">
-              {row.submitted_at ? row.submitted_at.slice(0, 10) : 'not yet'}
-            </span>
+            <span className="block whitespace-nowrap">{handedIn(row.submitted_at) ?? 'not yet'}</span>
             {/* Derived by the service from the due date, and read here rather than recomputed. */}
             {row.is_late ? <span className="block text-warn">late</span> : null}
           </div>
@@ -383,7 +538,17 @@ export default function AssignmentsPage() {
       {
         key: 'status',
         header: 'Status',
-        cell: (row) => <StatusBadge status={row.submission_status} />,
+        /*
+         * `returned` is attention, not good news: here it means the work was sent back to be done
+         * again. The shared map files the word under good because a *returned library book* is, and
+         * `StatusBadge`'s `tone` is how this screen says which meaning it has.
+         */
+        cell: (row) => (
+          <StatusBadge
+            status={row.submission_status}
+            tone={row.submission_status === 'returned' ? 'attention' : undefined}
+          />
+        ),
       },
       ...(canReview
         ? [
@@ -411,6 +576,10 @@ export default function AssignmentsPage() {
     ],
     [canReview]
   );
+
+  /* The paper the submission under review answers, and its ceiling — `review()` refuses a mark above it. */
+  const reviewTotal = reviewing?.parentAssignment?.total_marks ?? null;
+  const resubmitting = submitting ? mine.get(submitting.id) === 'returned' : false;
 
   return (
     <div>
@@ -662,8 +831,12 @@ export default function AssignmentsPage() {
         onClose={() => {
           if (!busy) setSubmitting(null);
         }}
-        title={submitting ? `Hand in ${submitting.title}` : ''}
-        description="Text, a file, or both. Handing in after the due date is recorded as late rather than refused."
+        title={submitting ? `${resubmitting ? 'Resubmit' : 'Hand in'} ${submitting.title}` : ''}
+        description={
+          resubmitting
+            ? 'This replaces the work that was returned, and clears its mark and feedback. Text, a file, or both.'
+            : 'Text, a file, or both. Handing in after the due date is recorded as late rather than refused.'
+        }
         size="lg"
         busy={busy}
         footer={
@@ -745,6 +918,51 @@ export default function AssignmentsPage() {
         >
           {reviewError ? <Notice tone="error">{reviewError}</Notice> : null}
 
+          {/* The work being marked — see the header. */}
+          {reviewing ? (
+            <section
+              aria-label="The submitted work"
+              className="space-y-3 rounded-lg border border-border p-3"
+            >
+              <div>
+                <p className="text-sm font-medium text-ink">
+                  {reviewing.parentAssignment?.title ?? `Assignment #${reviewing.parent_assignment_id}`}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-soft">
+                  {studentName(reviewing)}
+                  {handedIn(reviewing.submitted_at) ? ` · handed in ${handedIn(reviewing.submitted_at)}` : ''}
+                  {reviewing.is_late ? ' · late' : ''}
+                  {reviewTotal === null ? ' · not marked out of anything' : ` · out of ${reviewTotal}`}
+                </p>
+              </div>
+
+              {reviewing.submission_text ? (
+                <p className="max-h-64 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">
+                  {reviewing.submission_text}
+                </p>
+              ) : (
+                <p className="text-sm text-muted">
+                  No written answer{reviewing.has_attachment ? ' — the work is in the file.' : ', and no file.'}
+                </p>
+              )}
+
+              {reviewing.has_attachment ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={downloading}
+                  aria-busy={downloading}
+                  onClick={() => void downloadSubmission(reviewing)}
+                >
+                  <Icon name="download" size={14} />
+                  {downloading
+                    ? 'Downloading…'
+                    : `Download ${reviewing.attachment_name ?? 'the file'}`}
+                </button>
+              ) : null}
+            </section>
+          ) : null}
+
           <SelectField
             id="outcome"
             label="Outcome"
@@ -763,9 +981,10 @@ export default function AssignmentsPage() {
             type="number"
             step="0.01"
             min={0}
+            max={reviewTotal === null ? undefined : Number(reviewTotal)}
             value={marks}
             onChange={(event) => setMarks(event.target.value)}
-            hint="Leave blank for work that is not being given a mark — returned work usually is not, and a zero would record a mark the student was never given."
+            hint={`${reviewTotal === null ? '' : `Out of ${reviewTotal}. `}Leave blank for work that is not being given a mark — returned work usually is not, and a zero would record a mark the student was never given.`}
           />
 
           <TextAreaField

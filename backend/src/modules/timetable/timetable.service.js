@@ -342,11 +342,17 @@ async function list(req, query, pagination) {
     ];
   }
 
-  return paginateQuery(
-    db.Timetable,
-    { where, include: INCLUDES, order: getSort({ query }, SORTABLE, ['day_of_week', 'ASC']) },
-    pagination
-  );
+  /*
+   * Unsorted, the list reads as the week does — day, then period — as the class and teacher views
+   * already do. `getSort()` takes one fallback column, so the default used to be `day_of_week` alone,
+   * and within a day the periods came back in primary-key order, which is the order they were typed.
+   */
+  const sortRequested = SORTABLE.includes(String(query.sortBy || '').trim());
+  const order = sortRequested
+    ? getSort({ query }, SORTABLE, ['day_of_week', 'ASC'])
+    : [...WEEK_ORDER, ['id', 'ASC']];
+
+  return paginateQuery(db.Timetable, { where, include: INCLUDES, order }, pagination);
 }
 
 async function create(req, payload) {

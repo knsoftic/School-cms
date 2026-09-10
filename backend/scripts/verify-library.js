@@ -661,7 +661,7 @@ async function verifyHttp() {
     const librarian = await signIn(`librarian@${DOMAIN}`);
     const teacherToken = await signIn(`teacher@${DOMAIN}`);
     const aminaToken = await signIn(`student-amina@${DOMAIN}`);
-    const bilalToken = await signIn(`student-bilal@${DOMAIN}`);
+    await signIn(`student-bilal@${DOMAIN}`);
 
     /* ── the entitlement guard ── */
 

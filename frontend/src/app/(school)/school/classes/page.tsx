@@ -38,6 +38,7 @@
  * them. Naming it here would describe a refusal this screen can never receive.
  */
 
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
@@ -323,14 +324,14 @@ export default function ClassesPage() {
            * class teachers"). Hiding the button without it is a courtesy: the permission is re-read
            * from the database on the request itself, so forcing the button into existence still ends
            * at `requirePermission('classes.manage')` in Express.
+           *
+           * `Link`, not a raw `<a>`: a plain anchor is a document navigation, which throws away the
+           * in-memory access token and re-runs the whole session bootstrap before the form appears.
            */
           can('classes.manage') ? (
-            <a
-              href="/school/classes/new"
-              className="btn btn-primary"
-            >
+            <Link href="/school/classes/new" className="btn btn-primary">
               Add class
-            </a>
+            </Link>
           ) : null
         }
       />

@@ -17,7 +17,7 @@
  *
  * The one exception is `ecosystem.config.js`, which is JavaScript: `require()`-ing it is genuine
  * execution, and it earned its place immediately — the first version shipped a `SyntaxError`,
- * because a cron **step expression** written inside a `/* ... *​/` block comment closed the comment
+ * because a cron **step expression** (a star, a slash, a number) inside a block comment closed the comment
  * and turned the rest of the line into code. Three independent adversarial reviewers read that file
  * and none of them saw it. One `require()` found it in under a second.
  *

@@ -140,6 +140,16 @@ async function buildFixtures() {
  * A sweep by code prefix cannot miss a row for want of an id, and costs one query.
  */
 async function dropFixtures() {
+  /*
+   * This run's trail, by the request id every call carries. Its rows have no tenant — the fixture is a
+   * platform account and the organizations it creates are not yet in its context — and their
+   * `user_id` is SET NULL once the user goes below, so the tag is the one thing left to find them by.
+   * The tag is this suite's alone, so nothing another suite wrote can match it.
+   */
+  const ownRequests = { request_id: { [db.Sequelize.Op.like]: `${REQUEST_TAG}-%` } };
+  await db.ActivityLog.destroy({ where: ownRequests });
+  await db.AuditLog.destroy({ where: ownRequests });
+
   if (created.organizations.length) {
     await db.Organization.destroy({ where: { id: created.organizations }, force: true });
   }
@@ -155,7 +165,7 @@ async function dropFixtures() {
 }
 
 async function main() {
-  const fixtures = await buildFixtures();
+  await buildFixtures();
 
   const server = await new Promise((resolve) => {
     const s = createApp().listen(0, '127.0.0.1', () => resolve(s));

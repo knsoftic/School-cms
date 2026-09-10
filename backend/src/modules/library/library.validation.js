@@ -37,9 +37,11 @@ const { LIBRARY_TRANSACTION_STATUS, LIBRARY_BORROWER_TYPES } = require('../../co
 const forbiddenField = (because) => Joi.any().forbidden().messages({ 'any.unknown': because });
 
 /**
- * `DECIMAL(12,2)` money, the shape `finance` and `plans` settled: `.precision(2)` **rounds** under
- * `convert: true` rather than rejecting, and `validate.js` reassigns the converted body, so the value
- * the service stores is the value the caller is answered with.
+ * Money, the shape `finance` and `plans` settled: `.precision(2)` **rounds** under `convert: true`
+ * rather than rejecting, and `validate.js` reassigns the converted body, so the value the service
+ * stores is the value the caller is answered with. The ceiling is narrower than the `DECIMAL(14,2)`
+ * column behind it (`models/columns.js` `money()`), and the book form mirrors this bound, not the
+ * column's.
  */
 const moneyField = Joi.number().min(0).max(9999999999.99).precision(2);
 

@@ -211,12 +211,18 @@ const INVOICE_ACTIONS: Record<
 
 export default function InvoicesPage() {
   const { can } = useAuth();
-  const { nameFor } = useSchoolNames();
+  const { nameFor, schools } = useSchoolNames();
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [debounced, setDebounced] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  /*
+   * `invoices.service.list()` reads `school_id` and the list schema accepts it, and nothing on this
+   * screen could send it — a platform-wide billing list with no way to ask "what does this school
+   * owe?". Fed from the same cached lookup that names the School column, as on payments.
+   */
+  const [schoolId, setSchoolId] = useState('');
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -227,7 +233,12 @@ export default function InvoicesPage() {
   }, [search]);
 
   const query = useMemo<Query>(() => {
-    const base: Query = { page, limit: 20, number: debounced || undefined };
+    const base: Query = {
+      page,
+      limit: 20,
+      number: debounced || undefined,
+      school_id: schoolId || undefined,
+    };
 
     /*
      * `outstanding` is a `Joi.boolean()`, which accepts the string form — and it has to be a string,
@@ -236,7 +247,7 @@ export default function InvoicesPage() {
     if (statusFilter === 'outstanding') return { ...base, outstanding: 'true' };
     if (statusFilter) return { ...base, status: statusFilter };
     return base;
-  }, [page, debounced, statusFilter]);
+  }, [page, debounced, statusFilter, schoolId]);
 
   const { rows, meta, loading, error, refusal, reload } = useCollection<Invoice>('/invoices', query);
 
@@ -534,22 +545,20 @@ export default function InvoicesPage() {
               </Link>
             ) : null}
             {can('invoices.manage') ? (
-              <a
-                href="/super-admin/invoices/new"
-                className="btn btn-primary"
-              >
+              <Link href="/super-admin/invoices/new" className="btn btn-primary">
                 Generate invoice
-              </a>
+              </Link>
             ) : null}
           </div>
         }
       />
 
       <FilterBar
-        activeCount={[search, statusFilter].filter(Boolean).length}
+        activeCount={[search, statusFilter, schoolId].filter(Boolean).length}
         onClear={() => {
           setSearch('');
           setStatusFilter('');
+          setSchoolId('');
           setPage(1);
         }}
       >
@@ -577,6 +586,26 @@ export default function InvoicesPage() {
             </option>
           ))}
         </FilterSelect>
+
+        {/* Only offered once the names have loaded — an empty select is a control that looks broken. */}
+        {schools.length > 0 ? (
+          <FilterSelect
+            id="invoice-school"
+            label="Filter by school"
+            value={schoolId}
+            onChange={(value) => {
+              setSchoolId(value);
+              setPage(1);
+            }}
+          >
+            <option value="">Any school</option>
+            {schools.map((school) => (
+              <option key={school.id} value={school.id}>
+                {school.name}
+              </option>
+            ))}
+          </FilterSelect>
+        ) : null}
       </FilterBar>
 
       {refusal ? (
@@ -594,8 +623,8 @@ export default function InvoicesPage() {
         <EmptyNotice>
           {debounced
             ? `No invoice number matches “${debounced}”.`
-            : statusFilter
-              ? 'No invoice matches this status.'
+            : statusFilter || schoolId
+              ? 'No invoice matches these filters.'
               : 'No invoices have been issued yet.'}
         </EmptyNotice>
       ) : (

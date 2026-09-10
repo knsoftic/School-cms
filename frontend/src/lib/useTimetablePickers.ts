@@ -137,6 +137,63 @@ function useList<T>(path: string, enabled: boolean): Picker<T> {
 }
 
 /**
+ * How many pages of one picker `useWholeList` will read — an operational ceiling, not an SRS one.
+ * A thousand options is past any school's staff room, and ten requests stay well inside
+ * `apiLimiter`'s budget. Past it the hints still say how many were left out.
+ */
+export const MAX_PAGES = 10;
+
+/**
+ * A picker cut at one page, read to its end.
+ *
+ * Pages two onwards are fetched in the server's own order — the `id` tiebreaker `getSort` appends
+ * keeps each row on exactly one page — and appended to the first. `total` stays the server's count, so
+ * a "Showing the first N of M" hint is still right in the one case it can still fire: a list past
+ * `MAX_PAGES`, or a later page that failed. A failed later page leaves the first standing rather than
+ * taking the whole picker down with it.
+ *
+ * Kept here rather than folded into `useList` so a screen opts in per list: the timetable screens read
+ * every class, subject, teacher and session, and the attendance register needs only the first page of
+ * classes it already asks for. Both timetable screens carried their own copy of this until it moved.
+ */
+export function useWholeList<T extends { id: number }>(path: string, first: Picker<T>): Picker<T> {
+  const total = first.state === 'ready' ? first.total : 0;
+  const loaded = first.state === 'ready' ? first.rows.length : 0;
+  const [rest, setRest] = useState<T[]>([]);
+
+  useEffect(() => {
+    if (total <= loaded) return;
+    let cancelled = false;
+    const pages = Math.min(Math.ceil(total / OPTION_LIMIT), MAX_PAGES);
+
+    (async () => {
+      try {
+        const results = await Promise.all(
+          Array.from({ length: Math.max(0, pages - 1) }, (_, index) =>
+            api.page<T[]>(path, { query: { page: index + 2, limit: OPTION_LIMIT } })
+          )
+        );
+        if (!cancelled) setRest(results.flatMap((result) => result.data ?? []));
+      } catch {
+        /* The first page still stands, and its hint still says how many it is short. */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [path, total, loaded]);
+
+  if (first.state !== 'ready' || rest.length === 0) return first;
+  const seen = new Set(first.rows.map((row) => row.id));
+  return {
+    state: 'ready',
+    rows: [...first.rows, ...rest.filter((row) => !seen.has(row.id))],
+    total: first.total,
+  };
+}
+
+/**
  * The class list, plus the sections of whichever class is chosen.
  *
  * Split out of `useTimetablePickers` when the attendance register needed exactly these two and none

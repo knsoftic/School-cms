@@ -52,6 +52,7 @@
  * the refusal branch simply renders whatever the API refused with.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { api } from '@/lib/apiClient';
@@ -221,6 +222,13 @@ export default function StaffPage() {
         key: 'name',
         header: 'Name',
         /*
+         * The mobile card's heading, although Employee ID is the table's first column. With no
+         * column marked `primary`, `DataTable` falls back to the first, so below `md` every card was
+         * titled with a small muted `EMP-0041` and the person's name was a row in its body. A person
+         * is found by name when scanning a stack of cards; the ID stays in the card, just below it.
+         */
+        primary: true,
+        /*
          * Two model columns, one screen column. `last_name` is nullable, so joining on a filtered
          * array avoids the trailing space a template string would leave; this is exactly what
          * `staff.controller.js` `label()` does when it writes an activity description, so the name
@@ -352,14 +360,14 @@ export default function StaffPage() {
            * `PLAN_LIMIT_EXCEEDED` even holding the permission. Matching that here would mean
            * reading the usage snapshot to grey out a link, which puts a copy of the limit rule in
            * the UI; the create screen is the honest place to report it.
+           *
+           * `Link`, not a raw `<a>`: a plain anchor is a document navigation, which throws away the
+           * in-memory access token and re-runs the whole session bootstrap before the form appears.
            */
           can('staff.manage') ? (
-            <a
-              href="/school/staff/new"
-              className="btn btn-primary"
-            >
+            <Link href="/school/staff/new" className="btn btn-primary">
               Add staff member
-            </a>
+            </Link>
           ) : null
         }
       />

@@ -76,12 +76,13 @@ interface Exam {
    */
   class: { id: number; name: string } | null;
   /**
-   * Present as a raw id and **nothing else** — the service joins no `Section`. It is read here only
-   * for its null/non-null distinction, which the model documents as meaningful ("Null = all sections
-   * of the class sit the exam"); the number itself is never rendered, because `section_id: 7` tells
-   * an administrator nothing they can act on.
+   * The model documents the null as meaningful — "Null = all sections of the class sit the exam" — so
+   * it is rendered as words. A set one is named from the joined `section`, which `listExams()` and
+   * `GET /exams/:id` both include; the bare id is never rendered, because `section_id: 7` tells an
+   * administrator nothing they can act on.
    */
   section_id: number | null;
+  section?: { id: number; name: string } | null;
   start_date: string | null;
   end_date: string | null;
   grade_scale: string;
@@ -263,20 +264,21 @@ export default function ExamsPage() {
         cell: (row) => (
           <span className="whitespace-nowrap">
             {/*
-              * The joined name, never `class_id`. This is the one association the service provides,
-              * and it is the difference between a column an administrator can read and a number
-              * they would have to look up elsewhere.
+              * The joined names, never the ids — the difference between a column an administrator
+              * can read and a number they would have to look up elsewhere.
               */}
             {row.class ? row.class.name : <span className="text-muted-soft">—</span>}
             {/*
-              * The section is a bare foreign key with no join, so the *name* is unavailable — but
-              * whether the field is set is itself the fact the model documents, and it changes who
-              * is expected to sit the paper. Saying "one section" rather than printing an id is the
-              * honest version: it reports what is known and does not dress a number up as an
-              * answer. Which section it is has to come from the exam's own detail screen.
+              * Whether a section is set is itself the fact the model documents, and it changes who is
+              * expected to sit the paper. "One section" is only a fallback for a response without the
+              * join; `exams.section_id` cascades on delete, so a set id always has a section to name.
               */}
             <span className="ml-2 text-xs text-muted-soft">
-              {row.section_id === null ? 'all sections' : 'one section'}
+              {row.section_id === null
+                ? 'all sections'
+                : row.section
+                  ? `section ${row.section.name}`
+                  : 'one section'}
             </span>
           </span>
         ),

@@ -102,7 +102,6 @@ const {
   STUDENT_FEE_STATUS,
   SUBSCRIPTION_STATES,
   PLAN_STATUS,
-  MODULES,
   MODULE_LIST,
   LIMITS,
   ACTIVITY_ACTIONS,
@@ -600,7 +599,7 @@ async function verifyHttp() {
       name: 'Draft Exam', exam_type: 'quiz', class_id: grade.id,
       start_date: '2026-08-01', end_date: '2026-08-02', status: EXAM_STATUS.DRAFT,
     });
-    const examCancelled = await db.Exam.create({
+    await db.Exam.create({
       school_id: schoolA.id, organization_id: org.id, academic_session_id: session.id,
       name: 'Cancelled Exam', exam_type: 'quiz', class_id: grade.id,
       start_date: '2026-08-05', end_date: '2026-08-06', status: EXAM_STATUS.CANCELLED,
@@ -626,7 +625,7 @@ async function verifyHttp() {
       is_published: published, published_at: published ? at : null,
     });
     const resultPublished = await mkResult(student1, true, 91);
-    const resultDraft = await mkResult(student2, false, 64);
+    await mkResult(student2, false, 64);
 
     const mkAttendance = async (student, status) => db.StudentAttendance.create({
       school_id: schoolA.id, organization_id: org.id, academic_session_id: session.id,

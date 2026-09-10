@@ -73,6 +73,25 @@ function count(value: number): string {
   return new Intl.NumberFormat().format(value);
 }
 
+/**
+ * The revenue window, as days a person can check a figure against.
+ *
+ * The API sends `period.month` / `period.year` as `Date`s, which `res.json()` serialises to ISO
+ * instants — so the hint used to read `2026-09-01T00:00:00.000Z → 2026-09-30T23:59:59.999Z`, on the two
+ * cards the hint was added to make checkable. Formatted in **UTC** on purpose: `periodRange()` builds
+ * both bounds with `Date.UTC(...)`, so the month is a UTC month, and rendering it in the viewer's zone
+ * would move the start back a day for anyone west of Greenwich. The same formatter payments uses.
+ */
+const DAY = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
+
+function span(from: string, to: string): string {
+  const start = new Date(from);
+  const end = new Date(to);
+  /* Shown as sent rather than as "Invalid Date" if either bound is not an instant at all. */
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return `${from} – ${to}`;
+  return `${DAY.format(start)} – ${DAY.format(end)}`;
+}
+
 export default function PlatformDashboard() {
   const { profile } = useAuth();
   const [data, setData] = useState<PlatformDashboardData | null>(null);
@@ -151,7 +170,16 @@ export default function PlatformDashboard() {
               <MetricCard label="Suspended schools" value={count(data.suspendedSchools)} />
               <MetricCard label="Students" value={count(data.totalStudents)} />
               <MetricCard label="Teachers" value={count(data.totalTeachers)} />
-              <MetricCard label="Archived schools" value={count(data.archivedSchools)} hint="Not in the §9.1 eleven — shown so totals reconcile" />
+              {/*
+                * Not one of §9.1's eleven metrics — `platform.service.js` adds it so the schools figures
+                * reconcile, and says so in its own comment. The citation stays here; the card says the
+                * thing a reader needs.
+                */}
+              <MetricCard
+                label="Archived schools"
+                value={count(data.archivedSchools)}
+                hint="Schools = active + suspended + archived."
+              />
             </dl>
           </section>
 
@@ -167,7 +195,7 @@ export default function PlatformDashboard() {
                 value={money(data.monthlyRevenue)}
                 hint={
                   data.period
-                    ? `${data.period.month.from} → ${data.period.month.to}. ${MIXED_CURRENCY}`
+                    ? `${span(data.period.month.from, data.period.month.to)} (UTC). ${MIXED_CURRENCY}`
                     : MIXED_CURRENCY
                 }
               />
@@ -176,7 +204,7 @@ export default function PlatformDashboard() {
                 value={money(data.yearlyRevenue)}
                 hint={
                   data.period
-                    ? `${data.period.year.from} → ${data.period.year.to}. ${MIXED_CURRENCY}`
+                    ? `${span(data.period.year.from, data.period.year.to)} (UTC). ${MIXED_CURRENCY}`
                     : MIXED_CURRENCY
                 }
               />

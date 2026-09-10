@@ -99,8 +99,14 @@ export function useRowAction<T, E = void>({
       setTarget(null);
       onDone();
     } catch (caught) {
-      if (!(caught instanceof ApiError)) throw caught;
-      if (caught.status === 409) {
+      /*
+       * A failed `fetch` is a TypeError, not an ApiError. This used to rethrow it, which from an async
+       * click handler is an unhandled rejection: the button stopped spinning and nothing said whether
+       * the action had happened. Said now, and the dialog stays open so it can be tried again.
+       */
+      if (!(caught instanceof ApiError)) {
+        toastError(failure, 'Could not reach the server. Check your connection and try again.');
+      } else if (caught.status === 409) {
         setConflict(caught.message);
       } else {
         toastError(failure, caught.message);

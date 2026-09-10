@@ -28,6 +28,7 @@ import { ApiError, api, saveFile } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
 import { splitApiErrors } from '@/lib/formErrors';
+import { formatAmountWithCode } from '@/lib/money';
 import {
   Field,
   Notice,
@@ -104,11 +105,29 @@ export default function DocumentsPage() {
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
   const [documentType, setDocumentType] = useState('');
 
+  /*
+   * 300 ms, as every other search screen does. `useCollection` refetches on every change to the
+   * query and holds no timer of its own, so feeding `search` straight in sent one request per
+   * keystroke — ten for a ten-character title.
+   */
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebounced(search);
+      /*
+       * Resetting to page one is part of the search, not a separate concern — searching from page
+       * three and staying there shows an empty table for a query that has two pages of results.
+       */
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const query = useMemo(
-    () => ({ page, limit: 20, q: search || undefined, document_type: documentType || undefined }),
-    [page, search, documentType]
+    () => ({ page, limit: 20, q: debounced || undefined, document_type: documentType || undefined }),
+    [page, debounced, documentType]
   );
   const { rows, meta, loading, error, refusal, reload } = useCollection<DocumentRow>('/documents', query);
 
@@ -268,7 +287,7 @@ export default function DocumentsPage() {
             label="Search documents by title"
             placeholder="Search by title…"
             value={search}
-            onChange={(value) => { setSearch(value); setPage(1); }}
+            onChange={setSearch}
           />
         </div>
         <div>
@@ -296,7 +315,7 @@ export default function DocumentsPage() {
         <LoadingBlock />
       ) : rows.length === 0 ? (
         <EmptyNotice>
-          {search || documentType ? 'No document matches these filters.' : 'No documents yet.'}
+          {debounced || documentType ? 'No document matches these filters.' : 'No documents yet.'}
         </EmptyNotice>
       ) : (
         <>
@@ -502,7 +521,7 @@ function GenerateDialog({
     if (ownerKind === 'payment') {
       return payments.map((row) => ({
         id: row.id,
-        label: `${row.receipt_number ?? `payment #${row.id}`} — ${row.amount} ${row.currency ?? ''}`.trim(),
+        label: `${row.receipt_number ?? `payment #${row.id}`} — ${formatAmountWithCode(row.amount, row.currency)}`,
       }));
     }
     return [];

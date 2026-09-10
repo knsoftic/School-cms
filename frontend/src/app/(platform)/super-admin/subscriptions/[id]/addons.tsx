@@ -20,8 +20,22 @@
  *
  * The cancel route takes a `subscription_addons.id`. A school may hold two purchases of the same
  * add-on — two blocks of a hundred students — and cancelling one must not cancel both. That is why
- * the row action passes `row.id` and never `row.addon_id`, and why the confirmation names the
- * quantity as well as the add-on.
+ * the row action passes `row.id` and never `row.addon_id`, and why the confirmation names the units
+ * that one purchase grants.
+ *
+ * The billing side now holds to the same rule. `cancelAddon()` used to close every
+ * `subscription_items` line with the same `addon_id`, so cancelling one of two purchases left the
+ * other granting its units and never invoiced again. Each line now carries the purchase it bills in
+ * `metadata.subscription_addon_id`, and only that line is closed — which is what lets the dialog say
+ * "its billing line" without a qualification.
+ *
+ * ## Only prices on the subscription's own cycle and currency are offered
+ *
+ * An add-on's line is billed once per subscription period, on an invoice in the subscription's
+ * currency — nothing downstream reads the price's own cycle. So a monthly price on a yearly
+ * subscription billed its monthly figure once a year, a EUR price billed as USD, and a one-time price
+ * recurred. `purchaseAddon()` now refuses the mismatch; the select does not offer it, and says how
+ * many it left out so a price the operator expected is not simply missing.
  *
  * ## Cancelling withdraws the units, and says how many
  *
@@ -38,9 +52,10 @@
  */
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
+import { rowError, splitApiErrors } from '@/lib/formErrors';
 import { formatCodeWithAmount } from '@/lib/money';
 import { useCollection } from '@/lib/useCollection';
 import {
@@ -50,18 +65,25 @@ import {
   SelectField,
   SubmitButton,
   TextAreaField,
+  focusFirstInvalidField,
 } from '@/components/form';
 import { Modal } from '@/components/overlay';
 import { Column, DataTable, EmptyNotice, StatusBadge } from '@/components/table';
 import { useToast } from '@/components/toast';
 
-import { formatDate, humanise } from './detail';
-import type { SubscriptionAddonRow, SubscriptionDetail } from './detail';
+import { cycleLabel, formatDate, howToBringIntoUse, humanise, limitLabel, sameCycle } from './detail';
+import type { SubscriptionAddonRow, SubscriptionCatalogue, SubscriptionDetail } from './detail';
+
+/** The purchase form's inputs, by the body field each sends. A 422 on anything else is a banner. */
+const PURCHASE_FIELDS = new Set(['addon_id', 'addon_price_id', 'quantity', 'reason']);
+const CANCEL_FIELDS = new Set(['reason']);
 
 /** One `addon_prices` row, as `/addons` includes them. */
 interface AddonPrice {
   id: number;
   billing_cycle: string;
+  /** Set only for `custom_days`, where it is part of what the cycle is. */
+  cycle_days: number | null;
   currency: string;
   unit_amount: number | string | null;
   plan_id: number | null;
@@ -107,10 +129,13 @@ function formatUnits(value: number | string | null): string {
 
 export function AddonsPanel({
   subscription,
+  catalogue: vocabulary,
   canBuy,
   onChanged,
 }: {
   subscription: SubscriptionDetail;
+  /** The subscription catalogue — limit labels, and what brings an unusable subscription back. */
+  catalogue: SubscriptionCatalogue | null;
   /** `subscriptions.manage` or `subscriptions.self.manage` — `canBuyAddons()` in the router. */
   canBuy: boolean;
   onChanged: (subscription: SubscriptionDetail) => void;
@@ -125,11 +150,26 @@ export function AddonsPanel({
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const [cancelling, setCancelling] = useState<SubscriptionAddonRow | null>(null);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [cancelFieldErrors, setCancelFieldErrors] = useState<Record<string, string>>({});
+
+  /*
+   * What a limit-increase grants towards, by the catalogue's label rather than its key — "Student
+   * Limit", not `student_limit`. A feature unlock's target is a feature key, which has no label
+   * anywhere to take one from, so it stays the key the Features screen uses.
+   *
+   * `useCallback` because the columns memo captures it, as `valueOf` is on the overrides tab.
+   */
+  const targetLabel = useCallback(
+    (effectType: string, target: string) =>
+      effectType === 'limit_increase' ? limitLabel(vocabulary, target) : target,
+    [vocabulary]
+  );
 
   const chosen = useMemo(
     () => catalogue.rows.find((row) => String(row.id) === addonId) ?? null,
@@ -146,8 +186,9 @@ export function AddonsPanel({
    * — which is `is_active` **and** at least one active price. That is the right test for the Add-ons
    * catalogue screen, where "purchasable" means "a school could buy this", and the wrong one here.
    *
-   * `subscriptions.service.purchaseAddon()` refuses exactly one thing: an add-on that is not
-   * `is_active`. A price is **optional** — `addon_price_id` is nullable and `SET NULL` on purpose,
+   * `subscriptions.service.purchaseAddon()` refuses exactly one thing about the add-on itself: that it
+   * is not `is_active`. Its other refusals are about a price the caller *named*. A price is
+   * **optional** — `addon_price_id` is nullable and `SET NULL` on purpose,
    * because §11.3 add-ons are granted at no charge as part of a negotiation, and this screen's own
    * price control says so two fields further down. So the first version forbade a supported
    * operation, and forbade it for precisely the add-ons that need it.
@@ -163,12 +204,14 @@ export function AddonsPanel({
   /*
    * Prices this subscription may actually be charged on.
    *
-   * `purchaseAddon()` checks that a named price belongs to the add-on **and is not restricted to a
-   * different plan** — `addon_prices.plan_id` is that restriction. Filtering here means the select
-   * cannot offer a price whose only outcome is a 422; the service still checks, because a screen is
-   * not a guard.
+   * `purchaseAddon()` checks that a named price belongs to the add-on, **is not restricted to a
+   * different plan** — `addon_prices.plan_id` is that restriction — and bills on the subscription's
+   * own cycle and currency (see the header). Filtering here means the select cannot offer a price
+   * whose only outcome is a refusal; the service still checks, because a screen is not a guard.
+   *
+   * `offerable` is the first test alone, so the hint can say how many the cycle test left out.
    */
-  const prices = useMemo(
+  const offerable = useMemo(
     () =>
       (chosen?.prices ?? []).filter(
         (price) =>
@@ -176,11 +219,17 @@ export function AddonsPanel({
       ),
     [chosen, subscription.plan_id]
   );
+  const prices = offerable.filter(
+    (price) => price.currency === subscription.currency && sameCycle(price, subscription)
+  );
+  const otherCycleCount = offerable.length - prices.length;
+  const billing = `${cycleLabel(subscription).toLowerCase()} in ${subscription.currency}`;
 
   async function purchase() {
     if (!chosen || busy) return;
     setBusy(true);
     setError(null);
+    setFieldErrors({});
     try {
       const body: Record<string, unknown> = { addon_id: chosen.id };
       if (priceId) body.addon_price_id = Number(priceId);
@@ -195,7 +244,7 @@ export function AddonsPanel({
       success(
         `${result.purchase.addon.name} purchased`,
         result.purchase.unitsGranted > 0
-          ? `${result.purchase.unitsGranted.toLocaleString()} added to ${result.purchase.effectTarget}.`
+          ? `${result.purchase.unitsGranted.toLocaleString()} added to ${limitLabel(vocabulary, result.purchase.effectTarget)}.`
           : `${result.purchase.effectTarget} unlocked.`
       );
       setAddonId('');
@@ -203,11 +252,14 @@ export function AddonsPanel({
       setQuantity('1');
       setReason('');
     } catch (caught) {
-      setError(
-        caught instanceof ApiError
-          ? caught.message
-          : 'Could not reach the server. Check your connection and try again.'
-      );
+      if (caught instanceof ApiError) {
+        const { perField, banner } = splitApiErrors(caught, PURCHASE_FIELDS);
+        setFieldErrors(perField);
+        setError(banner);
+        if (Object.keys(perField).length) focusFirstInvalidField();
+      } else {
+        setError('Could not reach the server. Check your connection and try again.');
+      }
     } finally {
       setBusy(false);
     }
@@ -217,6 +269,7 @@ export function AddonsPanel({
     if (!cancelling || cancelBusy) return;
     setCancelBusy(true);
     setCancelError(null);
+    setCancelFieldErrors({});
     try {
       const result = await api.post<CancelResponse>(
         `/subscriptions/${subscription.id}/addons/${cancelling.id}/cancel`,
@@ -232,11 +285,13 @@ export function AddonsPanel({
       setCancelling(null);
       setCancelReason('');
     } catch (caught) {
-      setCancelError(
-        caught instanceof ApiError
-          ? caught.message
-          : 'Could not reach the server. Check your connection and try again.'
-      );
+      if (caught instanceof ApiError) {
+        const { perField, banner } = splitApiErrors(caught, CANCEL_FIELDS);
+        setCancelFieldErrors(perField);
+        setCancelError(banner);
+      } else {
+        setCancelError('Could not reach the server. Check your connection and try again.');
+      }
     } finally {
       setCancelBusy(false);
     }
@@ -267,7 +322,7 @@ export function AddonsPanel({
               */}
             <span>
               {row.effect_type === 'limit_increase'
-                ? `${formatUnits(row.units_granted)} → ${row.effect_target}`
+                ? `${formatUnits(row.units_granted)} → ${targetLabel(row.effect_type, row.effect_target)}`
                 : `Unlocks ${row.effect_target}`}
             </span>
             <span className="block text-xs text-muted-soft">
@@ -333,7 +388,7 @@ export function AddonsPanel({
           ]
         : []),
     ],
-    [canBuy, subscription.currency]
+    [canBuy, subscription.currency, targetLabel]
   );
 
   return (
@@ -352,7 +407,21 @@ export function AddonsPanel({
         />
       )}
 
-      {canBuy ? (
+      {/*
+        * `purchaseAddon()` refuses a subscription outside the usable states, so the form is not
+        * offered on one — and the notice names the transition that would change that. Cancelling
+        * carries no such test, so the table's Cancel buttons stay.
+        */}
+      {canBuy && !subscription.standing.isUsable ? (
+        <Notice tone="info">
+          Add-ons can be bought only onto a subscription in use, and this one is{' '}
+          {humanise(subscription.state).toLowerCase()}.{' '}
+          {howToBringIntoUse(vocabulary, subscription.state)}
+          {subscription.standing.activeAddonCount > 0
+            ? ' Purchases already on it can still be cancelled from the table above.'
+            : ''}
+        </Notice>
+      ) : canBuy ? (
         <FormSection
           title="Buy an add-on"
           description="What is bought is copied onto the purchase — a later change to the add-on catalogue does not change what this school has."
@@ -366,14 +435,30 @@ export function AddonsPanel({
             }}
           >
             {error ? <Notice tone="error">{error}</Notice> : null}
-            {catalogue.error ? (
+            {/*
+              * A refusal as well as a failure: `/addons` has a read permission of its own, and
+              * `useCollection` files a missing one under `refusal`. Checking `error` alone left an
+              * account without it looking at an empty dropdown and no reason.
+              */}
+            {catalogue.refusal ? (
+              <Notice tone="warn">
+                This account cannot read the add-on catalogue, so there is nothing to offer:{' '}
+                {catalogue.refusal.message}
+              </Notice>
+            ) : catalogue.error ? (
               <Notice tone="error">The add-on catalogue could not be loaded: {catalogue.error}</Notice>
             ) : null}
+            {/*
+              * "No charge" is not "not billed". A no-charge purchase still writes its
+              * `subscription_items` line at 0.00, and `generateForSubscription()` copies every item
+              * onto the invoice — so the line prints. This notice once said it "raises no invoice
+              * line", which the first invoice after such a purchase contradicted.
+              */}
             {nothingPriced ? (
               <Notice tone="info">
-                No add-on has a price set, so anything bought here is granted at no charge and raises
-                no invoice line. That is a supported outcome, not a blocked one — if it should be
-                billed, set a price on the{' '}
+                No add-on has a price set, so anything bought here is granted at no charge — it still
+                appears as a 0.00 line on the invoices this subscription is billed with. That is a
+                supported outcome, not a blocked one; if it should be billed, set a price on the{' '}
                 <Link href="/super-admin/addons" className="font-medium underline underline-offset-2">
                   Add-ons
                 </Link>{' '}
@@ -386,6 +471,7 @@ export function AddonsPanel({
               label="Add-on"
               required
               value={addonId}
+              error={rowError(fieldErrors, 'addon_id', 'Add-on')}
               onChange={(event) => {
                 setAddonId(event.target.value);
                 setPriceId('');
@@ -414,19 +500,28 @@ export function AddonsPanel({
                 id="addon-price"
                 label="Price"
                 value={priceId}
+                error={rowError(fieldErrors, 'addon_price_id', 'Price')}
                 onChange={(event) => setPriceId(event.target.value)}
                 hint={
                   prices.length === 0
-                    ? 'This add-on has no active price this subscription’s plan may be charged on. Buying it without one grants the add-on at no charge.'
-                    : 'Leave blank to grant the add-on at no charge — the purchase row survives a price being retired either way.'
+                    ? `This add-on has no active price this subscription may be charged on — one open to its plan and billing ${billing}${
+                        otherCycleCount > 0
+                          ? `; ${otherCycleCount} on another cycle or currency cannot be used`
+                          : ''
+                      }. Buying it without one grants the add-on at no charge.`
+                    : `Only prices billing ${billing}, as this subscription does, are listed${
+                        otherCycleCount > 0
+                          ? ` — ${otherCycleCount} on another cycle or currency left out`
+                          : ''
+                      }. Leave blank to grant the add-on at no charge.`
                 }
               >
                 <option value="">No charge</option>
                 {prices.map((price) => (
                   <option key={price.id} value={price.id}>
-                    {formatCodeWithAmount(price.currency, price.unit_amount)} ·{' '}
-                    {humanise(price.billing_cycle)}
-                    {price.plan_id === null ? '' : ' · this plan only'}
+                    {`${formatCodeWithAmount(price.currency, price.unit_amount)} · ${cycleLabel(price)}${
+                      price.plan_id === null ? '' : ' · this plan only'
+                    }`}
                   </option>
                 ))}
               </SelectField>
@@ -439,6 +534,7 @@ export function AddonsPanel({
               min={1}
               required
               value={quantity}
+              error={rowError(fieldErrors, 'quantity', 'Quantity')}
               onChange={(event) => setQuantity(event.target.value)}
               hint={
                 chosen && chosen.effect_type === 'limit_increase'
@@ -454,9 +550,11 @@ export function AddonsPanel({
               id="addon-reason"
               label="Reason"
               rows={2}
+              maxLength={255}
               value={reason}
+              error={rowError(fieldErrors, 'reason', 'Reason')}
               onChange={(event) => setReason(event.target.value)}
-              hint="Recorded in the audit trail — a negotiated grant is worth explaining."
+              hint="Up to 255 characters. Recorded in the audit trail — a negotiated grant is worth explaining."
             />
 
             <SubmitButton busy={busy} busyLabel="Purchasing…" fullWidth={false} disabled={!chosen}>
@@ -474,8 +572,8 @@ export function AddonsPanel({
         title={`Cancel ${cancelling?.addon ? cancelling.addon.name : 'this add-on'}?`}
         description={
           cancelling && cancelling.effect_type === 'limit_increase'
-            ? `The ${formatUnits(cancelling.units_granted)} it grants towards ${cancelling.effect_target} are withdrawn from this subscription’s allowance. The purchase row is kept — §13 raised an invoice line against it — and is marked cancelled rather than deleted.`
-            : 'What it unlocks is withdrawn. The purchase row is kept and marked cancelled rather than deleted, because §13 raised an invoice line against it.'
+            ? `The ${formatUnits(cancelling.units_granted)} it grants towards ${targetLabel(cancelling.effect_type, cancelling.effect_target)} are withdrawn from this subscription’s allowance, and its billing line stops recurring from today. The purchase row is kept, marked cancelled rather than deleted, as the record of what was bought.`
+            : 'What it unlocks is withdrawn, and its billing line stops recurring from today. The purchase row is kept, marked cancelled rather than deleted, as the record of what was bought.'
         }
         size="sm"
         busy={cancelBusy}
@@ -523,9 +621,11 @@ export function AddonsPanel({
             id="cancel-addon-reason"
             label="Reason"
             rows={2}
+            maxLength={255}
             value={cancelReason}
+            error={rowError(cancelFieldErrors, 'reason', 'Reason')}
             onChange={(event) => setCancelReason(event.target.value)}
-            hint="Recorded in the audit trail."
+            hint="Up to 255 characters. Recorded in the audit trail."
           />
         </form>
       </Modal>

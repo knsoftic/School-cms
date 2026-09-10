@@ -66,8 +66,15 @@
  * this form does not have is promoted to the top-level `Notice`. The same branch catches the
  * `school_id` refusal above.
  *
- * `formErrors()` still handles the other half — a whole-object Joi `.custom()` reports with no field
- * at all. This schema has none today; the branch costs nothing and the next rule added will land.
+ * The two validators are independent, so both can fail on one submit — a fine type and a discount
+ * type, both amounts blank — and `rethrow()` maps Sequelize's errors one-to-one, so both arrive.
+ * This form used to hold the promoted message in a single string that each one overwrote, so the
+ * banner showed only the second, and fixing it revealed the first: two round trips for one form.
+ * `splitApiErrors()` (`lib/formErrors.ts`) collects them all and joins them, which is what it is for.
+ *
+ * It also handles the other half — a whole-object Joi `.custom()` reports with no field at all, via
+ * `formErrors()`. This schema has none today; the branch costs nothing and the next rule added will
+ * land.
  *
  * No `Array.isArray` guard before `fieldErrors()`: `ApiError`'s constructor already drops a `details`
  * that is not an array of field errors, so the conflict shapes reach the banner as their own message.
@@ -136,6 +143,7 @@ import type { FormEvent } from 'react';
 import { ApiError, api } from '@/lib/apiClient';
 import type { PageMeta } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { splitApiErrors } from '@/lib/formErrors';
 import {
   Field,
   Notice,
@@ -325,25 +333,15 @@ export default function NewFeeStructurePage() {
       if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
         setRefusal({ code: caught.code, message: caught.message });
       } else if (caught instanceof ApiError) {
-        const perField: Record<string, string> = {};
-        let unplaced: string | null = null;
-
-        for (const [field, message] of Object.entries(caught.fieldErrors())) {
-          /* A field this form does not have — `fineTypeNeedsAmount`, `school_id` — goes to the banner
-             rather than nowhere. See the header. */
-          if (FORM_FIELDS.has(field)) perField[field] = message;
-          else unplaced = message;
-        }
-
+        /*
+         * A field this form does not have — `fineTypeNeedsAmount`, `school_id` — goes to the banner
+         * rather than nowhere, and **every** such message goes, joined, after the whole-object ones
+         * `formErrors()` returns. See the header for why both validators can fail at once.
+         */
+        const { perField, banner } = splitApiErrors(caught, FORM_FIELDS);
         setFieldErrors(perField);
-        focusFirstInvalidField();
-        /* Whole-object rules have no field at all; `formErrors()` is where those arrive. */
-        const formLevel = caught.formErrors();
-        setError(
-          formLevel.length
-            ? formLevel.join(' ')
-            : unplaced ?? (Object.keys(perField).length ? null : caught.message)
-        );
+        setError(banner);
+        if (Object.keys(perField).length) focusFirstInvalidField();
       } else {
         setError('Could not reach the server. Check your connection and try again.');
       }

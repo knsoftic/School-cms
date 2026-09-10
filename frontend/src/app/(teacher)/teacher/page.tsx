@@ -100,7 +100,13 @@ export default function TeacherDashboard() {
     { href: '/school/attendance', label: 'Attendance', description: 'Mark and review attendance for your classes.', permission: 'attendance.view', module: 'attendance' },
     { href: '/school/exams', label: 'Exams and marks', description: 'Enter and submit marks for your subjects.', permission: 'exams.view', module: 'exams' },
     { href: '/school/homework', label: 'Homework', description: 'Set homework and see what is due.', permission: 'homework.view', module: 'homework' },
-    { href: '/school/timetable', label: 'Timetable', description: 'Your teaching periods.', permission: 'timetable.view', module: 'timetable' },
+    /*
+     * Captioned for where it goes. It said "Your teaching periods", and it opens the whole-school
+     * register: `/school/timetable` sends no teacher filter, and its search matches period labels and
+     * rooms only. `GET /timetable/teacher/:teacherId` would answer the caption's promise, and no
+     * screen calls it yet.
+     */
+    { href: '/school/timetable', label: 'Timetable', description: 'The whole school’s periods, by day — not only yours.', permission: 'timetable.view', module: 'timetable' },
   ].filter((item) => can(item.permission) && hasModule(item.module));
 
   return (

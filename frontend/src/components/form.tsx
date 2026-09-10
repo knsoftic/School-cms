@@ -590,9 +590,17 @@ export function focusFirstInvalidField(): void {
   let attempt = 0;
 
   const look = () => {
-    const target = document.querySelector<HTMLElement>(
-      '[aria-invalid="true"]:is(input, select, textarea), [aria-invalid="true"] :is(input, select, textarea)'
-    );
+    /*
+     * The first one that is **rendered**. A screen that keeps several tab panels mounted and hides the
+     * inactive ones (the plan editor does, so an unsaved edit survives a tab switch) can hold a stale
+     * invalid field in a hidden panel; focusing it moves focus nowhere visible. A `display: none`
+     * subtree has no client rects.
+     */
+    const target = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[aria-invalid="true"]:is(input, select, textarea), [aria-invalid="true"] :is(input, select, textarea)'
+      )
+    ).find((element) => element.getClientRects().length > 0);
     if (target) {
       /* `preventScroll` is left at its default: the scroll into view is half the point. */
       target.focus();

@@ -338,12 +338,12 @@ export function PageHeader({
 
 const GOOD = [
   'active', 'approved', 'paid', 'completed', 'present', 'succeeded', 'published',
-  'accepted', 'graduated', 'promoted', 'returned', 'read', 'pass',
+  'accepted', 'graduated', 'promoted', 'returned', 'read', 'pass', 'reviewed',
 ];
 const ATTENTION = [
   'pending', 'pending_review', 'unpaid', 'partially_paid', 'overdue', 'past_due',
   'expiring', 'grace_period', 'trial', 'late', 'processing', 'ongoing', 'marks_entry',
-  'scheduled', 'upcoming', 'issued', 'submitted', 'sent', 'reviewed', 'initiated',
+  'scheduled', 'upcoming', 'issued', 'submitted', 'sent', 'initiated',
 ];
 const BAD = ['rejected', 'failed', 'suspended', 'absent', 'lost', 'fail'];
 const ENDED = [
@@ -351,22 +351,38 @@ const ENDED = [
   'paused', 'draft', 'closed', 'left', 'transferred', 'waived', 'leave',
 ];
 
+export type StatusTone = 'good' | 'attention' | 'bad' | 'ended' | 'neutral';
+
+const TONE_CLASSES: Record<StatusTone, { pill: string; dot: string }> = {
+  good: { pill: 'border-success/25 bg-success-soft text-success', dot: 'bg-success' },
+  attention: { pill: 'border-warn/25 bg-warn-soft text-warn', dot: 'bg-warn' },
+  bad: { pill: 'border-danger/25 bg-danger-soft text-danger', dot: 'bg-danger' },
+  ended: { pill: 'border-border bg-surface-2 text-muted', dot: 'bg-muted-soft' },
+  neutral: { pill: 'border-border bg-surface-2 text-ink-soft', dot: 'bg-muted' },
+};
+
 /**
  * A status word, its tone, and a dot.
  *
  * The dot is not decoration: it carries the tone at a glance for anyone scanning a column, and it
  * means the badge still reads correctly in greyscale, where four tinted pills look identical.
+ *
+ * `tone` overrides the shared map for a word that means different things in different places: a
+ * `returned` library book is good news, a `returned` assignment has been sent back to be redone; a
+ * `sent` e-mail was delivered, a `sent` quotation is waiting on an answer. The map keeps one default
+ * per word, and the screen that knows which meaning it has says so.
  */
-export function StatusBadge({ status }: { status: string }) {
-  const tone = GOOD.includes(status)
-    ? { pill: 'border-success/25 bg-success-soft text-success', dot: 'bg-success' }
+export function StatusBadge({ status, tone: override }: { status: string; tone?: StatusTone }) {
+  const inferred: StatusTone = GOOD.includes(status)
+    ? 'good'
     : ATTENTION.includes(status)
-      ? { pill: 'border-warn/25 bg-warn-soft text-warn', dot: 'bg-warn' }
+      ? 'attention'
       : BAD.includes(status)
-        ? { pill: 'border-danger/25 bg-danger-soft text-danger', dot: 'bg-danger' }
+        ? 'bad'
         : ENDED.includes(status)
-          ? { pill: 'border-border bg-surface-2 text-muted', dot: 'bg-muted-soft' }
-          : { pill: 'border-border bg-surface-2 text-ink-soft', dot: 'bg-muted' };
+          ? 'ended'
+          : 'neutral';
+  const tone = TONE_CLASSES[override ?? inferred];
 
   return (
     <span

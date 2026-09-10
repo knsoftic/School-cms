@@ -35,17 +35,27 @@
  * an operator can raise, and the ceiling is 72 **bytes** rather than characters, so a `maxLength` on
  * the input would be wrong for any password carrying a non-ASCII character.
  *
- * ## `details` is not always an array
+ * ## `details` is not always an array, and that is `ApiError`'s problem, not this page's
  *
- * `ApiError.fieldErrors()` iterates `details`, and that shape only holds for a refusal from the
- * `validate` middleware, which builds `[{ field, location, message, type }]`. Two failures this form
- * will routinely provoke do not: `users.service.rethrowUniqueViolation()` raises 409 `EMAIL_TAKEN` /
- * `USERNAME_TAKEN` with `details: { email: <submitted value> }`, and `requireSchool()` raises 422 with
- * `details: { school_id: '…' }`. `errorHandler` copies `details` into the envelope verbatim, so those
- * arrive as plain objects and `for…of` over one throws inside the catch block — the form would hang on
- * "Creating…" precisely when a duplicate email is the whole story. Hence the `Array.isArray` guard; the
- * object-shaped cases fall through to the top-level notice, where their messages already name the
- * offending field in words ("This username is already taken").
+ * Two failures this form will routinely provoke carry an object rather than the `validate`
+ * middleware's `[{ field, location, message, type }]`: `users.service.rethrowUniqueViolation()` raises
+ * 409 `EMAIL_TAKEN` / `USERNAME_TAKEN` with `details: { email: <submitted value> }`, and
+ * `requireSchool()` raises 422 with `details: { school_id: '…' }`. This header used to say that
+ * `fieldErrors()` would throw on those inside the catch block and that a local `Array.isArray` guard
+ * prevented it. The guard was dead: `ApiError`'s constructor already keeps only well-formed field
+ * errors in `details` and moves an object to `context`, so `fieldErrors()` cannot throw. It is gone,
+ * and the object-shaped cases still reach the top-level notice through `splitApiErrors`, where their
+ * messages name the offending field in words ("This username is already taken").
+ *
+ * ## Arriving from a school
+ *
+ * The school screen's Principal tab links here as `?school_id=<id>` when the school has no Principal
+ * account to assign — `assignPrincipal()` only accepts a principal already belonging to that school,
+ * so creating one is the step before assigning. The id preselects the school, and the form then
+ * returns to that school's Principal tab rather than to the Principals list — as long as the account
+ * is still for that school — so the operator lands where the assignment is made. Cancel goes back
+ * there too. The school is fetched by id as well as listed, because on a platform with more schools
+ * than a page holds it may not be among the hundred the select loads.
  *
  * ## What the redirect discards
  *
@@ -55,12 +65,13 @@
  * and it answers it for every principal rather than only the one just created.
  */
 
-import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { splitApiErrors } from '@/lib/formErrors';
 import {
   Field,
   Notice,
@@ -73,9 +84,12 @@ import {
   SearchField,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
-import { PageHeader, RefusalNotice } from '@/components/table';
+import { LoadingBlock, PageHeader, RefusalNotice } from '@/components/table';
 import { EXPLAINED_CODES } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
+
+/** Every field this form has an input for, so `splitApiErrors` can send the rest to the banner. */
+const RENDERED = new Set(['name', 'email', 'username', 'password', 'phone', 'school_id', 'status']);
 
 /** `USER_STATUS` in `constants.js` — the four values `validate()` will accept, mirrored exactly. */
 const STATUSES = ['active', 'inactive', 'suspended', 'pending'];
@@ -91,10 +105,18 @@ interface SchoolOption {
   status: string;
 }
 
-export default function NewPrincipalPage() {
+function NewPrincipalScreen() {
   const router = useRouter();
+  const params = useSearchParams();
   const { can, profile } = useAuth();
   const { success } = useToast();
+
+  /*
+   * `?school_id=` from the school screen — see the header. Only a positive integer is taken; anything
+   * else is ignored rather than posted, since `commonSchemas.id` would refuse it anyway.
+   */
+  const requestedSchool = params.get('school_id');
+  const fromSchool = requestedSchool && /^[1-9]\d*$/.test(requestedSchool) ? requestedSchool : null;
 
   /*
    * Both of `POST /principals`'s guards, not just the permission. The route is `requirePlatformScope()`
@@ -112,7 +134,7 @@ export default function NewPrincipalPage() {
     phone: '',
     username: '',
     password: '',
-    school_id: '',
+    school_id: fromSchool ?? '',
     status: '',
   });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -192,6 +214,52 @@ export default function NewPrincipalPage() {
     return () => controller.abort();
   }, [allowed, schoolQuery, schoolRetry]);
 
+  /*
+   * The chosen school, kept among the options whatever the filter shows — so neither a preselected
+   * school beyond the first hundred nor one the filter has since narrowed away leaves the select on
+   * its placeholder while the form holds, and would post, an id nobody can see.
+   */
+  const [chosenSchool, setChosenSchool] = useState<SchoolOption | null>(null);
+  /* Set when `?school_id=` names no school this account can read; the form then behaves as if unlinked. */
+  const [originMissing, setOriginMissing] = useState(false);
+
+  useEffect(() => {
+    if (!allowed || !fromSchool) return undefined;
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        const result = await api.get<{ school: SchoolOption }>(`/schools/${fromSchool}`, {
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        setChosenSchool(result.school);
+      } catch (caught) {
+        if (controller.signal.aborted || (caught as Error)?.name === 'AbortError') return;
+        /*
+         * A school that is gone, or out of reach, cannot be preselected or returned to. Clearing the
+         * preselection only if it is still the one the link set, so a school picked by hand meanwhile
+         * is left alone.
+         */
+        setOriginMissing(true);
+        setValues((prev) => (prev.school_id === fromSchool ? { ...prev, school_id: '' } : prev));
+      }
+    })();
+
+    return () => controller.abort();
+  }, [allowed, fromSchool]);
+
+  /* Where to go afterwards — the school the operator came from, while it is one that exists. */
+  const returnSchool = fromSchool && !originMissing ? fromSchool : null;
+  const returnHref = returnSchool
+    ? `/super-admin/schools/${returnSchool}?tab=principal`
+    : '/super-admin/principals';
+
+  const schoolOptions =
+    chosenSchool && !schools.some((school) => school.id === chosenSchool.id)
+      ? [chosenSchool, ...schools]
+      : schools;
+
   const set = (key: keyof typeof values) => (event: { target: { value: string } }) =>
     setValues((prev) => ({ ...prev, [key]: event.target.value }));
 
@@ -216,31 +284,38 @@ export default function NewPrincipalPage() {
      */
     if (values.school_id) body.school_id = Number(values.school_id);
 
+    /*
+     * Back to the school when the operator came from one and the account is still for that school —
+     * its Principal tab is where the account just made gets assigned. A different school picked by
+     * hand goes to the list instead: the origin's picker would not offer an account of another school.
+     */
+    const backTo = returnSchool && values.school_id === returnSchool ? returnSchool : null;
+
     try {
       await api.post('/principals', body);
-      success('Principal created', 'They must change their password on first sign-in.');
-      router.replace('/super-admin/principals');
+      if (backTo) {
+        success(
+          'Principal created',
+          'They must change their password on first sign-in. Choose them in the Principal picker to assign them.'
+        );
+        router.replace(`/super-admin/schools/${backTo}?tab=principal`);
+      } else {
+        success('Principal created', 'They must change their password on first sign-in.');
+        router.replace('/super-admin/principals');
+      }
     } catch (caught) {
       if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
         setRefusal({ code: caught.code, message: caught.message });
       } else if (caught instanceof ApiError) {
-        /* The guard the header explains: a 409 on a duplicate email carries an object here. */
-        const perField = Array.isArray(caught.details) ? caught.fieldErrors() : {};
+        /*
+         * Whole-object rules, messages keyed to a field with no input, and the object-shaped 409 of a
+         * duplicate email or username (see the header) all belong at the top; `splitApiErrors` sends
+         * them there and leaves the rest beside their inputs.
+         */
+        const { perField, banner } = splitApiErrors(caught, RENDERED);
         setFieldErrors(perField);
         focusFirstInvalidField();
-        /*
-         * Whole-object rules ("expires_at must be after starts_at") report with an empty field and
-         * belong at the top; `formErrors()` returns exactly those. Without them a rejected submit
-         * showed nothing at all — the message went to a key no input renders.
-         */
-        const formLevel = caught.formErrors();
-        setError(
-          formLevel.length
-            ? formLevel.join(' ')
-            : Object.keys(perField).length
-              ? null
-              : caught.message
-        );
+        setError(banner);
       } else {
         setError('Could not reach the server. Check your connection and try again.');
       }
@@ -380,7 +455,12 @@ export default function NewPrincipalPage() {
               label="School"
               required
               value={values.school_id}
-              onChange={set('school_id')}
+              onChange={(event) => {
+                set('school_id')(event);
+                setChosenSchool(
+                  schoolOptions.find((school) => String(school.id) === event.target.value) ?? null
+                );
+              }}
               disabled={schoolsLoading || Boolean(schoolsError)}
               error={fieldErrors.school_id}
               /*
@@ -401,7 +481,7 @@ export default function NewPrincipalPage() {
                     ? 'Schools unavailable'
                     : 'Select a school'}
               </option>
-              {schools.map((school) => (
+              {schoolOptions.map((school) => (
                 <option key={school.id} value={school.id}>
                   {/*
                     * The status is shown, not filtered on. `requireSchool()` accepts any school inside
@@ -464,12 +544,24 @@ export default function NewPrincipalPage() {
           </SelectField>
         </FormSection>
 
-        <FormActions cancelHref="/super-admin/principals">
+        <FormActions cancelHref={returnHref}>
           <SubmitButton fullWidth={false} busy={saving} busyLabel="Creating…">
             Create principal
           </SubmitButton>
         </FormActions>
       </form>
     </div>
+  );
+}
+
+export default function NewPrincipalPage() {
+  /*
+   * `useSearchParams` reads `?school_id=`, and a statically prerendered route that calls it has to sit
+   * under a Suspense boundary or the production build fails — the same wrapper the plan screens use.
+   */
+  return (
+    <Suspense fallback={<LoadingBlock />}>
+      <NewPrincipalScreen />
+    </Suspense>
   );
 }

@@ -114,8 +114,8 @@ const TEXTUAL_FIELDS = [
  * more arrives than this names; these are the columns the picker and its hints read.
  *
  * `credit_balance` is `money()` — `DECIMAL(14,2)`, and it arrives as a JS **number**
- * (`config/database.js` sets `decimalNumbers: true`; this comment used to say string). It is
- * displayed and never added to anything, so it stays a string here.
+ * (`config/database.js` sets `decimalNumbers: true`; this comment used to say string). It is only
+ * displayed, through `lib/money`, and never added to anything on this side of the wire.
  */
 interface SubscriptionOption {
   id: number;
@@ -131,12 +131,15 @@ interface SubscriptionOption {
   plan: { id: number; name: string } | null;
 }
 
-/** One row of `GET /taxes`. `rate_percent` is `DECIMAL(7,4)`, so a string over the wire. */
+/**
+ * One row of `GET /taxes`. `rate_percent` is `DECIMAL(7,4)`, which `decimalNumbers: true` delivers as
+ * a number — `12.5`, not `"12.5000"` — so it is interpolated as it comes: a rate of 12.5 reads "12.5%".
+ */
 interface TaxOption {
   id: number;
   name: string;
   code: string;
-  rate_percent: string;
+  rate_percent: number;
   is_default: boolean;
 }
 
@@ -209,6 +212,13 @@ export default function GenerateInvoicePage() {
     setValues((prev) => ({ ...prev, [key]: event.target.value }));
 
   /*
+   * Both halves of `canManage()`, in the order the router applies them — computed here, above the
+   * effect, because the effect needs the answer too. See the header and the refusal below.
+   */
+  const isPlatform = profile?.tenant.isPlatform ?? false;
+  const allowed = isPlatform && can('invoices.manage');
+
+  /*
    * Three lookups, each failing on its own terms.
    *
    * Only `/subscriptions` is load-bearing: without it the one required field cannot be filled, so its
@@ -216,8 +226,14 @@ export default function GenerateInvoicePage() {
    * `coupons.view`, neither of which travels with `invoices.manage` — a caller holding one and not the
    * others is a re-grant away, and losing an *optional* override to a 403 must not stop an invoice being
    * issued. So those two are allowed to come back empty and their controls degrade to the default.
+   *
+   * None of them is sent for a caller the page is about to refuse. The gate below is a `return`
+   * *after* the hooks, so without this the three requests went out anyway — spending the pre-auth
+   * `apiLimiter` budget on a screen that then says no. `coupons/new` guards its lookups the same way.
    */
   useEffect(() => {
+    if (!allowed) return undefined;
+
     const controller = new AbortController();
     let cancelled = false;
 
@@ -270,7 +286,7 @@ export default function GenerateInvoicePage() {
       cancelled = true;
       controller.abort();
     };
-  }, []);
+  }, [allowed]);
 
   /** The row behind the current selection, which several hints below quote figures from. */
   const selected = subscriptions.find((row) => String(row.id) === values.subscription_id) ?? null;
@@ -371,12 +387,8 @@ export default function GenerateInvoicePage() {
     }
   }
 
-  /*
-   * Both halves of `canManage()`, in the order the router applies them, so the refusal names the
-   * condition that actually failed. See the header.
-   */
-  const isPlatform = profile?.tenant.isPlatform ?? false;
-  if (!isPlatform || !can('invoices.manage')) {
+  /* `isPlatform` first, so the refusal names the condition that actually failed. See the header. */
+  if (!allowed) {
     return (
       <div>
         <PageHeader title="Generate invoice" />

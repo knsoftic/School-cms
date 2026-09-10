@@ -75,6 +75,8 @@ import type { FormEvent } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+/* A `datetime-local` value as an instant. See the header on why the zoneless form is not sent. */
+import { isoInstant } from '@/lib/instants';
 import {
   Field,
   Notice,
@@ -134,11 +136,6 @@ function numeric(text: string): number | string {
   return Number.isFinite(parsed) ? parsed : text;
 }
 
-/** A `datetime-local` value as an instant. See the header on why the zoneless form is not sent. */
-function isoInstant(local: string): string {
-  const parsed = new Date(local);
-  return Number.isNaN(parsed.getTime()) ? local : parsed.toISOString();
-}
 
 /**
  * One of the two §13.4 restriction lists.

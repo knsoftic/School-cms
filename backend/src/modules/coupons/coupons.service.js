@@ -626,6 +626,28 @@ async function assertRestrictionsExist(payload, transaction) {
 async function update(req, id, payload) {
   const coupon = await findById(id);
   const before = snapshot(coupon);
+  /* An audit reason, not a column — `coupons` has none for it (see the validation). */
+  const { reason, ...changes } = payload;
+
+  /*
+   * The currency rule, against the row as it will be rather than the body as sent.
+   *
+   * `checkCoherence` sees only the body, so a PATCH that turns a percentage coupon into a fixed-amount
+   * one without naming a currency passed it — the coupon's currency is null because a percentage one
+   * must not have one — and the saved coupon then took "50 off" in whatever currency the invoice used.
+   * Required for fixed amounts on create; required here too, on the merged row.
+   */
+  const nextType = changes.discount_type !== undefined ? changes.discount_type : coupon.discount_type;
+  const nextCurrency = changes.currency !== undefined ? changes.currency : coupon.currency;
+  if (nextType === COUPON_TYPES.FIXED_AMOUNT && !nextCurrency) {
+    throw ApiError.validation('A fixed-amount coupon needs a currency', [
+      { field: 'currency', message: '"currency" is required for a fixed-amount coupon' },
+    ]);
+  }
+  if (nextType === COUPON_TYPES.PERCENTAGE && changes.discount_type === COUPON_TYPES.PERCENTAGE) {
+    /* Becoming a percentage coupon drops the currency it no longer has a use for. */
+    changes.currency = null;
+  }
 
   await db.sequelize.transaction(async (transaction) => {
     if (payload.code && payload.code !== coupon.code) {
@@ -667,7 +689,7 @@ async function update(req, id, payload) {
       );
     }
 
-    await coupon.update(payload, { transaction });
+    await coupon.update(changes, { transaction });
   });
 
   await recordAudit(req, {
@@ -676,6 +698,7 @@ async function update(req, id, payload) {
     event: 'update',
     before,
     after: snapshot(coupon),
+    reason: reason || null,
   });
 
   return findById(coupon.id);

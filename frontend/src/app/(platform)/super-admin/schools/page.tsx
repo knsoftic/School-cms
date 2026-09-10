@@ -131,10 +131,14 @@ export default function SchoolsPage() {
         }
       />
 
+      {/*
+        * All three columns `schools.service.js` matches `q` against. The placeholder named two and hid
+        * the city, so nobody learned that this box finds every school in a town.
+        */}
       <SearchField
         id="school-search"
         label="Search schools"
-        placeholder="Search by name or code…"
+        placeholder="Search by name, code or city…"
         value={search}
         onChange={setSearch}
       />

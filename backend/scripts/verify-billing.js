@@ -1074,6 +1074,44 @@ async function verifyHttp() {
     check('the coupon usages list is readable too — the same include, the same mistake',
       couponUsages.status, 200);
 
+    /*
+     * ── Editing a coupon: the currency rule on the merged row, and the reason kept ──
+     *
+     * Found by the audit of the coupon edit screen. The body-only coherence check let a PATCH turn a
+     * percentage coupon into a fixed-amount one with no currency, because the body named no currency
+     * and the row's is null; and the edit schema had no `reason`, so the screen's "recorded in the
+     * audit trail" box was stripped. VBL10's discount is not changed here — the invoice below uses it.
+     */
+    const noCurrency = await call(`/coupons/${coupon.id}`, {
+      method: 'PATCH', token: platform, body: { discount_type: COUPON_TYPES.FIXED_AMOUNT },
+    });
+    check('a PATCH making a percentage coupon fixed-amount without a currency is refused, on the currency',
+      [noCurrency.status, ((noCurrency.body && noCurrency.body.error && noCurrency.body.error.details) || [])
+        .map((d) => d.field)],
+      [422, ['currency']]);
+    await expectOk(`/coupons/${coupon.id}`, {
+      method: 'PATCH', token: platform, body: { name: 'Verify Billing 10% (renamed)', reason: 'Verify coupon reason' },
+    }, 200);
+    const couponAudit = await settle(
+      () => db.AuditLog.findOne({
+        where: { table_name: 'coupons', record_id: coupon.id, event: 'update', id: { [db.Op.gt]: baseline.auditLog } },
+        order: [['id', 'DESC']],
+      }),
+      (row) => Boolean(row)
+    );
+    check('  and the reason given on an edit reaches the audit trail', couponAudit ? couponAudit.reason : null,
+      'Verify coupon reason');
+    const fixedRes = await expectOk('/coupons', {
+      method: 'POST', token: platform,
+      body: { code: 'VBL5OFF', name: 'Verify Billing 5 off', discount_type: COUPON_TYPES.FIXED_AMOUNT, discount_value: 5, currency: 'USD' },
+    }, 201);
+    created.coupons.push(dataOf(fixedRes).coupon.id);
+    const toPercentage = await expectOk(`/coupons/${dataOf(fixedRes).coupon.id}`, {
+      method: 'PATCH', token: platform, body: { discount_type: COUPON_TYPES.PERCENTAGE, discount_value: 5 },
+    }, 200);
+    check('  a fixed-amount coupon made a percentage one drops the currency it no longer uses',
+      dataOf(toPercentage).coupon.currency, null);
+
     const planRes = await expectOk(
       '/plans',
       {
@@ -1453,17 +1491,38 @@ async function verifyHttp() {
         method: 'PUT',
         token: platform,
         body: {
-          prices: [{ billing_cycle: BILLING_CYCLES.MONTHLY, currency: 'USD', unit_amount: 25 }],
+          /*
+           * Two prices: one on this subscription's own cycle (it is billed every 30 days), and a
+           * monthly one. An add-on is billed once per subscription period in the subscription's
+           * currency, so buying on another cycle is refused rather than mis-billed — the audit of the
+           * add-ons panel found the monthly figure billed once per whatever the period was.
+           */
+          prices: [
+            { billing_cycle: BILLING_CYCLES.CUSTOM_DAYS, cycle_days: 30, currency: 'USD', unit_amount: 25 },
+            { billing_cycle: BILLING_CYCLES.MONTHLY, currency: 'USD', unit_amount: 25 },
+          ],
         },
       },
       200
     );
-    /* Read back, not guessed: `setPrices()` destroys and recreates, so the id is its output. */
+    /* Read back, not guessed: `setPrices()` destroys and recreates, so the ids are its output. */
     const addonPrice = await db.AddonPrice.findOne({
-      where: { addon_id: extraStudents.id, is_active: true },
+      where: { addon_id: extraStudents.id, is_active: true, billing_cycle: BILLING_CYCLES.CUSTOM_DAYS },
       order: [['id', 'DESC']],
     });
-    created.addonPrices.push(addonPrice.id);
+    const monthlyAddonPrice = await db.AddonPrice.findOne({
+      where: { addon_id: extraStudents.id, is_active: true, billing_cycle: BILLING_CYCLES.MONTHLY },
+      order: [['id', 'DESC']],
+    });
+    created.addonPrices.push(addonPrice.id, monthlyAddonPrice.id);
+
+    const offCycle = await call(`/subscriptions/${subscriptionId}/addons`, {
+      method: 'POST',
+      token: platform,
+      body: { addon_id: extraStudents.id, addon_price_id: monthlyAddonPrice.id, quantity: 1 },
+    });
+    check('an add-on price on another billing cycle than the subscription is refused, not mis-billed',
+      [offCycle.status, codeOf(offCycle)], [409, 'ADDON_PRICE_CYCLE_MISMATCH']);
 
     const bought = await expectOk(
       `/subscriptions/${subscriptionId}/addons`,

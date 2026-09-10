@@ -347,14 +347,18 @@ function LimitsScreen() {
 
       <PlanPicker selected={selected} onSelect={select} />
 
-      {refusal ? (
+      {/*
+        * `!selected` first — `usePlanDetail` leaves the previous plan's `error`, `refusal` and
+        * `loading` in place when the picker is cleared. The Features screen has the full note.
+        */}
+      {!selected ? (
+        <EmptyNotice>Choose a plan above to see its limits.</EmptyNotice>
+      ) : refusal ? (
         <RefusalNotice refusal={refusal} />
       ) : error ? (
         <ErrorNotice message={error} onRetry={reload} />
       ) : loading ? (
         <LoadingBlock />
-      ) : !selected ? (
-        <EmptyNotice>Choose a plan above to see its limits.</EmptyNotice>
       ) : detail && catalogue ? (
         <LimitEditor
           detail={detail}

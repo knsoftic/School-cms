@@ -609,20 +609,28 @@ async function pricesInUse(ids) {
  * client to say what changed, so two administrators on the pricing screen at once would each apply a
  * change to a set neither of them was looking at.
  *
- * ## A price in use is retired, not deleted
+ * ## A price in use is kept — updated in place when the set still offers it, retired when it does not
  *
- * `plan_prices` has no natural key — SRS §10.4's Student-Based bands are several rows for one billing
- * cycle — so a replacement cannot match old rows to new ones and has to remove what the caller omitted.
- * Removing a row that a subscription or quotation points at would blank that pointer (see
- * `pricesInUse`), so an omitted row that is referenced is instead set `is_active = false` and kept.
- * `is_default` is cleared with it: a retired price must not stay pre-selected on the subscribe screen.
+ * `plan_prices` has no unique key, but a price does have an identity: the tuple `checkPriceSet`
+ * refuses to see twice — billing cycle, cycle days, pricing model and tier band. A row a subscription
+ * or quotation points at cannot be deleted without blanking that pointer (see `pricesInUse`), so:
  *
- * The response returns the resulting set, so the retained rows are visible rather than surprising.
+ *   - a referenced row whose identity the submitted set **repeats** is updated in place with the
+ *     submitted values, and kept active unless the set says otherwise;
+ *   - a referenced row the set **omits** is set `is_active = false` and kept, with `is_default`
+ *     cleared, since a retired price must not stay pre-selected on the subscribe screen;
+ *   - everything unreferenced is replaced outright.
+ *
+ * The first rule is the fix for a loop the audit of the pricing screen found. Every referenced row
+ * used to be retired and the whole set re-created, so saving the same prices on a plan any school had
+ * bought left the old row retired *and* a new copy with the same identity — and the next save of that
+ * set, retired row included, was refused as a duplicate. Updating in place changes no subscription:
+ * each copies its pricing into its own columns when it is created.
  *
  * @param {import('express').Request} req
  * @param {number|string} id
  * @param {object[]} prices  the complete price set the plan should offer
- * @returns {Promise<{plan: object, created: number, deleted: number, retired: number}>}
+ * @returns {Promise<{plan: object, created: number, updated: number, deleted: number, retired: number}>}
  */
 async function setPrices(req, id, prices) {
   const plan = await findById(req.tenant, id, { detail: false });
@@ -634,8 +642,27 @@ async function setPrices(req, id, prices) {
   const before = existing.map((row) => snapshot(row));
 
   const inUse = await pricesInUse(existing.map((row) => Number(row.id)));
-  const retained = existing.filter((row) => inUse.has(Number(row.id)));
+  const referenced = existing.filter((row) => inUse.has(Number(row.id)));
   const removable = existing.filter((row) => !inUse.has(Number(row.id)));
+
+  /* A price's identity — the tuple `checkPriceSet` refuses to see twice. See the header. */
+  const identityOf = (price) =>
+    [
+      price.billing_cycle,
+      price.cycle_days ?? '',
+      price.pricing_model,
+      price.tier_min_units ?? '',
+      price.tier_max_units ?? '',
+    ].join('|');
+  const referencedByIdentity = new Map(referenced.map((row) => [identityOf(row), row]));
+  /* submitted index → the referenced row it updates in place */
+  const reuse = new Map();
+  prices.forEach((price, index) => {
+    const row = referencedByIdentity.get(identityOf(price));
+    if (row && ![...reuse.values()].includes(row)) reuse.set(index, row);
+  });
+  const retained = referenced.filter((row) => ![...reuse.values()].includes(row));
+  const fresh = prices.filter((_, index) => !reuse.has(index));
 
   await db.sequelize.transaction(async (transaction) => {
     if (removable.length) {
@@ -652,12 +679,26 @@ async function setPrices(req, id, prices) {
       );
     }
 
-    if (prices.length) {
+    for (const [index, row] of reuse) {
+      const price = prices[index];
+      // eslint-disable-next-line no-await-in-loop
+      await row.update(
+        {
+          ...price,
+          plan_id: plan.id,
+          is_active: price.is_active !== undefined ? price.is_active : true,
+          is_default: price.is_default !== undefined ? price.is_default : false,
+        },
+        { transaction }
+      );
+    }
+
+    if (fresh.length) {
       /* `validate: true` runs the model-level `customDaysRequiresLength` and `tierBandOrdered`
        * validators, which `bulkCreate` skips by default. The Joi schema checks the same two rules, so
        * this is the second of two independent checks rather than the only one. */
       await db.PlanPrice.bulkCreate(
-        prices.map((price) => ({ ...price, plan_id: plan.id })),
+        fresh.map((price) => ({ ...price, plan_id: plan.id })),
         { transaction, validate: true }
       );
     }
@@ -678,7 +719,8 @@ async function setPrices(req, id, prices) {
 
   return {
     plan: await findById(req.tenant, plan.id),
-    created: prices.length,
+    created: fresh.length,
+    updated: reuse.size,
     deleted: removable.length,
     retired: retained.length,
   };

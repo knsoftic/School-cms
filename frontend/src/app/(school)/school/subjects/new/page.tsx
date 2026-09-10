@@ -148,10 +148,16 @@ export default function NewSubjectPage() {
     if (!isActive) body.is_active = false;
 
     try {
-      await api.post('/subjects', body);
-      /* `replace`, not `push`: Back would otherwise re-open an empty form for a subject that exists. */
+      const created = await api.post<{ subject: { id: number } }>('/subjects', body);
+      /*
+       * To the new subject, not the list. The toast says to assign it to classes and teachers next,
+       * and that is done on the subject's own screen — landing on the list, which sorts by name and
+       * pages at twenty, told the operator what to do and sent them somewhere they could not do it.
+       *
+       * `replace`, not `push`: Back would otherwise re-open an empty form for a subject that exists.
+       */
       success('Subject created', 'Assign it to classes and teachers next.');
-      router.replace('/school/subjects');
+      router.replace(`/school/subjects/${created.subject.id}`);
     } catch (caught) {
       if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
         setRefusal({ code: caught.code, message: caught.message });
@@ -257,6 +263,8 @@ export default function NewSubjectPage() {
           {/*
             The blank option stays first and keeps an empty value, so an untouched select omits `type`
             from the body and the service applies its own `'theory'` rather than the form asserting it.
+            Its label says what that means for the subject — it used to read "Server default", which
+            describes the plumbing rather than the outcome.
           */}
           <SelectField
             id="type"
@@ -266,7 +274,7 @@ export default function NewSubjectPage() {
             error={fieldErrors.type}
             hint="Whether the subject is taught as theory, as practical work, or as both."
           >
-            <option value="">Server default (theory)</option>
+            <option value="">Not chosen — saved as theory</option>
             {TYPES.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
@@ -295,11 +303,19 @@ export default function NewSubjectPage() {
             of nesting it inside the label, where it was read out as part of the box's own name.
           */}
           <div className="space-y-2 pt-1">
+            {/*
+              `CheckboxField` takes an `error` now (form.tsx), wired with `aria-invalid` and
+              `aria-describedby` like every other field — so these two no longer need the hand-rolled
+              paragraphs that used to follow them. Both errors are near-unreachable — the boxes can
+              only ever send `true`/`false`, which is what `Joi.boolean()` asks for — but a message
+              that does arrive now sits on its box.
+            */}
             <CheckboxField
               id="is_elective"
               label="Elective"
               checked={isElective}
               onChange={(event) => setIsElective(event.target.checked)}
+              error={fieldErrors.is_elective}
               hint="An optional subject rather than one every student takes. Electives can be excluded from result aggregation, so this is worth getting right at creation rather than discovering it later from a marks discrepancy."
             />
 
@@ -308,23 +324,10 @@ export default function NewSubjectPage() {
               label="Active"
               checked={isActive}
               onChange={(event) => setIsActive(event.target.checked)}
+              error={fieldErrors.is_active}
               hint="Subjects are not soft-deleted, so this flag is the whole of a subject's lifecycle. Leave it on unless the subject is being entered ahead of a session it is not yet taught in."
             />
           </div>
-
-          {/*
-            Still hand-rolled paragraphs, unlike every other message on this form: `CheckboxField` takes
-            a `hint` but no `error`, so there is nothing to hand these to. Both are near-unreachable —
-            the boxes can only ever send `true`/`false`, which is what `Joi.boolean()` asks for — so the
-            markup is kept rather than dropped, but a fix belongs in the component, not here.
-          */}
-          {fieldErrors.is_elective ? (
-            <p className="text-sm text-danger">{fieldErrors.is_elective}</p>
-          ) : null}
-
-          {fieldErrors.is_active ? (
-            <p className="text-sm text-danger">{fieldErrors.is_active}</p>
-          ) : null}
         </FormSection>
 
         <FormSection

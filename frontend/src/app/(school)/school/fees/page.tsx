@@ -16,14 +16,24 @@
  * Reading them in that order is reading the module: a structure produces a ledger row, a ledger row
  * receives payments. The tab order is deliberate for that reason.
  *
- * ## Money is a string here too
+ * ## Money arrives as a number, and is formatted by `lib/money.ts`
  *
- * Every amount is a DECIMAL and arrives as a string. Parsed for display only, never summed across a
- * page — see `finance/page.tsx`, which has the same rule and the same reason.
+ * This section used to say every amount "is a DECIMAL and arrives as a string". It does not:
+ * `config/database.js` sets `dialectOptions.decimalNumbers = true`, so mysql2 parses DECIMAL into a
+ * JS number before Sequelize sees it — `lib/money.ts` records the measurement, and the bug the
+ * opposite belief produced. The interfaces below say `number` for that reason.
+ *
+ * Every figure goes through `formatAmountWithCode` from that file. The local `money()` this screen
+ * used to carry printed `toFixed(2)` with no grouping, so 1250000 rendered as `1250000.00` — in a
+ * column of such figures, an order-of-magnitude misread waiting to happen.
+ *
+ * The rule the old sentence was reaching for still holds: **nothing here sums money across a page**
+ * — see `finance/page.tsx`, which has the same rule and the same reason.
  *
  * `receipt_path` on a payment is a stored path and is never rendered.
  */
 
+import Link from 'next/link';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 
@@ -32,6 +42,7 @@ import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
 import { splitApiErrors } from '@/lib/formErrors';
 import { formatAmountWithCode } from '@/lib/money';
+import { localDay } from '@/lib/instants';
 import {
   CheckboxField,
   Field,
@@ -67,7 +78,7 @@ interface Structure {
   name: string;
   component: string;
   class_id: number | null;
-  amount: string | number;
+  amount: number;
   currency: string;
   is_recurring: boolean;
   due_day: number | null;
@@ -82,13 +93,17 @@ interface LedgerRow {
   title: string;
   period_month: string | null;
   currency: string;
-  amount: string | number;
-  net_amount: string | number;
+  amount: number;
+  net_amount: number;
   /* Returned by `GET /fees/ledger` — the query restricts no attributes on `student_fees`. */
-  paid_amount: string | number;
-  pending_amount: string | number;
+  paid_amount: number;
+  pending_amount: number;
   status: string;
-  due_date?: string | null;
+  /*
+   * `DATEONLY`, `allowNull: false` (`models/finance.js`), so always a `YYYY-MM-DD` string. It was
+   * typed optional and nullable, and rendered nowhere — while `listLedger()` orders the ledger by it.
+   */
+  due_date: string;
   student?: { id: number; first_name: string; last_name: string | null };
 }
 
@@ -97,7 +112,7 @@ interface PaymentRow {
   receipt_number: string;
   student_id: number;
   currency: string;
-  amount: string | number;
+  amount: number;
   method: string;
   reference: string | null;
   paid_at: string;
@@ -110,14 +125,24 @@ const TABS: TabDef[] = [
   { key: 'payments', label: 'Payments' },
 ];
 
-function money(amount: string | number, currency: string) {
-  const value = typeof amount === 'number' ? amount : Number.parseFloat(amount);
-  if (!Number.isFinite(value)) return <span className="text-muted-soft">—</span>;
-  return (
-    <span className="tabular-nums">
-      {value.toFixed(2)} <span className="text-muted-soft">{currency}</span>
-    </span>
-  );
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * A `DATEONLY` — `due_date` — read as characters, never through `Date`, as `exams/page.tsx` and
+ * `homework/page.tsx` do and for their reason.
+ *
+ * `new Date('2026-02-01')` is parsed as UTC midnight, so `toLocaleDateString()` west of Greenwich
+ * renders the 31st of January — and a due date is a calendar day with no instant behind it, so that
+ * moves the day a fee is owed. Splitting the string also sidesteps the hydration hazard: this client
+ * component is rendered on the server first, and a locale-sensitive formatter produces different
+ * characters in the two places. An unexpected shape is returned untouched rather than guessed at.
+ */
+function formatDay(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  const month = MONTHS[Number(match[2]) - 1];
+  if (!month) return value;
+  return `${Number(match[3])} ${month} ${match[1]}`;
 }
 
 /** A student's name from the included association, or the id when it was not included. */
@@ -150,8 +175,26 @@ function StructuresPanel() {
   const { can } = useAuth();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
 
-  const query = useMemo(() => ({ page, limit: 20, q: search || undefined }), [page, search]);
+  /*
+   * 300 ms, as every other search screen does. `useCollection` refetches on every change to the
+   * query, so feeding `search` straight in sent one request per keystroke — nine for "transport" —
+   * each a leading-wildcard LIKE across three columns.
+   */
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebounced(search);
+      /*
+       * Resetting to page one is part of the search, not a separate concern — searching from page
+       * three and staying there shows an empty table for a query that has two pages of results.
+       */
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const query = useMemo(() => ({ page, limit: 20, q: debounced || undefined }), [page, debounced]);
   const { rows, meta, loading, error, refusal, reload } = useCollection<Structure>('/fees/structures', query);
 
   /* `fees.manage` is what `POST /fees/assignments` is mounted behind. */
@@ -179,7 +222,13 @@ function StructuresPanel() {
         /* A structure with no class applies school-wide, which is a fact worth showing as words. */
         cell: (row) => row.class?.name ?? (row.class_id ? `class #${row.class_id}` : <span className="text-muted-soft">all classes</span>),
       },
-      { key: 'amount', header: 'Amount', numeric: true, cell: (row) => money(row.amount, row.currency) },
+      {
+        key: 'amount',
+        header: 'Amount',
+        numeric: true,
+        /* `whitespace-nowrap` keeps the code on its figure's line; `numeric` supplies `tabular-nums`. */
+        cell: (row) => <span className="whitespace-nowrap">{formatAmountWithCode(row.amount, row.currency)}</span>,
+      },
       {
         key: 'recurring',
         header: 'Recurring',
@@ -240,22 +289,37 @@ function StructuresPanel() {
         <SearchField
           id="structure-search"
           label="Search fee structures"
-          placeholder="Name or component…"
+          placeholder="Name, component or description…"
           value={search}
-          onChange={(value) => { setSearch(value); setPage(1); }}
+          onChange={setSearch}
         />
+        {/*
+          * `Link`, not `<a href>`: a raw anchor is a full document load, which discards the in-memory
+          * access token (`apiClient.ts`) and makes the form refresh the session before it can fetch.
+          */}
         {can('fees.manage') ? (
-          <a href="/school/fees/structures/new" className="ml-auto self-start btn btn-primary">
+          <Link href="/school/fees/structures/new" className="ml-auto self-start btn btn-primary">
             Add structure
-          </a>
+          </Link>
         ) : null}
       </FilterBar>
 
+      {/*
+        * Each empty notice branches on its own panel's filter, per `table.tsx`'s rule that empty is
+        * not filtered-empty: "no structures have been defined" under a search that matched nothing
+        * sends an administrator looking for lost data instead of at the box that emptied the list.
+        * `debounced`, not `search` — the rows answer the query that was sent.
+        */}
       {refusal ? <RefusalNotice refusal={refusal} />
         : error ? <ErrorNotice message={error} onRetry={reload} />
         : loading && rows.length === 0 ? <LoadingBlock />
-        : rows.length === 0 ? <EmptyNotice>No fee structures have been defined yet.</EmptyNotice>
-        : (
+        : rows.length === 0 ? (
+          <EmptyNotice>
+            {debounced
+              ? 'No fee structure matches this search.'
+              : 'No fee structures have been defined yet.'}
+          </EmptyNotice>
+        ) : (
           <>
             <DataTable columns={columns} rows={rows} rowKey={(row) => row.id} caption="Fee structures"
             busy={loading}
@@ -352,6 +416,18 @@ function LedgerPanel() {
       { key: 'student', header: 'Student', cell: (row) => studentName(row) },
       { key: 'title', header: 'Fee', cell: (row) => <span className="font-medium">{row.title}</span> },
       { key: 'component', header: 'Component', cell: (row) => row.component.replace(/_/g, ' ') },
+      /*
+       * The column the ledger is sorted by. `listLedger()` orders by `due_date` ascending
+       * (`getSort`'s default there), and this column was absent — so rows came in an order nothing on
+       * screen explained, and an accountant chasing arrears could not see which unpaid fee was past
+       * due. Overdue is that condition read by eye: `pending_amount > 0` past this date (see the
+       * status filter below for why it is not a stored status).
+       */
+      {
+        key: 'due',
+        header: 'Due',
+        cell: (row) => <span className="whitespace-nowrap">{formatDay(row.due_date)}</span>,
+      },
       { key: 'period', header: 'Period', cell: (row) => row.period_month ?? <span className="text-muted-soft">—</span> },
       /*
        * Three money columns, because FR-FEE-002's Expected Outcome is that the ledger "reflects
@@ -361,15 +437,31 @@ function LedgerPanel() {
        * defending that said `net_amount` "is what the student actually owes after discount and fine".
        * That is wrong, and wrong in the direction that matters: `net_amount` is what the student was
        * *charged* after discount and fine, before any payment. `pending_amount` is what they owe, and
-       * `fees.service.js:448` computes and stores exactly that as `max(0, net − paid)`.
+       * `fees.service.js` `applyPayment()` computes and stores exactly that as `max(0, net − paid)`.
+       * (Cited by function, not line: the line number this carried had drifted onto a blank line.)
        *
        * The visible consequence: a student who had paid 300 against a 950 fee rendered as
        * "Owed 950.00" beside a `partially_paid` badge — the label asserted a balance, the value was
        * the bill, and the badge contradicted both.
        */
-      { key: 'net', header: 'Charged', numeric: true, cell: (row) => money(row.net_amount, row.currency) },
-      { key: 'paid', header: 'Paid', numeric: true, cell: (row) => money(row.paid_amount, row.currency) },
-      { key: 'pending', header: 'Pending', numeric: true, cell: (row) => money(row.pending_amount, row.currency) },
+      {
+        key: 'net',
+        header: 'Charged',
+        numeric: true,
+        cell: (row) => <span className="whitespace-nowrap">{formatAmountWithCode(row.net_amount, row.currency)}</span>,
+      },
+      {
+        key: 'paid',
+        header: 'Paid',
+        numeric: true,
+        cell: (row) => <span className="whitespace-nowrap">{formatAmountWithCode(row.paid_amount, row.currency)}</span>,
+      },
+      {
+        key: 'pending',
+        header: 'Pending',
+        numeric: true,
+        cell: (row) => <span className="whitespace-nowrap">{formatAmountWithCode(row.pending_amount, row.currency)}</span>,
+      },
       { key: 'status', header: 'Status', cell: (row) => <StatusBadge status={row.status} /> },
     ];
 
@@ -439,8 +531,11 @@ function LedgerPanel() {
         : error ? <ErrorNotice message={error} onRetry={reload} />
         : loading && rows.length === 0 ? <LoadingBlock />
         : rows.length === 0 ? (
+          /* Filtered-empty is not empty — the reason is on the Structures panel. */
           <EmptyNotice>
-            Nothing on the ledger. Fees appear here once a structure has been assigned to students.
+            {status
+              ? 'No fee on the ledger has this status.'
+              : 'Nothing on the ledger. Fees appear here once a structure has been assigned to students.'}
           </EmptyNotice>
         ) : (
           <>
@@ -469,18 +564,34 @@ function LedgerPanel() {
 function PaymentsPanel() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
 
-  const query = useMemo(() => ({ page, limit: 20, q: search || undefined }), [page, search]);
+  /* Debounced for the Structures panel's reason, and resetting the page there for the same one. */
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebounced(search);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const query = useMemo(() => ({ page, limit: 20, q: debounced || undefined }), [page, debounced]);
   const { rows, meta, loading, error, refusal, reload } = useCollection<PaymentRow>('/fees/payments', query);
 
   const columns = useMemo<Column<PaymentRow>[]>(
     () => [
       { key: 'receipt', header: 'Receipt', cell: (row) => <code className="text-xs">{row.receipt_number}</code> },
       { key: 'student', header: 'Student', cell: (row) => studentName(row) },
-      { key: 'paid_at', header: 'Paid', cell: (row) => row.paid_at?.slice(0, 10) ?? '—' },
+      /* A timestamp, so the viewer's day — slicing the ISO string read the UTC one. */
+      { key: 'paid_at', header: 'Paid', cell: (row) => localDay(row.paid_at) ?? '—' },
       { key: 'method', header: 'Method', cell: (row) => row.method.replace(/_/g, ' ') },
       { key: 'reference', header: 'Reference', cell: (row) => row.reference ?? <span className="text-muted-soft">—</span> },
-      { key: 'amount', header: 'Amount', numeric: true, cell: (row) => money(row.amount, row.currency) },
+      {
+        key: 'amount',
+        header: 'Amount',
+        numeric: true,
+        cell: (row) => <span className="whitespace-nowrap">{formatAmountWithCode(row.amount, row.currency)}</span>,
+      },
     ],
     []
   );
@@ -493,15 +604,18 @@ function PaymentsPanel() {
           label="Search fee payments"
           placeholder="Receipt number or reference…"
           value={search}
-          onChange={(value) => { setSearch(value); setPage(1); }}
+          onChange={setSearch}
         />
       </div>
 
       {refusal ? <RefusalNotice refusal={refusal} />
         : error ? <ErrorNotice message={error} onRetry={reload} />
         : loading && rows.length === 0 ? <LoadingBlock />
-        : rows.length === 0 ? <EmptyNotice>No fee payments have been collected yet.</EmptyNotice>
-        : (
+        : rows.length === 0 ? (
+          <EmptyNotice>
+            {debounced ? 'No fee payment matches this search.' : 'No fee payments have been collected yet.'}
+          </EmptyNotice>
+        ) : (
           <>
             <DataTable columns={columns} rows={rows} rowKey={(row) => row.id} caption="Fee payments"
             busy={loading}

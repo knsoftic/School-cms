@@ -362,13 +362,15 @@ the most frequent task by a wide margin:
 | Task | Schedule | Source |
 |---|---|---|
 | `subscription-lifecycle` | `5 * * * *` (hourly) | `jobs/tasks/subscriptionLifecycle.js:22` |
+| `invoice-issue` | `10 * * * *` (hourly) | `jobs/tasks/invoiceIssue.js:21` |
 | `notification-dispatch` | `*/15 * * * *` | `jobs/tasks/notificationDispatch.js:23` |
 | `invoice-overdue` | `20 2 * * *` | `jobs/tasks/invoiceOverdue.js:14` |
 | `coupon-expiry` | `25 2 * * *` | `jobs/tasks/couponExpiry.js:14` |
+| `quotation-expiry` | `30 2 * * *` | `jobs/tasks/quotationExpiry.js:15` |
 | `database-backup` | `0 3 * * *` | `jobs/tasks/databaseBackup.js:193` |
 
 A successful run logs `cron: task finished` with `task` and `ms` at **info** level
-(`jobs/cron.js:166`); startup logs `cron: scheduler started` (`jobs/cron.js:202`). Real lines, from
+(`jobs/cron.js:170`); startup logs `cron: scheduler started` (`jobs/cron.js:206`). Real lines, from
 this repository's own logs:
 
 ```json

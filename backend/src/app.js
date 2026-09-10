@@ -193,8 +193,13 @@ function corsOptions() {
     credentials: true,
     /* `X-CSRF-Token` is the double-submit header; without it here the browser preflight refuses it. */
     allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'X-Request-Id'],
-    /* So a client can read the id of the request it just made and quote it in a bug report. */
-    exposedHeaders: ['X-Request-Id'],
+    /*
+     * `X-Request-Id` so a client can read the id of the request it just made and quote it in a bug
+     * report. `Content-Disposition` so a download keeps the server's filename: the browser hides every
+     * non-safelisted response header from a cross-origin caller, and `api.download()` fell back to a
+     * name of its own on every export, report and attachment.
+     */
+    exposedHeaders: ['X-Request-Id', 'Content-Disposition'],
     maxAge: 600,
   };
 }

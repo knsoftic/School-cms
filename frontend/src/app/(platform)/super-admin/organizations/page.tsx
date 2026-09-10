@@ -19,7 +19,9 @@
  *
  *   - **`address`** and **`notes`** are free text of unbounded shape (`notes` is a TEXT column capped
  *     at 5 000 characters). Either one would set the row height for the whole table on the strength of
- *     the single longest value. They belong on the detail screen, where there is room to read them.
+ *     the single longest value. There is no organization detail screen, so they are read and edited in
+ *     the row's Edit dialog, which has the room for them — before that, both could be written on
+ *     create and were never shown again.
  *   - **`logo_path`** is a storage path, not a URL, and `organizations.validation.js` records that
  *     *nothing in the backend writes it* — there is no organization-logo upload route. A column for it
  *     would be empty on every row today and would leak a server file layout the day it is not.
@@ -67,6 +69,9 @@ interface Organization {
   email: string | null;
   phone: string | null;
   website: string | null;
+  /** Not columns in the table — see the header — but on every row, and edited in the dialog. */
+  address: string | null;
+  notes: string | null;
   status: string;
   /** Sequelize `DATE` — an ISO 8601 string once it has been through `JSON.stringify`, never a `Date`. */
   created_at: string;
@@ -139,9 +144,12 @@ export default function OrganizationsPage() {
    * one; nothing could correct it afterwards, so a typo in the name or a changed contact address was
    * permanent.
    *
-   * `notes` is accepted by the schema and is not offered: `GET /organizations` does not return it, so
-   * the dialog would open with the field blank and saving would **erase** whatever was there. A field
-   * that silently destroys data it cannot show is worse than a missing field.
+   * All eight fields `update` accepts are offered, `address` and `notes` included. This comment used to
+   * say `notes` was left out because `GET /organizations` does not return it, so the dialog would open
+   * blank and a save would erase it. The premise was false — the list hands `paginateQuery`'s rows
+   * straight through with no presenter and `Organization` has no `defaultScope` (see the header), so
+   * both columns are on every row — and the omission meant the two fields could be written on create
+   * and never read back anywhere. The dialog seeds them from the row, so it opens with what is stored.
    */
   const [editing, setEditing] = useState<Organization | null>(null);
 
@@ -318,7 +326,9 @@ export default function OrganizationsPage() {
           email: row.email ?? '',
           phone: row.phone ?? '',
           website: row.website ?? '',
+          address: row.address ?? '',
           status: row.status,
+          notes: row.notes ?? '',
         })}
         fields={[
           { name: 'name', label: 'Name', required: true },
@@ -336,6 +346,7 @@ export default function OrganizationsPage() {
             nullable: true,
             hint: 'Must carry its scheme — http:// or https://. The API refuses anything else.',
           },
+          { name: 'address', label: 'Address', nullable: true, hint: 'Up to 255 characters.' },
           {
             name: 'status',
             label: 'Status',
@@ -343,6 +354,14 @@ export default function OrganizationsPage() {
             required: true,
             options: STATUSES.map((value) => ({ value, label: value })),
             hint: 'Suspending an organization does not suspend its schools; each school carries its own status.',
+          },
+          {
+            name: 'notes',
+            label: 'Notes',
+            kind: 'textarea',
+            rows: 4,
+            nullable: true,
+            hint: 'Up to 5,000 characters. Clearing the box removes the notes.',
           },
         ]}
       />

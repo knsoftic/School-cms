@@ -29,12 +29,23 @@
  * updates it, so this screen never distinguishes the two — there is nothing for a person to do
  * differently.
  *
- * ## `logo_path` and `favicon_path` are not on the form
+ * ## `logo_path` and `favicon_path` are web addresses, not uploads
  *
- * Both are columns and both are accepted by the schema. Neither has an upload route: `UPLOAD_RULES`
- * defines no profile for a school logo, so there is nowhere for a file to go and the column expects
- * a path this product cannot produce. A text box asking an administrator to type a server path would
- * be asking them to guess at the filesystem. Recorded here rather than rendered.
+ * This screen used to leave both off, on the reasoning that they were server paths with no upload
+ * route to produce one. The second half is still true — `UPLOAD_RULES` defines no profile for a
+ * school logo — but the first is not: `settings.validation.js` `brandingUrl()` accepts only an
+ * **absolute http(s) URL**, parses it with `new URL()` and stores the normalised `href` (Known Issues
+ * #26), so the column names say `path` and the value is a link. A logo already hosted somewhere is
+ * therefore settable, and the two are ordinary `type="url"` fields. Both are `.empty('').allow(null)`,
+ * so clearing one clears it.
+ *
+ * ## Nothing else reads these settings yet, and the hints say so
+ *
+ * `school_settings` is read by `settings.service.js` and by nothing else in the backend — no
+ * document, report, fee or finance entry takes its name, currency or timezone from here, and every
+ * money row carries its own `currency` column. FR-SCHOOL-001 expects them to be "applied within the
+ * school's tenant scope", which is wiring this screen cannot do. So the hints describe what is true
+ * today — the values are stored — rather than promise an effect nothing produces.
  *
  * ## Closing a session is final and activation is exclusive
  *
@@ -49,6 +60,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { rowError, splitApiErrors } from '@/lib/formErrors';
 import { EXPLAINED_CODES, useCollection } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
 import { EditDialog } from '@/components/editDialog';
@@ -60,6 +72,7 @@ import {
   Notice,
   SubmitButton,
   TextAreaField,
+  focusFirstInvalidField,
 } from '@/components/form';
 import { Modal } from '@/components/overlay';
 import { TabPanel, Tabs, useActiveTab } from '@/components/tabs';
@@ -83,13 +96,16 @@ const TABS = [
   { key: 'admins', label: 'School Admins' },
 ];
 
-/** `GET /school-settings` — the ten §14.1 fields, plus the two path columns this screen leaves alone. */
+/** `GET /school-settings` — the ten §14.1 fields this screen edits. */
 interface Settings {
   name: string | null;
   address: string | null;
   phone: string | null;
   email: string | null;
   website: string | null;
+  /** An absolute http(s) URL, stored normalised — the column name says `path`; see the header. */
+  logo_path: string | null;
+  favicon_path: string | null;
   theme: string | null;
   currency: string | null;
   timezone: string | null;
@@ -111,10 +127,38 @@ const SETTING_KEYS: (keyof Settings)[] = [
   'phone',
   'email',
   'website',
+  'logo_path',
+  'favicon_path',
   'theme',
   'currency',
   'timezone',
 ];
+
+/**
+ * The three the column cannot hold empty.
+ *
+ * `theme`, `currency` and `timezone` are `allowNull: false` on `school_settings`, and their schema
+ * entries are bare `Joi.string().trim().max(n)` — no `.allow(null)`, no `.empty('')`. So a cleared box
+ * is sent as `""`, which Joi answers "is not allowed to be empty" and the field shows as "is required".
+ * Sending `null`, which this used to, was answered "must be a string" — true, and no help.
+ */
+const REQUIRED_SETTINGS = new Set<string>(['theme', 'currency', 'timezone']);
+
+/**
+ * `brandingUrl()`'s refusal, reworded for the person reading it.
+ *
+ * The server's sentence ends in a Known Issues number, which is the backend's bookkeeping rather than
+ * anything an administrator can act on. Any other message — the length one — passes through.
+ */
+function brandingError(message: string | undefined): string | undefined {
+  if (!message) return message;
+  return /absolute http\(s\) URL/.test(message)
+    ? 'Enter a full web address that starts with http:// or https://.'
+    : message;
+}
+
+/** The create-session form's inputs, by the name the API keys its messages with. */
+const SESSION_FIELDS = new Set(['name', 'start_date', 'end_date']);
 
 export default function SchoolSettingsPage() {
   const { can } = useAuth();
@@ -174,7 +218,15 @@ export default function SchoolSettingsPage() {
   const [newStart, setNewStart] = useState('');
   const [newEnd, setNewEnd] = useState('');
   const [sessionBusy, setSessionBusy] = useState(false);
-  const [sessionError, setSessionError] = useState<string | null>(null);
+  /*
+   * One error per dialog. The create form and the activate/close confirmation used to share a single
+   * `sessionError`, and opening Create never cleared it: a refused "Make current", cancelled, left its
+   * message waiting at the top of the next Create dialog, describing something that form never did.
+   * Each is now cleared as its dialog opens and as it is dismissed.
+   */
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createFieldErrors, setCreateFieldErrors] = useState<Record<string, string>>({});
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const canEditSettings = can('school.settings.manage');
   const canManageSessions = can('sessions.manage');
@@ -183,16 +235,30 @@ export default function SchoolSettingsPage() {
     setValues((current) => ({ ...current, [key]: value }));
   }
 
-  async function saveSettings() {
-    if (busy || !settings) return;
+  /*
+   * What Save would send, worked out on every render so the button can say when there is nothing.
+   * Save used to be enabled with nothing changed and return without a word, which reads as a dead
+   * button; `SubmitButton`'s `disabled` is the set editors' "nothing has changed yet".
+   */
+  const changed: Record<string, unknown> = {};
+  if (settings) {
     const base = seed(settings);
-    const changed: Record<string, unknown> = {};
     for (const key of SETTING_KEYS) {
-      if (values[key] === base[key]) continue;
-      /* Every one of the eight is nullable, so clearing a field clears the column. */
-      changed[key] = values[key].trim() === '' ? null : values[key].trim();
+      const now = values[key] ?? '';
+      if (now === base[key]) continue;
+      const trimmed = now.trim();
+      /*
+       * Seven of the ten are nullable (`.empty('').allow(null)`), so clearing one clears the column.
+       * The other three are NOT NULL and are sent blank, to be refused on the field — see
+       * `REQUIRED_SETTINGS`.
+       */
+      changed[key] = trimmed === '' ? (REQUIRED_SETTINGS.has(key) ? '' : null) : trimmed;
     }
-    if (Object.keys(changed).length === 0) return;
+  }
+  const nothingChanged = Object.keys(changed).length === 0;
+
+  async function saveSettings() {
+    if (busy || !settings || nothingChanged) return;
 
     setBusy(true);
     setError(null);
@@ -204,10 +270,12 @@ export default function SchoolSettingsPage() {
       success('Settings saved');
     } catch (caught) {
       if (caught instanceof ApiError) {
-        setFieldErrors(Array.isArray(caught.details) ? caught.fieldErrors() : {});
+        const perField = Array.isArray(caught.details) ? caught.fieldErrors() : {};
+        setFieldErrors(perField);
         setError(
           Array.isArray(caught.details) ? caught.bannerFor(SETTING_KEYS as string[]) : caught.message
         );
+        if (Object.keys(perField).length) focusFirstInvalidField();
       } else {
         setError('Could not reach the server. Check your connection and try again.');
       }
@@ -216,15 +284,33 @@ export default function SchoolSettingsPage() {
     }
   }
 
+  function openCreate() {
+    setCreateError(null);
+    setCreateFieldErrors({});
+    setCreating(true);
+  }
+
+  function closeCreate() {
+    if (sessionBusy) return;
+    setCreating(false);
+    setCreateError(null);
+    setCreateFieldErrors({});
+  }
+
   async function createSession() {
     if (sessionBusy) return;
     setSessionBusy(true);
-    setSessionError(null);
+    setCreateError(null);
+    setCreateFieldErrors({});
     try {
+      /*
+       * Blanks are left out rather than sent as `""`: an absent key is answered "is required", where
+       * an empty date is answered "must be in ISO 8601 date format", which names the wrong problem.
+       */
       await api.post('/sessions', {
-        name: newName.trim(),
-        start_date: newStart,
-        end_date: newEnd,
+        name: newName.trim() || undefined,
+        start_date: newStart || undefined,
+        end_date: newEnd || undefined,
       });
       success('Session created', 'It starts as upcoming. Activate it to make it the current session.');
       setCreating(false);
@@ -233,11 +319,30 @@ export default function SchoolSettingsPage() {
       setNewEnd('');
       sessions.reload();
     } catch (caught) {
-      setSessionError(
-        caught instanceof ApiError
-          ? caught.message
-          : 'Could not reach the server. Check your connection and try again.'
-      );
+      if (!(caught instanceof ApiError)) {
+        setCreateError('Could not reach the server. Check your connection and try again.');
+        return;
+      }
+      /* A 409 whose `details` is `{ name }` — it is about the name, so it sits on the name. */
+      if (caught.code === 'SESSION_NAME_TAKEN') {
+        setCreateFieldErrors({ name: caught.message });
+        focusFirstInvalidField();
+        return;
+      }
+      /*
+       * The one cross-column rule arrives keyed by its validator: `academic_sessions`' model-level
+       * `endAfterStart()` becomes `field: "endAfterStart"` through `rethrow()`, a key no input has.
+       * It is about the end date, so it is put there. Everything else the fields cannot carry goes
+       * to the banner — which used to receive only "Validation failed" for all of it.
+       */
+      const { perField, banner } = splitApiErrors(caught, new Set([...SESSION_FIELDS, 'endAfterStart']));
+      if (perField.endAfterStart) {
+        if (!perField.end_date) perField.end_date = 'The session has to end after the day it starts.';
+        delete perField.endAfterStart;
+      }
+      setCreateFieldErrors(perField);
+      setCreateError(banner);
+      if (Object.keys(perField).length) focusFirstInvalidField();
     } finally {
       setSessionBusy(false);
     }
@@ -246,7 +351,7 @@ export default function SchoolSettingsPage() {
   async function runSessionAction() {
     if (!pending || sessionBusy) return;
     setSessionBusy(true);
-    setSessionError(null);
+    setActionError(null);
     try {
       /* Two calls, not one interpolated path — see the note in `subscriptions/[id]/lifecycle.tsx`. */
       if (pending.action === 'activate') {
@@ -262,7 +367,7 @@ export default function SchoolSettingsPage() {
       setPending(null);
       sessions.reload();
     } catch (caught) {
-      setSessionError(
+      setActionError(
         caught instanceof ApiError
           ? caught.message
           : 'Could not reach the server. Check your connection and try again.'
@@ -270,6 +375,12 @@ export default function SchoolSettingsPage() {
     } finally {
       setSessionBusy(false);
     }
+  }
+
+  function closeAction() {
+    if (sessionBusy) return;
+    setPending(null);
+    setActionError(null);
   }
 
   const sessionColumns = useMemo<Column<Session>[]>(
@@ -321,7 +432,7 @@ export default function SchoolSettingsPage() {
                         className="btn btn-sm btn-primary"
                         onClick={() => {
                           setPending({ action: 'activate', session: row });
-                          setSessionError(null);
+                          setActionError(null);
                         }}
                       >
                         Make current
@@ -332,7 +443,7 @@ export default function SchoolSettingsPage() {
                       className="btn btn-sm btn-danger-ghost"
                       onClick={() => {
                         setPending({ action: 'close', session: row });
-                        setSessionError(null);
+                        setActionError(null);
                       }}
                     >
                       Close
@@ -354,7 +465,7 @@ export default function SchoolSettingsPage() {
     <div>
       <PageHeader
         title="School settings"
-        description="What this school is called on its own documents, and the academic sessions its work is filed under."
+        description="The school's own details, and the academic sessions its work is filed under."
         action={
           <Link href="/school" className="btn btn-secondary">
             Back to dashboard
@@ -389,10 +500,11 @@ export default function SchoolSettingsPage() {
                 <Field
                   id="name"
                   label="Name"
+                  maxLength={180}
                   value={values.name ?? ''}
                   error={fieldErrors.name}
                   onChange={(event) => setValue('name', event.target.value)}
-                  hint="Used on documents and reports. Left blank, the school's registered name is used."
+                  hint="The name the school goes by, kept with these settings. No document or report prints it yet, so changing it does not change them."
                 />
                 <TextAreaField
                   id="address"
@@ -420,32 +532,74 @@ export default function SchoolSettingsPage() {
                     onChange={(event) => setValue('email', event.target.value)}
                   />
                 </FormGrid>
+                {/*
+                  * `website` is a plain `Joi.string().max(180)` — unlike the two branding fields below
+                  * it is not checked as a URL. So the hint asks for the scheme rather than claiming it
+                  * is enforced, which it used to ("Must carry http:// or https://") and was not.
+                  */}
                 <Field
                   id="website"
                   label="Website"
+                  type="url"
+                  inputMode="url"
+                  maxLength={180}
                   value={values.website ?? ''}
                   error={fieldErrors.website}
                   onChange={(event) => setValue('website', event.target.value)}
-                  hint="Must carry http:// or https://."
+                  hint="The full address, including https://. It is stored exactly as typed and is not checked."
+                />
+              </FormSection>
+
+              <FormSection
+                title="Logo and favicon"
+                description="Web addresses of images already hosted elsewhere. There is no upload here — the address itself is what is stored."
+              >
+                <Field
+                  id="logo_path"
+                  label="Logo URL"
+                  type="url"
+                  inputMode="url"
+                  maxLength={255}
+                  placeholder="https://"
+                  value={values.logo_path ?? ''}
+                  error={brandingError(fieldErrors.logo_path)}
+                  onChange={(event) => setValue('logo_path', event.target.value)}
+                  hint="Must start with http:// or https://. Leave it blank for no logo."
+                />
+                <Field
+                  id="favicon_path"
+                  label="Favicon URL"
+                  type="url"
+                  inputMode="url"
+                  maxLength={255}
+                  placeholder="https://"
+                  value={values.favicon_path ?? ''}
+                  error={brandingError(fieldErrors.favicon_path)}
+                  onChange={(event) => setValue('favicon_path', event.target.value)}
+                  hint="The small icon a browser shows in its tab. Must start with http:// or https://."
                 />
               </FormSection>
 
               <FormSection
                 title="Presentation and locale"
-                description="What the school's money and its dates are read as."
+                description="Stored with the school's settings. Nothing else reads them yet, so changing one does not change how fees, dates or pages appear."
               >
                 <FormGrid>
                   <Field
                     id="currency"
                     label="Currency"
+                    required
+                    maxLength={10}
                     value={values.currency ?? ''}
                     error={fieldErrors.currency}
                     onChange={(event) => setValue('currency', event.target.value)}
-                    hint="Three-letter code. Fees and finance are recorded in it."
+                    hint="A code such as PKR, stored in upper case. Fee and finance entries each carry their own currency and do not take it from here."
                   />
                   <Field
                     id="timezone"
                     label="Timezone"
+                    required
+                    maxLength={64}
                     value={values.timezone ?? ''}
                     error={fieldErrors.timezone}
                     onChange={(event) => setValue('timezone', event.target.value)}
@@ -455,25 +609,22 @@ export default function SchoolSettingsPage() {
                 <Field
                   id="theme"
                   label="Theme"
+                  required
+                  maxLength={40}
                   value={values.theme ?? ''}
                   error={fieldErrors.theme}
                   onChange={(event) => setValue('theme', event.target.value)}
-                  hint="A named theme. There is no fixed vocabulary in the source, so this is free text."
+                  hint="A theme name — “default” unless the school uses another. Any name up to 40 characters is accepted."
                 />
               </FormSection>
 
-              <Notice tone="info">
-                {/*
-                  * Said rather than rendered as an input — see the header. Two of §14.1's ten fields
-                  * are file paths with no upload route behind them anywhere in this API.
-                  */}
-                The logo and favicon are the two §14.1 fields this screen does not offer: they are
-                stored as file paths and this product has no route that uploads one, so a box here
-                would be asking you to type a path on the server.
-              </Notice>
-
               <FormActions>
-                <SubmitButton busy={busy} busyLabel="Saving…" fullWidth={false}>
+                <SubmitButton
+                  busy={busy}
+                  busyLabel="Saving…"
+                  fullWidth={false}
+                  disabled={nothingChanged}
+                >
                   Save settings
                 </SubmitButton>
               </FormActions>
@@ -503,7 +654,7 @@ export default function SchoolSettingsPage() {
             )}
 
             {canManageSessions ? (
-              <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+              <button type="button" className="btn btn-primary" onClick={openCreate}>
                 Create a session
               </button>
             ) : null}
@@ -513,9 +664,7 @@ export default function SchoolSettingsPage() {
 
       <Modal
         open={creating}
-        onClose={() => {
-          if (!sessionBusy) setCreating(false);
-        }}
+        onClose={closeCreate}
         title="Create an academic session"
         description="It starts as upcoming. Making it current is a separate step, so a session can be set up in advance without disturbing the one running."
         size="sm"
@@ -526,7 +675,7 @@ export default function SchoolSettingsPage() {
               type="button"
               className="btn btn-secondary"
               disabled={sessionBusy}
-              onClick={() => setCreating(false)}
+              onClick={closeCreate}
             >
               Cancel
             </button>
@@ -550,14 +699,20 @@ export default function SchoolSettingsPage() {
             void createSession();
           }}
         >
-          {sessionError ? <Notice tone="error">{sessionError}</Notice> : null}
+          {createError ? <Notice tone="error">{createError}</Notice> : null}
+          {/*
+            * The ids are prefixed, so `FieldMessage` cannot match a server message that begins with
+            * `"name"` to its own id; `rowError` does that rewrite here, where the API's key is known.
+            */}
           <Field
             id="session-name"
             label="Name"
             required
+            maxLength={90}
             value={newName}
+            error={rowError(createFieldErrors, 'name', 'Name')}
             onChange={(event) => setNewName(event.target.value)}
-            hint="What the school calls it — 2026–27, for instance."
+            hint="What the school calls it — 2026–27, for instance. Up to 90 characters, and unique within the school."
           />
           <FormGrid>
             <Field
@@ -566,6 +721,7 @@ export default function SchoolSettingsPage() {
               type="date"
               required
               value={newStart}
+              error={rowError(createFieldErrors, 'start_date', 'Starts')}
               onChange={(event) => setNewStart(event.target.value)}
             />
             <Field
@@ -574,6 +730,7 @@ export default function SchoolSettingsPage() {
               type="date"
               required
               value={newEnd}
+              error={rowError(createFieldErrors, 'end_date', 'Ends')}
               onChange={(event) => setNewEnd(event.target.value)}
             />
           </FormGrid>
@@ -602,9 +759,7 @@ export default function SchoolSettingsPage() {
 
       <Modal
         open={pending !== null}
-        onClose={() => {
-          if (!sessionBusy) setPending(null);
-        }}
+        onClose={closeAction}
         title={
           pending?.action === 'activate'
             ? `Make ${pending.session.name} the current session?`
@@ -613,7 +768,7 @@ export default function SchoolSettingsPage() {
         description={
           pending?.action === 'activate'
             ? 'New work is filed under the current session. Any other session that was current stops being so — but it is not closed, and can be made current again.'
-            : 'Closing is final: a closed session cannot be edited and cannot be made current again. Its classes, exams and fees are untouched and stay readable. There is no delete — this is the operation §14.2 names.'
+            : 'Closing is final: a closed session cannot be edited and cannot be made current again. Its classes, exams and fees are untouched and stay readable. A session is never deleted — closing is how one ends.'
         }
         size="sm"
         busy={sessionBusy}
@@ -623,7 +778,7 @@ export default function SchoolSettingsPage() {
               type="button"
               className="btn btn-secondary"
               disabled={sessionBusy}
-              onClick={() => setPending(null)}
+              onClick={closeAction}
             >
               Cancel
             </button>
@@ -643,7 +798,7 @@ export default function SchoolSettingsPage() {
           </>
         }
       >
-        {sessionError ? <Notice tone="error">{sessionError}</Notice> : null}
+        {actionError ? <Notice tone="error">{actionError}</Notice> : null}
       </Modal>
     </div>
   );

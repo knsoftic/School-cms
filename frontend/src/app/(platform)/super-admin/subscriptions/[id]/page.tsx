@@ -31,10 +31,13 @@
  *  - `subscriptions.overrides.manage` — the overrides, seeded to `super_admin` alone.
  *  - `subscriptions.view` — reading this screen at all.
  *
- * `can()` cannot see `requirePlatformScope()`, which every one of these routes but the renewal and
- * the add-on purchase also carries. A school-scoped account holding the permission is refused by
- * the API with `PLATFORM_SCOPE_REQUIRED`, which lands in `RefusalNotice` with an explanation rather
- * than in a toast that says "failed".
+ * `can()` cannot see `requirePlatformScope()`, which the configuration `PATCH`, the six transitions
+ * and the two override routes also carry. The plan change, the renewal and the two add-on routes do
+ * not — their FRs name the school as an actor too, so the router pairs each key with
+ * `subscriptions.self.manage` instead. A school-scoped account holding a platform-only permission is
+ * refused with `PLATFORM_SCOPE_REQUIRED`: on the read that opens this screen it lands in
+ * `RefusalNotice`, and on a write it is shown, in the API's own words, inside the form or dialog that
+ * sent it.
  *
  * ## Nothing on this screen derives a lifecycle state from a date
  *
@@ -63,6 +66,7 @@ import {
 import { TabPanel, Tabs, useActiveTab } from '@/components/tabs';
 import { useToast } from '@/components/toast';
 import {
+  EmptyNotice,
   ErrorNotice,
   LoadingBlock,
   MetricCard,
@@ -211,7 +215,7 @@ function ConfigurationForm({
           value={trialDays}
           error={fieldErrors.trial_days}
           onChange={(event) => setTrialDays(event.target.value)}
-          hint={`SRS §12.1 offers ${presets.trial.join(', ')} days and "Custom", so any whole number is accepted. Changing it does not restart a trial that has already ended.`}
+          hint={`The presets are ${presets.trial.join(', ')} days, but any whole number is accepted. Changing it does not restart a trial that has already ended.`}
         />
 
         <Field
@@ -222,7 +226,7 @@ function ConfigurationForm({
           value={graceDays}
           error={fieldErrors.grace_period_days}
           onChange={(event) => setGraceDays(event.target.value)}
-          hint={`SRS §12.2 offers ${presets.grace.join(', ')} days and "Custom". This is how long access survives past the period end before the sweep expires it.`}
+          hint={`The presets are ${presets.grace.join(', ')} days, but any whole number is accepted. This is how long access survives past the period end before the lifecycle sweep expires it.`}
         />
 
         <SelectField
@@ -231,7 +235,7 @@ function ConfigurationForm({
           value={renewalMode}
           error={fieldErrors.renewal_mode}
           onChange={(event) => setRenewalMode(event.target.value)}
-          hint="Automatic renews from the nightly sweep at cycle end. Manual leaves it to an operator — the Renew button on this screen is that operation."
+          hint="Automatic renews from the hourly lifecycle sweep once the period ends. Manual leaves it to an operator — the Renew button on this screen is that operation."
         >
           {renewalModes.map((mode) => (
             <option key={mode} value={mode}>
@@ -288,9 +292,29 @@ export default function SubscriptionDetailPage() {
   const { nameFor } = useSchoolNames();
   const [tab, setTab] = useActiveTab(TABS);
 
-  const { detail, catalogue, loading, error, refusal, reload, adopt } = useSubscriptionDetail(id);
+  const { detail, catalogue, loading, error, refusal, notFound, reload, adopt } =
+    useSubscriptionDetail(id);
 
   if (refusal) return <RefusalNotice refusal={refusal} />;
+  if (notFound) {
+    /*
+     * Not `ErrorNotice`: its "Try again" re-reads an id that names nothing this caller can see, and
+     * would fail the same way every time it was pressed. The way forward is back to the list.
+     */
+    return (
+      <EmptyNotice
+        icon="search"
+        title="Subscription not found"
+        action={
+          <Link href="/super-admin/subscriptions" className="btn btn-secondary">
+            Back to subscriptions
+          </Link>
+        }
+      >
+        No subscription with this id exists, or it belongs to a school outside this account’s scope.
+      </EmptyNotice>
+    );
+  }
   if (error) return <ErrorNotice message={error} onRetry={reload} />;
   if (loading || !detail) return <LoadingBlock />;
 
@@ -300,14 +324,35 @@ export default function SubscriptionDetailPage() {
 
   const { standing } = detail;
 
+  /*
+   * `standing.daysUntilTrialEnd` is `daysBetween()`, which floors a signed difference: 0 means the
+   * trial ends within the next 24 hours, and a negative count means its end has passed while the
+   * state still reads `trial` — the hourly sweep has not moved it on yet. Printing the raw number
+   * gave "Trial ends in -1 day(s)" on exactly that row.
+   */
+  const trialDays = standing.daysUntilTrialEnd;
+  const trialNote =
+    trialDays === null
+      ? null
+      : trialDays < 0
+        ? 'The trial end has passed; the lifecycle sweep has not moved it on yet'
+        : trialDays === 0
+          ? 'Trial ends within a day'
+          : `Trial ends in ${trialDays} day(s)`;
+
   return (
     <div>
       <PageHeader
         title={detail.plan ? detail.plan.name : `Subscription #${detail.id}`}
+        /*
+         * "per cycle" only where there is a cycle. A `one_time` subscription has no next period —
+         * `standing.isRecurring` is false for exactly that — so its amount is charged once, and the
+         * cycle name beside it already says "One time".
+         */
         description={`${nameFor(detail.school_id)} · ${humanise(detail.billing_cycle)} · ${formatCodeWithAmount(
           detail.currency,
           detail.cycle_amount
-        )} per cycle`}
+        )}${standing.isRecurring ? ' per cycle' : ''}`}
         action={
           <Link href="/super-admin/subscriptions" className="btn btn-secondary">
             Back to subscriptions
@@ -323,9 +368,9 @@ export default function SubscriptionDetailPage() {
           * therefore not the plan the school will be on next cycle, which is worth saying beside
           * the name rather than three tabs away.
           */}
-        {standing.inTrial && standing.daysUntilTrialEnd !== null ? (
-          <span className="text-sm text-muted">
-            Trial ends in {standing.daysUntilTrialEnd} day(s)
+        {standing.inTrial && trialNote ? (
+          <span className={`text-sm ${trialDays !== null && trialDays < 0 ? 'text-warn' : 'text-muted'}`}>
+            {trialNote}
           </span>
         ) : null}
         {standing.hasScheduledChange && detail.scheduledPlan ? (
@@ -333,9 +378,15 @@ export default function SubscriptionDetailPage() {
             Scheduled to move to {detail.scheduledPlan.name} at the end of the cycle
           </span>
         ) : null}
+        {/*
+          * A statement about this row, not about the school. Entitlement is resolved from the
+          * school's governing subscription — a usable one if it has one — so an expired or
+          * cancelled row viewed here may sit beside a newer, live subscription that the school is
+          * using right now. "The school has no access" was true only when this row was the latest.
+          */}
         {!standing.isUsable ? (
           <span className="text-sm text-danger">
-            This state does not grant entitlement — the school has no access.
+            This subscription grants no entitlement in its current state.
           </span>
         ) : null}
       </div>
@@ -422,12 +473,17 @@ export default function SubscriptionDetailPage() {
         ) : tab === 'plan' ? (
           <PlanChangePanel
             subscription={detail}
-            timings={catalogue?.downgradeTimings ?? []}
+            catalogue={catalogue}
             canChange={canLifecycle}
             onChanged={adopt}
           />
         ) : tab === 'addons' ? (
-          <AddonsPanel subscription={detail} canBuy={canManage} onChanged={adopt} />
+          <AddonsPanel
+            subscription={detail}
+            catalogue={catalogue}
+            canBuy={canManage}
+            onChanged={adopt}
+          />
         ) : (
           <OverridesPanel
             subscription={detail}

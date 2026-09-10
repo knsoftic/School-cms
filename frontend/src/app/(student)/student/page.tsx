@@ -49,17 +49,27 @@ import {
   StatusBadge,
 } from '@/components/table';
 
+/**
+ * One row of `GET /exams/my-results` — the `results` table, which the controller sends unmapped.
+ *
+ * Typed as the columns are, the way `(school)/school/results/page.tsx` types the same rows. The three
+ * DECIMALs and both counters are `allowNull: false, defaultValue: 0` in `models/exams.js`, and
+ * `config/database.js` sets `decimalNumbers: true`, so none of them can arrive as a string or as null.
+ * They used to be typed `string | number | null` — which kept a dead null branch in the Subjects
+ * failed cell and had this screen disagree with the school's results screen about the same column.
+ * `grade_name` and `outcome` really are nullable.
+ */
 interface MyResult {
   id: number;
   exam_id: number;
   student_id: number;
-  total_full_marks: string | number | null;
-  total_marks_obtained: string | number | null;
-  percentage: string | number | null;
+  total_full_marks: number;
+  total_marks_obtained: number;
+  percentage: number;
   grade_name: string | null;
   outcome: string | null;
-  subjects_count: number | null;
-  subjects_failed: number | null;
+  subjects_count: number;
+  subjects_failed: number;
   exam?: { id: number; name: string; exam_type: string | null; start_date: string | null };
 }
 
@@ -67,19 +77,18 @@ interface MyResult {
  * A DECIMAL, for display only.
  *
  * Two corrections to what this used to be. It said *"DECIMAL columns arrive as strings"* — they
- * arrive as JS **numbers**, because `config/database.js` sets `dialectOptions.decimalNumbers = true`
- * (the parameter still accepts a string, which costs nothing and survives that option being
- * flipped). And it defaulted to `digits = 0`, so `toFixed(0)` was applied to marks: a
- * `DECIMAL(9,2)` total of **47.5 rendered as 48**. Not truncated — *rounded up*, so a student saw a
- * mark they had not been given, and half-marks vanished from every row that had one.
+ * arrive as JS **numbers**, because `config/database.js` sets `dialectOptions.decimalNumbers = true`.
+ * The value still goes through `Number()`, which costs nothing on a number and keeps a `NaN` out of a
+ * cell if that option is ever flipped. And it defaulted to `digits = 0`, so `toFixed(0)` was applied
+ * to marks: a `DECIMAL(9,2)` total of **47.5 rendered as 48**. Not truncated — *rounded up*, so a
+ * student saw a mark they had not been given, and half-marks vanished from every row that had one.
  *
  * The default now shows as many decimals as the value actually carries, up to two: `47` stays `47`,
  * `47.5` stays `47.5`. `percentage` still asks for exactly 2 explicitly, because a percentage reads
  * better padded.
  */
-function figure(value: string | number | null, digits?: number) {
-  if (value === null || value === undefined) return null;
-  const parsed = typeof value === 'number' ? value : Number.parseFloat(value);
+function figure(value: number, digits?: number) {
+  const parsed = Number(value);
   if (!Number.isFinite(parsed)) return null;
   if (digits !== undefined) return parsed.toFixed(digits);
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(parsed);
@@ -142,17 +151,15 @@ export default function StudentPortal() {
         numeric: true,
         /*
          * Shown even when zero. A blank here would be ambiguous between "none" and "not computed",
-         * and on a result card the difference matters to the person reading it.
+         * and on a result card the difference matters to the person reading it. There is no null
+         * branch: the column is NOT NULL with a default of 0 — see `MyResult`.
          */
-        cell: (row) =>
-          row.subjects_failed === null ? (
-            <span className="text-muted-soft">—</span>
-          ) : (
-            <span className={row.subjects_failed > 0 ? 'font-medium' : 'text-muted-soft'}>
-              {row.subjects_failed}
-              {row.subjects_count ? <span className="text-muted-soft"> of {row.subjects_count}</span> : null}
-            </span>
-          ),
+        cell: (row) => (
+          <span className={row.subjects_failed > 0 ? 'font-medium' : 'text-muted-soft'}>
+            {row.subjects_failed}
+            {row.subjects_count ? <span className="text-muted-soft"> of {row.subjects_count}</span> : null}
+          </span>
+        ),
       },
     ],
     []

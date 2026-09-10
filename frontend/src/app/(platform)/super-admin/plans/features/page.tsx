@@ -389,14 +389,21 @@ function FeaturesScreen() {
 
       <PlanPicker selected={selected} onSelect={select} />
 
-      {refusal ? (
+      {/*
+        * `!selected` first, ahead of the fetch states. `usePlanDetail` returns early when no plan is
+        * chosen and clears only `detail` — the `error`, `refusal` and `loading` of the plan before
+        * stay as they were. Tested after them, a stale link to a deleted plan left "Something went
+        * wrong" on screen after the picker was set back to "Choose a plan…", and a plan unpicked
+        * mid-load left the skeleton spinning, because the aborted request never clears `loading`.
+        */}
+      {!selected ? (
+        <EmptyNotice>Choose a plan above to see its features.</EmptyNotice>
+      ) : refusal ? (
         <RefusalNotice refusal={refusal} />
       ) : error ? (
         <ErrorNotice message={error} onRetry={reload} />
       ) : loading ? (
         <LoadingBlock />
-      ) : !selected ? (
-        <EmptyNotice>Choose a plan above to see its features.</EmptyNotice>
       ) : detail && catalogue ? (
         <FeatureEditor
           detail={detail}

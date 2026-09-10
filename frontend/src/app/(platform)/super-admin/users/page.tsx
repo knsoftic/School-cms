@@ -233,10 +233,11 @@ export default function UsersPage() {
         description="Every account on the platform — school staff, organization administrators and platform users."
         action={
           /*
-           * Not "Add user": `users.routes.js` mounts no `POST /users`, and says why — every role the
-           * system creates has its own specified path (§9.3 for a Principal, §15 for school people),
-           * and a generic create-any-user endpoint would be a second implementation of each. The one
-           * account a platform administrator creates from this surface is a Principal.
+           * Not "Add user". `POST /users` exists since owner decision D1, but it creates a login for one
+           * school's own people only — `CREATABLE_ROLES` in `users.validation.js`, school admins,
+           * teachers, staff and the like — and the screens that offer it are that school's people
+           * screens, where the profile the login belongs to is. The one account this platform surface
+           * creates is a Principal, through §9.3's own path.
            *
            * `POST /principals` is guarded by **`requirePlatformScope()` and then**
            * `requirePermission('users.manage')` (`principals.routes.js:52-56`) — two gates, not one.
@@ -249,12 +250,9 @@ export default function UsersPage() {
            * the request itself, so forcing the link into existence changes nothing.
            */
           can('users.manage') ? (
-            <a
-              href="/super-admin/principals/new"
-              className="btn btn-primary"
-            >
+            <Link href="/super-admin/principals/new" className="btn btn-primary">
               Create principal
-            </a>
+            </Link>
           ) : null
         }
       />

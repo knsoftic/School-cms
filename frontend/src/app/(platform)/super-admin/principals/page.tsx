@@ -11,9 +11,18 @@
  *
  * There is no `principals` table. `principals.service.js` queries `users` filtered to the `principal`
  * role and presents each row through `auth.service.js` `publicUser()`, then attaches the four school
- * fields it includes. So the columns below are drawn from `PUBLIC_USER_FIELDS` plus that `school`
- * object, and from nothing else — the response carries no other key, and a column for one would
- * render `undefined` on every row.
+ * fields it includes. So the columns below are drawn from `PUBLIC_USER_FIELDS` plus the `role` and
+ * `school` objects, and from nothing else. `role` is there because the list query includes the
+ * association and `publicUser()` attaches it whenever it is loaded — this header used to say the
+ * response carried no other key, which would have talked anyone out of a Role column that works.
+ *
+ * ## The row is a way in, not the end of the road
+ *
+ * A Principal is a user, so the name opens the account on the Users detail screen — status,
+ * permission overrides, role — rather than a principal screen of its own that would be a second
+ * editor for the same `users` row (`principals.routes.js` declines a PATCH for exactly that reason).
+ * The school opens the school, whose Principal tab is where FR-SADMIN-007's assignment lives:
+ * `PUT /schools/:id/principal` needs the school as well as the person, so it belongs on the school.
  *
  * ## Why verification and last sign-in are worth a column each
  *
@@ -32,6 +41,7 @@
  * belongs with a sortable header in `table.tsx`, not with a hidden parameter in one page.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
@@ -72,7 +82,11 @@ interface Principal {
   id: number;
   name: string;
   email: string;
-  username: string | null;
+  /*
+   * Not nullable: `users.username` is `allowNull: false` behind a unique index, and the create schema
+   * requires it. It was typed `string | null` with an em-dash branch for a row the database forbids.
+   */
+  username: string;
   status: string;
   /** ISO timestamps, or null. Sequelize `DATE` columns serialised by `JSON.stringify`. */
   email_verified_at: string | null;
@@ -130,7 +144,18 @@ export default function PrincipalsPage() {
       {
         key: 'name',
         header: 'Principal',
-        cell: (row) => <span className="font-medium">{row.name}</span>,
+        /*
+         * Into the account — see the header. `GET /users/:id` needs `users.view`, the same key this
+         * list needs, so a reader of this row can always open it.
+         */
+        cell: (row) => (
+          <Link
+            href={`/super-admin/users/${row.id}`}
+            className="font-medium underline-offset-2 hover:underline focus-visible:underline"
+          >
+            {row.name}
+          </Link>
+        ),
       },
       { key: 'email', header: 'Email', cell: (row) => row.email },
       {
@@ -141,20 +166,29 @@ export default function PrincipalsPage() {
          * as the email, so it is half the answer to "why can this person not log in" — and it is the
          * half the operator cannot guess from the name.
          */
-        cell: (row) =>
-          row.username ? (
-            <code className="text-xs text-muted">{row.username}</code>
-          ) : (
-            <span className="text-muted-soft">—</span>
-          ),
+        cell: (row) => <code className="text-xs text-muted">{row.username}</code>,
       },
       {
         key: 'school',
         header: 'School',
+        /*
+         * A link only for a reader who can open the school: `GET /schools/:id` is `schools.view`, a
+         * different key from the `users.view` that shows this list.
+         */
         cell: (row) =>
           row.school ? (
             <span className="whitespace-nowrap">
-              {row.school.name} <code className="text-xs text-muted-soft">{row.school.code}</code>
+              {can('schools.view') ? (
+                <Link
+                  href={`/super-admin/schools/${row.school.id}?tab=principal`}
+                  className="underline-offset-2 hover:underline focus-visible:underline"
+                >
+                  {row.school.name}
+                </Link>
+              ) : (
+                row.school.name
+              )}{' '}
+              <code className="text-xs text-muted-soft">{row.school.code}</code>
             </span>
           ) : (
             <span className="text-muted-soft">unassigned</span>
@@ -180,7 +214,7 @@ export default function PrincipalsPage() {
         cell: (row) => day(row.last_login_at) ?? <span className="text-muted-soft">never</span>,
       },
     ],
-    []
+    [can]
   );
 
   return (

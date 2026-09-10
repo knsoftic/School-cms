@@ -70,7 +70,7 @@ const { settle } = require('./lib/settle');
 
 const {
   ROLES, USER_STATUS, MODULES, MODULE_LIST, LIMITS, LIMIT_TYPES,
-  PLAN_STATUS, SUBSCRIPTION_STATES, BILLING_CYCLES, WEEKDAYS, ACADEMIC_SESSION_STATUS,
+  PLAN_STATUS, SUBSCRIPTION_STATES, BILLING_CYCLES, WEEKDAYS, WEEKDAY_LIST, ACADEMIC_SESSION_STATUS,
 } = require('../src/config/constants');
 
 const PREFIX = config.app.apiPrefix;
@@ -806,6 +806,22 @@ async function verifyHttp() {
     const listA = dataOf(await expectOk('/timetable?limit=50', { token: principalA }, 200));
     check('a school sees its own entries', listA.length > 0, true);
     check("and not another school's — the counter-example exists", listA.every((e) => e.school_id === schoolA.id), true);
+    /*
+     * Unsorted, the list reads as the week: day, then period. The second figure proves the order was
+     * exercised — a later period typed before an earlier one on the same day — so the first cannot pass
+     * merely because every day holds one entry.
+     */
+    const dayRank = (entry) => WEEKDAY_LIST.indexOf(entry.day_of_week);
+    const weekKey = (entry) => dayRank(entry) * 100 + Number(entry.period_number);
+    check(
+      'the unsorted list comes back in week order, including periods typed out of order',
+      [
+        listA.every((entry, i) => i === 0 || weekKey(listA[i - 1]) <= weekKey(entry)),
+        listA.some((a) => listA.some((b) =>
+          a.day_of_week === b.day_of_week && Number(a.period_number) < Number(b.period_number) && a.id > b.id)),
+      ],
+      [true, true]
+    );
     const foreignEntry = dataOf(await expectOk('/timetable?limit=50', { token: principalD }, 200))[0];
     const reachForeign = await call(`/timetable/${foreignEntry.id}`, { token: principalA });
     check("another school's entry is not found, not merely forbidden", reachForeign.status, 404);

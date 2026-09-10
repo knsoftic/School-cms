@@ -33,7 +33,7 @@
  *
  *  - **`expireLapsed()`** — `sent → expired` is a fact about `valid_until` and the clock, the same
  *    scheduler argument that keeps `invoices.markOverdue()` and `subscriptions.runLifecycleSweep()` off
- *    their routers. `src/jobs/` is Phase 5; the behaviour is implemented and asserted by direct call.
+ *    their routers. It runs daily from `jobs/tasks/quotationExpiry.js`, asserted in `verify-jobs.js`.
  *  - **No `DELETE /:id`.** `quotations` is not `paranoid`, so a delete would be real and would strand any
  *    `converted_invoice_id`. A quote that came to nothing is `rejected` or `expired`, both terminal
  *    `QUOTATION_STATUS` values, which is the audit trail a hard delete would destroy.

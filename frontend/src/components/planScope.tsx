@@ -168,7 +168,14 @@ export function usePlanDetail(planId: string | null, withCatalogue: boolean) {
 
   useEffect(() => {
     if (!planId) {
+      /*
+       * Everything, not only the detail. A load aborted by clearing the choice skips its `finally`, so
+       * `loading` stayed true, and a previous plan's error or refusal stayed on screen for no plan.
+       */
       setDetail(null);
+      setLoading(false);
+      setError(null);
+      setRefusal(null);
       return undefined;
     }
 

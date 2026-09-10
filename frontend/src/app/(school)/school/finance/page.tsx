@@ -19,7 +19,12 @@
  *
  * This header used to say `amount` "is returned as a **string** — deliberately". It is not:
  * `config/database.js` sets `dialectOptions.decimalNumbers = true`, so mysql2 parses DECIMAL into a
- * JS number before Sequelize sees it. Measured, not reasoned.
+ * JS number before Sequelize sees it. Measured, not reasoned — `lib/money.ts` records the
+ * measurement.
+ *
+ * Every figure is formatted by `formatAmountWithCode` from that file. The local `money()` this screen
+ * used to carry printed `toFixed(2)` with no grouping, so the headline Net Balance read `4835000.00`
+ * — the hardest form of a large figure to read, and the easiest to misjudge by a factor of ten.
  *
  * The rule the old sentence was reaching for still holds, and is the important part: **nothing here
  * accumulates money.** A total across pages would be a total of *the page*, which is worse than no
@@ -34,6 +39,8 @@ import { Suspense, useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { formatAmountWithCode } from '@/lib/money';
+import { localDay } from '@/lib/instants';
 import { EditDialog } from '@/components/editDialog';
 import { EXPLAINED_CODES, useCollection } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
@@ -85,7 +92,8 @@ interface Entry {
   subcategory: string | null;
   title: string;
   currency: string;
-  amount: string | number;
+  /* A number — see the header. */
+  amount: number;
   payment_method: string | null;
   reference: string | null;
   /* Income carries `received_from` and `income_date`; expense carries `paid_to` and `expense_date`. */
@@ -100,29 +108,30 @@ const TABS: TabDef[] = [
   { key: 'expenses', label: 'Expenses' },
 ];
 
-/**
- * Display only — never accumulate.
- *
- * The parameter stays `string | number` on purpose. DECIMAL arrives as a number today, and the one
- * dialect option that decides it (`decimalNumbers`) is a single line in `config/database.js`; a
- * formatter that copes with both cannot be broken by flipping it.
- */
-function money(amount: string | number, currency: string) {
-  const value = typeof amount === 'number' ? amount : Number.parseFloat(amount);
-  if (!Number.isFinite(value)) return <span className="text-muted-soft">—</span>;
-  return (
-    <span className="tabular-nums">
-      {value.toFixed(2)} <span className="text-muted-soft">{currency}</span>
-    </span>
-  );
-}
-
 function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRecorded: () => void }) {
   const { can } = useAuth();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
   const [category, setCategory] = useState('');
   const [recording, setRecording] = useState(false);
+
+  /*
+   * 300 ms, as every other search screen does. `useCollection` refetches on every change to the
+   * query, so feeding `search` straight in sent one request per keystroke, each a leading-wildcard
+   * LIKE across three columns.
+   */
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebounced(search);
+      /*
+       * Resetting to page one is part of the search, not a separate concern — searching from page
+       * three and staying there shows an empty table for a query that has two pages of results.
+       */
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   /*
    * Correcting an entry — `PATCH /finance/incomes/:id` and `PATCH /finance/expenses/:id`, neither of
@@ -136,8 +145,8 @@ function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRec
   const [editing, setEditing] = useState<Entry | null>(null);
 
   const query = useMemo(
-    () => ({ page, limit: 20, q: search || undefined, category: category || undefined }),
-    [page, search, category]
+    () => ({ page, limit: 20, q: debounced || undefined, category: category || undefined }),
+    [page, debounced, category]
   );
   const { rows, meta, loading, error, refusal, reload } = useCollection<Entry>(`/finance/${kind}`, query);
 
@@ -177,7 +186,13 @@ function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRec
         header: 'Method',
         cell: (row) => row.payment_method?.replace(/_/g, ' ') ?? <span className="text-muted-soft">—</span>,
       },
-      { key: 'amount', header: 'Amount', numeric: true, cell: (row) => money(row.amount, row.currency) },
+      {
+        key: 'amount',
+        header: 'Amount',
+        numeric: true,
+        /* `whitespace-nowrap` keeps the code on its figure's line; `numeric` supplies `tabular-nums`. */
+        cell: (row) => <span className="whitespace-nowrap">{formatAmountWithCode(row.amount, row.currency)}</span>,
+      },
       ...(can('finance.manage')
         ? [
             {
@@ -206,15 +221,17 @@ function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRec
         }}
       >
         <div>
+          {/*
+            * The placeholder names all three columns the server scans — `finance.service.js` LIKEs
+            * `title` (this screen's "Description" column), `subcategory` and `reference`. Naming two
+            * made the subcategory matches look like a bug.
+            */}
           <SearchField
             id={`${kind}-search`}
             label={`Search ${isIncome ? 'income' : 'expenses'}`}
-            placeholder="Description or reference…"
+            placeholder="Description, subcategory or reference…"
             value={search}
-            onChange={(value) => {
-              setSearch(value);
-              setPage(1);
-            }}
+            onChange={setSearch}
           />
         </div>
         <div>
@@ -274,7 +291,7 @@ function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRec
         <LoadingBlock />
       ) : rows.length === 0 ? (
         <EmptyNotice>
-          {search || category
+          {debounced || category
             ? 'Nothing matches these filters.'
             : `No ${isIncome ? 'income' : 'expenses'} recorded yet.`}
         </EmptyNotice>
@@ -379,9 +396,12 @@ function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRec
  *
  * ## The date defaults to today and is not pre-filled by a client clock beyond that
  *
- * A ledger entry is almost always being recorded on the day it happened. `toISOString().slice(0,10)`
- * is UTC, which is the same calendar day the API stores it under — using a local-midnight date here
- * would let an entry recorded late in the evening west of UTC land on the previous day in the ledger.
+ * A ledger entry is almost always being recorded on the day it happened, and that is the recorder's
+ * calendar day. The API stores the `YYYY-MM-DD` it is sent as that day (Known Issues #20), so the
+ * default is the viewer's day, as the attendance register's is. This used to be
+ * `toISOString().slice(0, 10)` — the UTC day — on the reasoning that it matched what the API stores;
+ * it did not, because the API stores whatever day it is given, and the UTC day put an entry recorded
+ * at 22:00 in UTC−5 on the next day and one recorded at 01:00 in UTC+5 on the previous one.
  */
 function RecordEntryDialog({
   kind,
@@ -397,7 +417,8 @@ function RecordEntryDialog({
   const isIncome = kind === 'incomes';
   const { success } = useToast();
 
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  /* The viewer's today: `income_date` / `expense_date` are calendar days, and the UTC one is not theirs. */
+  const today = useMemo(() => localDay(new Date()) ?? '', []);
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(today);
@@ -682,18 +703,26 @@ function NetBalance({ version }: { version: number }) {
 
   if (!report) return null;
 
-  const currency = report.currency ?? '';
+  /*
+   * `report.currency` is null only when both ledgers are empty — `report()` answers
+   * `currency || currencies[0] || null` — and `formatAmountWithCode` then prints the bare `0.00`
+   * rather than the figure, a space and an empty label.
+   */
   const deficit = Number(report.net_balance) < 0;
 
   return (
     <dl className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
       <div className="rounded-md border border-border px-4 py-3">
         <dt className="text-xs uppercase tracking-wide text-muted-soft">Income</dt>
-        <dd className="mt-1 text-lg font-semibold tabular-nums">{money(report.income.total, currency)}</dd>
+        <dd className="mt-1 text-lg font-semibold tabular-nums">
+          {formatAmountWithCode(report.income.total, report.currency)}
+        </dd>
       </div>
       <div className="rounded-md border border-border px-4 py-3">
         <dt className="text-xs uppercase tracking-wide text-muted-soft">Expense</dt>
-        <dd className="mt-1 text-lg font-semibold tabular-nums">{money(report.expense.total, currency)}</dd>
+        <dd className="mt-1 text-lg font-semibold tabular-nums">
+          {formatAmountWithCode(report.expense.total, report.currency)}
+        </dd>
       </div>
       <div className="rounded-md border border-border px-4 py-3">
         <dt className="text-xs uppercase tracking-wide text-muted-soft">Net balance</dt>
@@ -702,7 +731,7 @@ function NetBalance({ version }: { version: number }) {
             deficit ? 'text-danger' : 'text-success'
           }`}
         >
-          {money(report.net_balance, currency)}
+          {formatAmountWithCode(report.net_balance, report.currency)}
         </dd>
       </div>
     </dl>

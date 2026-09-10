@@ -46,7 +46,7 @@ const fs = require('fs');
 const path = require('path');
 
 const db = require('../src/models');
-const { sweepResidue } = require('./lib/residue');
+const { sweepResidue, removeFailedSignIns } = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -436,6 +436,8 @@ async function verifyHttp() {
         where: { id: { [db.Op.gt]: baseline.auditLog }, [db.Op.or]: ownTenant },
       });
     }
+    /* A failed sign-in carries no user or tenant for the clauses above to match — see the helper. */
+    await removeFailedSignIns(db, { afterId: baseline.activityLog, domains: [DOMAIN] });
     if (created.subscriptions.length) {
       await db.UsageRecord.destroy({ where: { subscription_id: created.subscriptions } });
       await db.Subscription.destroy({ where: { id: created.subscriptions }, force: true });

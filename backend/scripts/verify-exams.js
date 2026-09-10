@@ -640,7 +640,7 @@ async function verifyHttp() {
       school_id: schoolA.id, organization_id: org.id, employee_id: `${CODE_PREFIX}T1`,
       first_name: 'Nadia', joining_date: '2024-01-15',
     });
-    const foreignTeacher = await db.Teacher.create({
+    await db.Teacher.create({
       school_id: schoolD.id, organization_id: org.id, employee_id: `${CODE_PREFIX}T9`,
       first_name: 'Faraway', joining_date: '2024-01-15',
     });
@@ -755,6 +755,11 @@ async function verifyHttp() {
     });
     check('  a band that only TOUCHES another at a boundary is refused', touching.status, 409);
     check('    because matchBand is inclusive at both ends, so 50 would match both', codeOf(touching), 'GRADE_BAND_OVERLAP');
+    check(
+      '    and the message itself names the band and its range, for a screen that shows only the message',
+      touching.body.error && touching.body.error.message,
+      'That band overlaps "Low" (0–50%) on the boundary-probe grade scale'
+    );
 
     /* On a scale with nothing to collide with, the model's own bandOrdered validator is what refuses. */
     const zeroWidth = await call('/exams/grade-scales', {

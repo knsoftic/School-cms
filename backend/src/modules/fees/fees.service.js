@@ -177,8 +177,8 @@ async function listStructures(req, query, pagination) {
    * function never read it — the screen's "Name or component…" box returned **every** structure with
    * 200 OK. A silent wrong answer: the user sees a filtered-looking list that was never filtered.
    *
-   * The columns are the two the placeholder names, plus `description`, matching the shape
-   * `finance.service.js:312-318` already uses for the same parameter.
+   * The three columns the screen's placeholder names, matching the shape `finance.service.js`
+   * already uses for the same parameter.
    */
   if (query.q) {
     where[Op.or] = [

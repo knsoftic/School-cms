@@ -21,6 +21,16 @@
  * profile to read. It has only the access token the login left in memory, which is exactly what
  * `POST /auth/change-password` needs.
  *
+ * ## The way out is the other call the state permits
+ *
+ * This was the one page in `(auth)` with no link and no button besides its submit, and the shell —
+ * which carries the account menu's sign-out — is not rendered here. So a user who signed in as the
+ * wrong account, or who could not satisfy the server's password policy, had no exit short of clearing
+ * cookies. The backend had already built one: `auth.routes.js` allow-lists `POST /auth/logout` in
+ * `enforcePasswordChange` with the comment *"a user must be able to walk away"*. The Sign out control
+ * below is that call, through `useAuth().logout()`, which clears the client even when the server
+ * refuses — so it always lands on `/login`.
+ *
  * The two fields sent are `currentPassword` and `password` — `auth.validation.js:140-145`, which also
  * refuses a new password equal to the old one with a message worth showing verbatim.
  */
@@ -36,17 +46,26 @@ import { AuthCard, Notice, SubmitButton, focusFirstInvalidField, PasswordField }
 
 export default function ChangePasswordPage() {
   const router = useRouter();
-  const { changePassword } = useAuth();
+  const { changePassword, logout } = useAuth();
 
   const [currentPassword, setCurrentPassword] = useState('');
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
+
+    /*
+     * Cleared before the local check, not after it. The early return below used to sit ahead of
+     * this, so a submit refused *here* left the previous **server** banner standing — "The new
+     * password must be different from the current one." above a field error about the confirmation,
+     * two complaints with no way to tell which was current.
+     */
+    setError(null);
 
     /*
      * The confirmation is checked here and nowhere else, deliberately. The API has no
@@ -60,7 +79,6 @@ export default function ChangePasswordPage() {
     }
 
     setSubmitting(true);
-    setError(null);
     setFieldErrors({});
 
     try {
@@ -76,6 +94,24 @@ export default function ChangePasswordPage() {
       }
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  /*
+   * `logout()` clears the in-memory token and CSRF value in its own `finally`, so the client is signed
+   * out whether or not the server answered — the only thing a failure here could leave behind is a
+   * refresh cookie the server will refuse anyway once the session is gone. Either way the next screen
+   * is the sign-in, so the navigation is unconditional.
+   */
+  async function onSignOut() {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await logout();
+    } catch {
+      /* A network failure: `clear()` has already run. Nothing to show — the user asked to leave. */
+    } finally {
+      router.replace('/login');
     }
   }
 
@@ -124,6 +160,19 @@ export default function ChangePasswordPage() {
           Change password
         </SubmitButton>
       </form>
+
+      <p className="mt-6 text-sm text-muted">
+        Not your account, or cannot choose a password now?{' '}
+        <button
+          type="button"
+          onClick={() => void onSignOut()}
+          disabled={signingOut || submitting}
+          aria-busy={signingOut}
+          className="font-medium text-teal underline underline-offset-4 hover:text-teal-deep disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {signingOut ? 'Signing out…' : 'Sign out'}
+        </button>
+      </p>
     </AuthCard>
   );
 }

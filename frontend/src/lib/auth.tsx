@@ -22,7 +22,18 @@ import type { ReactNode } from 'react';
 import { api, setAccessToken, setSessionLostHandler, clearCsrfToken, setCsrfToken, ApiError } from './apiClient';
 import { resetSchoolNames } from './useSchoolNames';
 
-/** The user, as `PUBLIC_USER_FIELDS` in `auth.service.js` defines it. */
+/**
+ * The user, as `publicUser()` in `auth.service.js` builds it — the `PUBLIC_USER_FIELDS` columns, **plus**
+ * the `role` object it attaches from the association.
+ *
+ * This used to say the shape was `PUBLIC_USER_FIELDS` alone, and the interface stopped at
+ * `must_change_password`. But `publicUser()` loops that list and then adds
+ * `out.role = { id, slug, name, isPlatformRole, isSchoolRole }` whenever the role is loaded — and it
+ * always is here: `authenticate.js` includes the association on every authenticated request, and the
+ * login and token lookups include it too. So `role` is on every `/auth/me` payload; it was simply
+ * invisible to TypeScript. Declared required for that reason: `users.role_id` is NOT NULL with
+ * `onDelete: 'RESTRICT'`, so there is no account without one.
+ */
 export interface User {
   id: number;
   name: string;
@@ -38,6 +49,14 @@ export interface User {
   email_verified_at: string | null;
   last_login_at: string | null;
   must_change_password: boolean;
+  /** Not a column — the association `publicUser()` attaches. See the note above. */
+  role: {
+    id: number;
+    slug: string;
+    name: string;
+    isPlatformRole: boolean;
+    isSchoolRole: boolean;
+  };
 }
 
 /** The tenant scope `resolveTenant` decided for this caller. */

@@ -564,7 +564,7 @@ function verifyRouting() {
 
   /* Counted from the first `router.use(` onward: the barrel destructure names it a fourth time. */
   check('the three driver routes carry aiLimiter, and nothing else does',
-    (src.slice(src.indexOf('router.use(')).match(/\n  aiLimiter,/g) || []).length, 3);
+    (src.slice(src.indexOf('router.use(')).match(/\n {2}aiLimiter,/g) || []).length, 3);
   check('  which no other router mounts',
     fs.readdirSync(path.join(__dirname, '../src/modules'))
       .filter((m) => {
@@ -837,7 +837,7 @@ async function verifyHttp() {
       return { session, klass, subject };
     };
     const A = await mkStructure(schoolA, 'A');
-    const D = await mkStructure(schoolD, 'D');
+    await mkStructure(schoolD, 'D');
 
     const password_hash = await hashPassword(PASSWORD);
     const mkUser = async (key, slug, organization_id, school_id) => {

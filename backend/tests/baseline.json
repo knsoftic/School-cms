@@ -6,8 +6,8 @@
   },
   "database": "msms_test",
   "suiteCount": 40,
-  "totalAssertions": 5550,
-  "totalPassLines": 5529,
+  "totalAssertions": 5573,
+  "totalPassLines": 5551,
   "suites": {
     "verify-addons.js": {
       "assertions": 176,
@@ -22,12 +22,12 @@
       "passLines": 205
     },
     "verify-assignments.js": {
-      "assertions": 196,
-      "passLines": 196
+      "assertions": 198,
+      "passLines": 198
     },
     "verify-attendance.js": {
-      "assertions": 82,
-      "passLines": 82
+      "assertions": 83,
+      "passLines": 83
     },
     "verify-auth-chain.js": {
       "assertions": 84,
@@ -38,8 +38,8 @@
       "passLines": 237
     },
     "verify-billing.js": {
-      "assertions": 257,
-      "passLines": 257
+      "assertions": 261,
+      "passLines": 261
     },
     "verify-concurrency.js": {
       "assertions": 19,
@@ -62,8 +62,8 @@
       "passLines": 54
     },
     "verify-exams.js": {
-      "assertions": 219,
-      "passLines": 219
+      "assertions": 220,
+      "passLines": 220
     },
     "verify-fees.js": {
       "assertions": 179,
@@ -82,8 +82,8 @@
       "passLines": 109
     },
     "verify-jobs.js": {
-      "assertions": 60,
-      "passLines": 60
+      "assertions": 61,
+      "passLines": 61
     },
     "verify-library.js": {
       "assertions": 161,
@@ -114,8 +114,8 @@
       "passLines": 16
     },
     "verify-plans.js": {
-      "assertions": 178,
-      "passLines": 178
+      "assertions": 180,
+      "passLines": 180
     },
     "verify-platform-modules.js": {
       "assertions": 313,
@@ -138,7 +138,7 @@
       "passLines": 28
     },
     "verify-seed.js": {
-      "assertions": 22,
+      "assertions": 23,
       "passLines": 1
     },
     "verify-staff.js": {
@@ -150,16 +150,16 @@
       "passLines": 158
     },
     "verify-subscriptions.js": {
-      "assertions": 212,
-      "passLines": 212
+      "assertions": 222,
+      "passLines": 222
     },
     "verify-teachers.js": {
       "assertions": 87,
       "passLines": 87
     },
     "verify-timetable.js": {
-      "assertions": 115,
-      "passLines": 115
+      "assertions": 116,
+      "passLines": 116
     },
     "verify-users-roles.js": {
       "assertions": 247,

@@ -321,8 +321,21 @@ export default function ReportsPage() {
   const [schoolTotal, setSchoolTotal] = useState<number | null>(null);
   const [schoolsError, setSchoolsError] = useState<string | null>(null);
 
+  /*
+   * Debounced copies of the free-text parameters — see `query` below for why only those.
+   * `params` is what the inputs show; this is what the request is built from.
+   */
+  const [typed, setTyped] = useState<Record<string, string>>({});
+
   const [report, setReport] = useState<AnyReport | null>(null);
-  const [loading, setLoading] = useState(false);
+  /*
+   * `true` from the start, as `useCollection` does. It was `false`, and the default tab (Subscriptions)
+   * needs no school and no parameter, so a fetch is certain on mount — but `setLoading(true)` runs
+   * inside the read effect, after the first commit, so every visit painted "Nothing was returned for
+   * this report." for a frame before the report arrived. The effect sets it back to `false` itself
+   * whenever there is nothing to fetch.
+   */
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -377,16 +390,44 @@ export default function ReportsPage() {
     return gaps;
   }, [spec, schoolId, params]);
 
+  /*
+   * The free-text parameters reach the request 300 ms after the last keystroke, not on each one.
+   *
+   * `params` fed `query` directly, and `query` is a dependency of the read effect, so typing "USD"
+   * into the Fees report's Currency box sent three `/reports/fees` calls. The two in the middle
+   * filtered on "U" and "US" — `currency` is `Joi.string().uppercase().max(10)`, so a partial code is
+   * accepted, and `where.currency = 'U'` matches nothing — and painted a school with no fees between
+   * keystrokes. Each also spent the pre-authentication `apiLimiter` budget on a grouped SUM. The same
+   * 300 ms the list screens use for their search boxes, for the same two reasons. Selects and dates
+   * are one deliberate change each, so they stay immediate.
+   */
+  useEffect(() => {
+    const next: Record<string, string> = {};
+    for (const param of spec.params ?? []) {
+      if (param.kind === 'text' && params[param.key]) next[param.key] = params[param.key];
+    }
+    /*
+     * Kept as the same object when nothing typed has changed. `next` is a new object on every run —
+     * and this runs after every select, date and report switch too — so storing it unconditionally
+     * rebuilt `query` with the same contents 300 ms later and fetched each report twice.
+     */
+    const timer = setTimeout(
+      () => setTyped((current) => (JSON.stringify(current) === JSON.stringify(next) ? current : next)),
+      300
+    );
+    return () => clearTimeout(timer);
+  }, [spec, params]);
+
   /** The query both the read and the two exports send, so they cannot describe different reports. */
   const query = useMemo(() => {
     const q: Record<string, string> = {};
     if (spec.needsSchool && schoolId) q.school_id = schoolId;
     for (const param of spec.params ?? []) {
-      const value = params[param.key];
+      const value = param.kind === 'text' ? typed[param.key] : params[param.key];
       if (value) q[param.key] = value;
     }
     return q;
-  }, [spec, schoolId, params]);
+  }, [spec, schoolId, params, typed]);
 
   /* ── the read ── */
 
@@ -543,30 +584,54 @@ export default function ReportsPage() {
 
       {/* ── the controls ── */}
       <div className="no-print mb-6 space-y-4">
-        <div className="flex flex-wrap gap-2">
+        {/*
+          * Seven toggle buttons, one pressed. The selected one used to differ only by its fill — no
+          * `aria-pressed`, so a screen reader heard seven identical buttons and nothing said which
+          * report was on screen. And an unreachable report was `disabled` with its reason in a
+          * `title`: a disabled button takes no focus, so "Requires …" was never announced to anyone
+          * not holding a mouse over it. Now it is `aria-disabled` — still focusable, still refusing
+          * the click — and the reason is part of its accessible name.
+          */}
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Report">
           {REPORTS.map((entry) => {
             const reachable = entry.permissions.every((key) => can(key));
+            const current = entry.type === selected;
+            const requirement = `Requires ${entry.permissions.join(' and ')}`;
             return (
               <button
                 key={entry.type}
                 type="button"
                 onClick={() => {
+                  /*
+                   * Re-pressing the current report is a no-op. It used to clear the report, and with
+                   * nothing in the read effect's dependencies changed, no fetch followed — the screen
+                   * sat on "Nothing was returned" until something else moved.
+                   */
+                  if (!reachable || current) return;
                   setSelected(entry.type);
                   setParams({});
                   /* The previous report is not this report. See the cast above. */
                   setReport(null);
+                  /* Nor are its typed parameters — the debounce would carry them over for 300 ms. */
+                  setTyped({});
+                  /* A new report is about to be fetched; say so rather than "nothing was returned". */
+                  setLoading(true);
                 }}
-                disabled={!reachable}
-                title={reachable ? entry.summary : `Requires ${entry.permissions.join(' and ')}`}
+                aria-pressed={current}
+                aria-disabled={!reachable || undefined}
+                title={reachable ? entry.summary : requirement}
                 className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                  entry.type === selected
+                  current
                     ? /* `text-brand-contrast`, not `text-white`: in dark mode `--brand` lightens and
                          white on it fails contrast. The token is white in light, near-black in dark. */
                       'border-brand bg-brand text-brand-contrast'
-                    : 'border-border-strong hover:border-brand disabled:cursor-not-allowed disabled:opacity-50'
+                    : reachable
+                      ? 'border-border-strong hover:border-brand'
+                      : 'cursor-not-allowed border-border-strong opacity-50'
                 }`}
               >
                 {entry.label}
+                {reachable ? null : <span className="sr-only"> — {requirement}</span>}
               </button>
             );
           })}

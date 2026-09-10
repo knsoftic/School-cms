@@ -707,6 +707,8 @@ async function verifyHttp() {
           section_id: sectionA.id,
           attendance_date: '2025-04-10',
           entries: [{ student_id: kids[2].id, status: ATTENDANCE_STATUS.PRESENT }],
+          /* Asserted in the activity trail below — the batch's only record of why it changed. */
+          reason: 'Arrived after the register was taken',
         },
       },
       200
@@ -984,6 +986,15 @@ async function verifyHttp() {
       'both registers appear',
       [...new Set(attendanceActivity.map((r) => r.entity_type))].sort(),
       ['student_attendance', 'teacher_attendance']
+    );
+    /* Read as model instances: under `raw: true` MariaDB hands a JSON column back as a string. */
+    check(
+      'a correction\'s reason is kept on its activity row, and a mark sent without one records none',
+      [
+        attendanceActivity.filter((r) => r.metadata && r.metadata.reason === 'Arrived after the register was taken').length,
+        attendanceActivity.filter((r) => r.metadata && 'reason' in r.metadata).length,
+      ],
+      [1, 1]
     );
     /*
      * And deliberately NOT in audit_logs: `marked_by` / `marked_at` on the row is this table's own

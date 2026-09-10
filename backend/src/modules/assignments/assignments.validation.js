@@ -52,7 +52,12 @@ const fields = {
   title: Joi.string().trim().min(1).max(180),
   description: Joi.string().trim().max(5000).empty('').allow(null),
   assigned_date: Joi.date().iso(),
-  due_date: Joi.date().iso(),
+  /*
+   * Nullable, as the column is (`models/other.js`, `allowNull: true`): an assignment may have no due
+   * date, and clearing one on edit has to be sayable. Without `null` the edit form's cleared field
+   * was refused as "must be a valid date". Lateness reads a null due date as never late.
+   */
+  due_date: Joi.date().iso().allow(null),
   total_marks: markField.allow(null),
   reason: Joi.string().trim().max(255).empty('').allow(null),
 };

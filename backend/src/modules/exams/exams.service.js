@@ -268,15 +268,20 @@ async function assertNoBandOverlap(schoolId, scaleName, min, max, excludeId, tra
   });
   if (excludeId) where.id = { [Op.ne]: excludeId };
 
-  const clash = await db.Grade.findOne({ where, transaction });
+  /* Ordered, so a band overlapping two names the same one every time — the lower of them. */
+  const clash = await db.Grade.findOne({ where, order: [['min_percentage', 'ASC'], ['id', 'ASC']], transaction });
   if (clash) {
-    throw ApiError.conflict('That band overlaps one already on this grade scale', {
-      code: 'GRADE_BAND_OVERLAP',
-      details: {
-        scale_name: scaleName,
-        conflicts_with: { id: clash.id, name: clash.name, min_percentage: clash.min_percentage, max_percentage: clash.max_percentage },
-      },
-    });
+    /* The band is named in the message too: a screen that shows only the message still says which. */
+    throw ApiError.conflict(
+      `That band overlaps "${clash.name}" (${Number(clash.min_percentage)}–${Number(clash.max_percentage)}%) on the ${scaleName} grade scale`,
+      {
+        code: 'GRADE_BAND_OVERLAP',
+        details: {
+          scale_name: scaleName,
+          conflicts_with: { id: clash.id, name: clash.name, min_percentage: clash.min_percentage, max_percentage: clash.max_percentage },
+        },
+      }
+    );
   }
 }
 
@@ -350,7 +355,16 @@ async function updateGrade(req, id, payload) {
 
 /* ─────────────────────────── §19.1 the examination ─────────────────────────── */
 
-async function findExam(req, id, namedSchoolId = undefined) {
+/**
+ * The class and section an exam names, for a screen to show by name. Only on reads: every other caller
+ * of `findExam()` updates and snapshots the row, and an included association would ride into the audit.
+ */
+const EXAM_PLACEMENT_INCLUDE = Object.freeze([
+  { model: db.Class, as: 'class', attributes: ['id', 'name'] },
+  { model: db.Section, as: 'section', attributes: ['id', 'name'] },
+]);
+
+async function findExam(req, id, namedSchoolId = undefined, { detail = false } = {}) {
   const where = tenantWhere(req.tenant, { id });
   const named = namedSchoolId !== undefined ? namedSchoolId : req.query && req.query.school_id;
   /* Record and entitlement guard resolved from the same school — §5a defects 22 and 35. */
@@ -358,7 +372,7 @@ async function findExam(req, id, namedSchoolId = undefined) {
     const school = await resolveSchool(req, named);
     where.school_id = school.id;
   }
-  const row = await db.Exam.findOne({ where });
+  const row = await db.Exam.findOne({ where, ...(detail ? { include: [...EXAM_PLACEMENT_INCLUDE] } : {}) });
   if (!row) throw ApiError.notFound('Exam not found', { code: 'EXAM_NOT_FOUND' });
   return row;
 }
@@ -383,7 +397,7 @@ async function listExams(req, query, pagination) {
     db.Exam,
     {
       where,
-      include: [{ model: db.Class, as: 'class', attributes: ['id', 'name'] }],
+      include: [...EXAM_PLACEMENT_INCLUDE],
       order: getSort({ query }, EXAM_SORTABLE, ['start_date', 'DESC']),
     },
     pagination

@@ -48,13 +48,27 @@
  * They are also behind **different permissions** — `attendance.mark` and
  * `attendance.teacher.mark` — so the gate is per mode, not per screen.
  *
- * ## One thing this screen deliberately does not do
+ * ## Marking a day again overwrites it, and this screen does not read the old one back
  *
- * It does not check whether the day has already been marked. The POST routes are the only writers
- * and the service owns what a second submission for the same day does — the models carry a unique
- * index on `(person, attendance_date)`. A pre-flight read here would be a second opinion about a
- * rule the service already enforces, and the answer it gave could be stale by the time the form was
- * submitted. A conflict is reported where it is decided.
+ * The models carry a unique index on `(person, attendance_date)`, and both services write with
+ * `bulkCreate(…, { updateOnDuplicate })` — so a second submission for the same day is not refused,
+ * it **replaces** the first for everyone on the register, `marked_by` and `marked_at` included. That
+ * is how a correction is made, and the service header says so ("Re-marking a register therefore
+ * corrects it"). This header and the date hint used to say the opposite — that a day already marked
+ * was refused — which is the one wrong belief that loses data: a teacher who trusts it re-submits a
+ * day to "check", and every absence on it becomes present.
+ *
+ * The register is not pre-filled from what was stored; it opens with everybody present every time.
+ * So the date hint says plainly that re-marking a day replaces it, and after a save the register the
+ * teacher just submitted stays on screen, as submitted — it used to jump to the whole class, all
+ * present, one click away from overwriting the section that had just been marked.
+ *
+ * ## One register holds at most 500, and a page holds 100
+ *
+ * `entries` is `Joi.array().max(500)`, and the roster lists are paginated at `OPTION_LIMIT`. The
+ * roster used to be one page, so a class of 130 was marked as 100 and the other thirty had no row
+ * for the day and no word that they had been left out. It is now read page by page up to 500, and a
+ * roster larger than that says how many are missing and what to do about it.
  */
 
 import Link from 'next/link';
@@ -79,7 +93,13 @@ import {
 } from '@/components/form';
 import { Icon } from '@/components/icon';
 import { useToast } from '@/components/toast';
-import { EmptyNotice, LoadingBlock, PageHeader, RefusalNotice } from '@/components/table';
+import {
+  EmptyNotice,
+  ErrorNotice,
+  LoadingBlock,
+  PageHeader,
+  RefusalNotice,
+} from '@/components/table';
 
 /** `ATTENDANCE_STATUS` in `config/constants.js`, in the order a register is read. */
 const STATUSES = [
@@ -92,19 +112,49 @@ const STATUSES = [
 type Status = (typeof STATUSES)[number]['value'];
 
 /**
- * The fields this form renders.
+ * The fields this form renders an error beside.
  *
  * `entries.0.status` and friends are **not** here on purpose: a 422 naming an index is routed to the
  * person it belongs to, and anything else goes to the banner. See `splitApiErrors`.
+ *
+ * Nor is bare `entries`, which used to be. No control renders it, and it is the key the service's
+ * own refusals use — "Every student must belong to the class being marked", a person named twice —
+ * as well as Joi's "must contain at least 1 items". Listed here, each was filed under a field
+ * nothing draws, the non-empty map stood the banner down, and a refused register looked like a
+ * click that did nothing. Left out, they reach the banner.
+ *
+ * `academic_session_id` is gone for the same reason — there is no session control on this form.
  */
-const FORM_FIELDS = new Set([
-  'class_id',
-  'section_id',
-  'academic_session_id',
-  'attendance_date',
-  'entries',
-  'reason',
-]);
+const FORM_FIELDS = new Set(['class_id', 'section_id', 'attendance_date', 'reason']);
+
+/** The most one register carries — `entries: Joi.array().max(500)` in `attendance.validation.js`. */
+const MAX_ENTRIES = 500;
+
+/**
+ * A roster, page by page, up to what one register can carry.
+ *
+ * `total` is the server's count, so a roster larger than `MAX_ENTRIES` can say how many it left out
+ * rather than quietly marking the first five hundred as though they were everyone.
+ */
+async function loadRoster<T>(
+  path: string,
+  query: Record<string, string | number | undefined>,
+  signal: AbortSignal
+): Promise<{ rows: T[]; total: number }> {
+  const rows: T[] = [];
+  let total = 0;
+  for (let page = 1; rows.length < MAX_ENTRIES; page += 1) {
+    const result = await api.page<T[]>(path, {
+      query: { ...query, page, limit: OPTION_LIMIT },
+      signal,
+    });
+    const data = result.data ?? [];
+    rows.push(...data);
+    total = result.meta?.total ?? rows.length;
+    if (!result.meta?.hasNextPage || data.length === 0) break;
+  }
+  return { rows: rows.slice(0, MAX_ENTRIES), total };
+}
 
 /**
  * One person on the register.
@@ -181,6 +231,14 @@ function MarkAttendanceScreen() {
 
   const [roster, setRoster] = useState<RosterRow[]>([]);
   const [rosterState, setRosterState] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
+  /** How many the server says there are — more than `roster.length` only past `MAX_ENTRIES`. */
+  const [rosterTotal, setRosterTotal] = useState(0);
+  /**
+   * Why the roster failed, when it was not a refusal. A refusal is explained by `RefusalNotice` at
+   * the top; anything else — a 500, a dropped connection — is said here, with a retry.
+   */
+  const [rosterError, setRosterError] = useState<string | null>(null);
+  const [rosterAttempt, setRosterAttempt] = useState(0);
   const [entries, setEntries] = useState<Record<number, Entry>>({});
 
   const [saving, setSaving] = useState(false);
@@ -202,58 +260,61 @@ function MarkAttendanceScreen() {
     if (!canMark || (!teachers && !classId)) {
       setRoster([]);
       setEntries({});
+      setRosterTotal(0);
       setRosterState('idle');
       return;
     }
 
     const controller = new AbortController();
     setRosterState('loading');
+    setRosterError(null);
+    /* A refusal is about the roster that was asked for; a new one deserves a fresh answer. */
+    setRefusal(null);
 
     (async () => {
       try {
-        const rows: RosterRow[] = teachers
-          ? (
-              await api.page<{
-                id: number;
-                employee_id: string;
-                first_name: string;
-                last_name: string | null;
-              }[]>('/teachers', {
-                query: { is_active: 'true', limit: OPTION_LIMIT },
-                signal: controller.signal,
-              })
-            ).data.map((row) => ({
-              id: row.id,
-              first_name: row.first_name,
-              last_name: row.last_name,
-              reference: row.employee_id,
-            }))
-          : (
-              await api.page<{
-                id: number;
-                student_id: string;
-                first_name: string;
-                last_name: string | null;
-                roll_number: string | null;
-              }[]>('/students', {
-                query: {
-                  class_id: classId,
-                  section_id: sectionId || undefined,
-                  status: 'active',
-                  limit: OPTION_LIMIT,
-                },
-                signal: controller.signal,
-              })
-            ).data.map((row) => ({
-              id: row.id,
-              first_name: row.first_name,
-              last_name: row.last_name,
-              reference: row.student_id,
-              roll_number: row.roll_number,
-            }));
+        /* Read to its end, up to one register's worth — see the header on 500 and 100. */
+        let rows: RosterRow[];
+        let total: number;
+        if (teachers) {
+          const loaded = await loadRoster<{
+            id: number;
+            employee_id: string;
+            first_name: string;
+            last_name: string | null;
+          }>('/teachers', { is_active: 'true' }, controller.signal);
+          rows = loaded.rows.map((row) => ({
+            id: row.id,
+            first_name: row.first_name,
+            last_name: row.last_name,
+            reference: row.employee_id,
+          }));
+          total = loaded.total;
+        } else {
+          const loaded = await loadRoster<{
+            id: number;
+            student_id: string;
+            first_name: string;
+            last_name: string | null;
+            roll_number: string | null;
+          }>(
+            '/students',
+            { class_id: classId, section_id: sectionId || undefined, status: 'active' },
+            controller.signal
+          );
+          rows = loaded.rows.map((row) => ({
+            id: row.id,
+            first_name: row.first_name,
+            last_name: row.last_name,
+            reference: row.student_id,
+            roll_number: row.roll_number,
+          }));
+          total = loaded.total;
+        }
 
         if (controller.signal.aborted) return;
         setRoster(rows);
+        setRosterTotal(total);
         /* Everybody present — see the header on why the default is not "unset". */
         setEntries(Object.fromEntries(rows.map((row) => [row.id, { ...BLANK }])));
         setRosterState('ready');
@@ -261,15 +322,37 @@ function MarkAttendanceScreen() {
         if (controller.signal.aborted) return;
         setRoster([]);
         setEntries({});
+        setRosterTotal(0);
         setRosterState('failed');
+        /*
+         * Said as what it was. This used to be one sentence for every failure — "That needs its own
+         * view permission" — which was wrong for a dropped connection, and wrong for the teacher
+         * register at a school without the Teachers module, where `RefusalNotice` above was already
+         * saying the right thing.
+         */
         if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
           setRefusal({ code: caught.code, message: caught.message });
+        } else if (caught instanceof ApiError) {
+          setRosterError(caught.message);
+        } else {
+          setRosterError('Could not reach the server. Check your connection and try again.');
         }
       }
     })();
 
     return () => controller.abort();
-  }, [teachers, classId, sectionId, canMark]);
+  }, [teachers, classId, sectionId, canMark, rosterAttempt]);
+
+  /*
+   * A different day starts with everybody present, as the date hint promises. The roster is the same
+   * people, so it is not refetched — only the marks go back. Without this, the statuses from a register
+   * just recorded stayed on screen after the day was changed, and the next "Record" wrote them onto
+   * the new day, overwriting whatever it held.
+   */
+  useEffect(() => {
+    setEntries((prev) => Object.fromEntries(Object.keys(prev).map((id) => [id, { ...BLANK }])));
+    setEntryErrors({});
+  }, [date]);
 
   const counts = useMemo(() => {
     const tally: Record<string, number> = { present: 0, absent: 0, leave: 0, late: 0 };
@@ -348,10 +431,22 @@ function MarkAttendanceScreen() {
         `Attendance recorded for ${roster.length} ${noun}${roster.length === 1 ? '' : 's'}`,
         `${counts.present} present · ${counts.absent} absent · ${counts.leave} on leave · ${counts.late} late`
       );
-      /* Stay on the screen: the next thing a teacher does is the next section, not the list. */
-      if (!teachers) setSectionId('');
+      /*
+       * Stay on the screen, and on this register as it was submitted. The section used to be
+       * cleared here, which reloaded the whole class with everybody present — so the register just
+       * saved vanished, and the next click of "Record" overwrote it. The next section is one choice
+       * away in the picker above.
+       */
     } catch (caught) {
-      if (!(caught instanceof ApiError)) throw caught;
+      if (!(caught instanceof ApiError)) {
+        /*
+         * A failed `fetch` is a TypeError, not an ApiError. This used to rethrow it, which from a
+         * submit handler is an unhandled rejection: the button stopped spinning and nothing said
+         * whether the register had been recorded.
+         */
+        setError('Could not reach the server. Check your connection and try again.');
+        return;
+      }
       if (EXPLAINED_CODES.has(caught.code)) {
         setRefusal({ code: caught.code, message: caught.message });
         return;
@@ -361,23 +456,29 @@ function MarkAttendanceScreen() {
        * An entry error arrives as `entries.<index>.<field>`. The index is into the array this screen
        * built, so it maps back to a person — and routing it to that row is the difference between
        * "something is wrong with entry 14" and a message beside the person it is about.
+       *
+       * Each field routed to a row is counted as rendered for `splitApiErrors`, so it is not also
+       * promoted to the banner. It used to be both — the same sentence at the top and beside the
+       * child. An index that matches nobody is left unrendered, so it still reaches the banner.
        */
       const routed: Record<number, string> = {};
+      const rendered = new Set(FORM_FIELDS);
       for (const [field, message] of Object.entries(caught.fieldErrors())) {
         const match = /^entries\.(\d+)\./.exec(field);
-        if (match) {
-          const row = roster[Number(match[1])];
-          if (row) routed[row.id] = message;
+        const row = match ? roster[Number(match[1])] : undefined;
+        if (row) {
+          routed[row.id] = routed[row.id] ?? message;
+          rendered.add(field);
         }
       }
       setEntryErrors(routed);
 
-      const { perField, banner } = splitApiErrors(caught, FORM_FIELDS);
+      const { perField, banner } = splitApiErrors(caught, rendered);
       setFieldErrors(perField);
       setError(
         Object.keys(routed).length && !banner ? 'Some entries were refused — see below.' : banner
       );
-      if (Object.keys(perField).length) focusFirstInvalidField();
+      if (Object.keys(perField).some((field) => FORM_FIELDS.has(field))) focusFirstInvalidField();
     } finally {
       setSaving(false);
     }
@@ -435,32 +536,49 @@ function MarkAttendanceScreen() {
         >
           {teachers ? null : (
             <>
-              <SelectField
-                id="class_id"
-                label="Class"
-                required
-                value={classId}
-                onChange={(event) => {
-                  setClassId(event.target.value);
-                  /* The section belongs to the class; carrying one over names another class's. */
-                  setSectionId('');
-                }}
-                error={fieldErrors.class_id}
-                disabled={classes.state === 'loading'}
-              >
-                <option value="">
-                  {classes.state === 'loading' ? 'Loading…' : 'Choose a class'}
-                </option>
-                {classes.state === 'ready'
-                  ? classes.rows.map((row) => (
-                      <option key={row.id} value={row.id}>
-                        {row.name}
-                        {row.code ? ` (${row.code})` : ''}
-                        {row.is_active ? '' : ' — inactive'}
-                      </option>
-                    ))
-                  : null}
-              </SelectField>
+              {classes.state === 'failed' ? (
+                /*
+                 * Said, not left as an empty dropdown. The class select used to sit here with only
+                 * "Choose a class" in it and nothing to say why — the register could not be started
+                 * and the screen did not say so. No `SelectField`, so no `<label>`: the heading
+                 * borrows `.field-label` the way the timetable form's failed branches do.
+                 */
+                <div>
+                  <p className="field-label mb-1.5">Class</p>
+                  <p className="text-sm text-danger">
+                    The class list could not be loaded, so a class cannot be chosen and the register
+                    cannot be marked here. Reading it needs the separate &ldquo;View classes&rdquo;
+                    permission; if you have that, reload the page to try again.
+                  </p>
+                </div>
+              ) : (
+                <SelectField
+                  id="class_id"
+                  label="Class"
+                  required
+                  value={classId}
+                  onChange={(event) => {
+                    setClassId(event.target.value);
+                    /* The section belongs to the class; carrying one over names another class's. */
+                    setSectionId('');
+                  }}
+                  error={fieldErrors.class_id}
+                  disabled={classes.state === 'loading'}
+                >
+                  <option value="">
+                    {classes.state === 'loading' ? 'Loading…' : 'Choose a class'}
+                  </option>
+                  {classes.state === 'ready'
+                    ? classes.rows.map((row) => (
+                        <option key={row.id} value={row.id}>
+                          {row.name}
+                          {row.code ? ` (${row.code})` : ''}
+                          {row.is_active ? '' : ' — inactive'}
+                        </option>
+                      ))
+                    : null}
+                </SelectField>
+              )}
 
               <SelectField
                 id="section_id"
@@ -468,8 +586,12 @@ function MarkAttendanceScreen() {
                 value={sectionId}
                 onChange={(event) => setSectionId(event.target.value)}
                 error={fieldErrors.section_id}
-                disabled={!classId || sections.state === 'loading'}
-                hint="Blank marks the whole class in one go."
+                disabled={!classId || sections.state !== 'ready'}
+                hint={
+                  sections.state === 'failed'
+                    ? 'This class’s sections could not be loaded, so only the whole class can be marked.'
+                    : 'Blank marks the whole class in one go.'
+                }
               >
                 <option value="">Whole class</option>
                 {sections.state === 'ready'
@@ -492,7 +614,8 @@ function MarkAttendanceScreen() {
             value={date}
             onChange={(event) => setDate(event.target.value)}
             error={fieldErrors.attendance_date}
-            hint="Defaults to today. A day already marked for somebody is refused, so a correction is not made by submitting twice."
+            /* See the header: re-marking overwrites, and the register never opens pre-filled. */
+            hint="Defaults to today. Recording a day that is already marked replaces it for everyone listed below — that is how a correction is made — and the register always starts with everybody present, not as the day was marked."
           />
         </FormSection>
 
@@ -501,10 +624,14 @@ function MarkAttendanceScreen() {
         {rosterState === 'idle' ? null : rosterState === 'loading' ? (
           <LoadingBlock />
         ) : rosterState === 'failed' ? (
-          <EmptyNotice>
-            The roster could not be loaded. That needs its own view permission, separate from marking
-            attendance.
-          </EmptyNotice>
+          rosterError ? (
+            <ErrorNotice message={rosterError} onRetry={() => setRosterAttempt((n) => n + 1)} />
+          ) : (
+            <EmptyNotice>
+              The {noun} list could not be loaded, so there is nobody to mark — the notice above
+              says why.
+            </EmptyNotice>
+          )
         ) : roster.length === 0 ? (
           <EmptyNotice>
             {teachers
@@ -513,6 +640,18 @@ function MarkAttendanceScreen() {
           </EmptyNotice>
         ) : (
           <section aria-labelledby="roster-heading" className="border-t border-border-soft pt-6">
+            {rosterTotal > roster.length ? (
+              <div className="mb-4">
+                <Notice tone="warn">
+                  {teachers
+                    ? `There are ${rosterTotal} active teachers and one register holds at most ${MAX_ENTRIES}, so only the first ${roster.length} are listed; the rest cannot be marked from this screen.`
+                    : sectionId
+                      ? `This section has ${rosterTotal} active students and one register holds at most ${MAX_ENTRIES}, so only the first ${roster.length} are listed; the rest cannot be marked from this screen.`
+                      : `This class has ${rosterTotal} active students and one register holds at most ${MAX_ENTRIES}, so only the first ${roster.length} are listed. Mark it a section at a time so nobody is left out.`}
+                </Notice>
+              </div>
+            ) : null}
+
             <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
               <div className="max-w-xl">
                 <h2 id="roster-heading" className="text-base font-semibold tracking-tight text-ink">
@@ -667,7 +806,7 @@ function MarkAttendanceScreen() {
           </section>
         )}
 
-        <FormSection title="Internal notes" description="Kept on the audit entry for this register.">
+        <FormSection title="Internal notes" description="Kept with this register's entry in the activity log.">
           <Field
             id="reason"
             label="Reason"
@@ -683,7 +822,17 @@ function MarkAttendanceScreen() {
           cancelHref={teachers ? '/school/attendance?tab=teachers' : '/school/attendance'}
           cancelLabel="Cancel"
         >
-          <SubmitButton busy={saving} busyLabel="Recording…" fullWidth={false}>
+          {/*
+            * Disabled until there is a register to record. An empty `entries` is refused by Joi
+            * ("must contain at least 1 items"), and before that message reached the banner it was
+            * swallowed — see `FORM_FIELDS`. Better not to offer the click at all.
+            */}
+          <SubmitButton
+            busy={saving}
+            busyLabel="Recording…"
+            fullWidth={false}
+            disabled={rosterState !== 'ready' || roster.length === 0}
+          >
             {roster.length
               ? `Record ${roster.length} ${noun}${roster.length === 1 ? '' : 's'}`
               : 'Record attendance'}

@@ -1086,6 +1086,13 @@ async function verifyHttp() {
     check('  and no assignment appears in it', idsOf(subList).includes(draft.id), false);
     check('  a teacher sees every student\'s submission',
       [idsOf(subList).includes(submitted.id), idsOf(subList).includes(carimSubmission.id)], [true, true]);
+    /* The reviewer's list names the student — it carried the admission and roll numbers only. */
+    const listedStudent = dataOf(subList).find((r) => r.id === submitted.id).student;
+    check(
+      '  and each row names its student, not only their numbers',
+      [listedStudent.first_name, listedStudent.last_name],
+      ['Amina', null]
+    );
 
     /* ── self-scoping: the assignment half ── */
 
@@ -1170,6 +1177,19 @@ async function verifyHttp() {
       method: 'PATCH', token: teacher, body: { class_id: A.other.id },
     });
     check('  while an unanswered one moves freely, so the guard is about the submissions', movedUnanswered.status, 200);
+
+    /* A due date is optional on create, so clearing one on edit has to be accepted too. */
+    const dated = await call(`/assignments/${noDate.id}`, {
+      method: 'PATCH', token: teacher, body: { due_date: '2030-01-15' },
+    });
+    const undated = await call(`/assignments/${noDate.id}`, {
+      method: 'PATCH', token: teacher, body: { due_date: null },
+    });
+    check(
+      'a due date can be set and then cleared again on edit',
+      [dated.status, undated.status, (await db.Assignment.findByPk(noDate.id)).due_date],
+      [200, 200, null]
+    );
 
     /*
      * A fresh unsectioned assignment for Carim's own class, so the close is the ONLY thing that can

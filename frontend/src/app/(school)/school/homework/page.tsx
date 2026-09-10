@@ -31,15 +31,18 @@
  * `homework.service.js`'s `present()` deletes `attachment_path` and substitutes
  * `has_attachment: Boolean(row.attachment_path)`. The column below renders that boolean. The bytes
  * live behind `GET /homework/:id/attachment`, which is a separate authenticated request — see the
- * attachment column for why the cell is an indicator rather than a link.
+ * attachment column for why the cell is a button that fetches rather than a link.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { api } from '@/lib/apiClient';
+import { ApiError, api, saveFile } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { EditDialog } from '@/components/editDialog';
 import { useCollection } from '@/lib/useCollection';
+import { Icon } from '@/components/icon';
+import { useToast } from '@/components/toast';
 import {
   SearchField,
   FilterBar,
@@ -64,15 +67,14 @@ import {
  * `present()` is `{ ...row.toJSON(), has_attachment }` with `attachment_path` deleted — so the shape
  * is every `Homework` column in `models/other.js` except that one, plus the boolean, plus whatever
  * `list()` chose to `include`. That include list is the single most important fact for the columns
- * below, and it is shorter than the associations suggest: `models/index.js:466-470` declares five
+ * below, and it is shorter than the associations suggest: `models/index.js:468-472` declares five
  * (`class`, `section`, `subject`, `teacher`, `academicSession`), but the list query joins exactly
  * **two** — `Class as 'class'` with `['id','name']` and `Subject as 'subject'` with
  * `['id','name','code']`. `section`, `teacher` and `academicSession` arrive as bare foreign keys.
  *
- * Only the fields this screen renders are declared. The row carries more — `description`,
- * `attachment_name`, `notified_at`, `created_by`, `organization_id`, `academic_session_id` — and
- * typing them here would invite a later edit to put one on screen without re-reading why it was
- * left off.
+ * Only the fields this screen uses are declared. The row carries more — `description`,
+ * `notified_at`, `created_by`, `organization_id`, `academic_session_id` — and typing them here
+ * would invite a later edit to put one on screen without re-reading why it was left off.
  */
 interface Homework {
   id: number;
@@ -100,6 +102,8 @@ interface Homework {
   due_date: string;
   is_published: boolean;
   has_attachment: boolean;
+  /** The uploaded file's original name — the download button's accessible name. Null with no file. */
+  attachment_name: string | null;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -224,6 +228,40 @@ export default function HomeworkPage() {
    */
   const [editing, setEditing] = useState<Homework | null>(null);
 
+  /*
+   * The attachment, fetched through the authenticated client — see the Attachment column.
+   *
+   * `attachment_name` is passed as the fallback filename. The API now exposes `Content-Disposition`
+   * to the browser (`app.js` CORS `exposedHeaders`), so the server's name is normally read; the
+   * fallback is for a response without one, which `download()` would otherwise save as "download".
+   */
+  const { error: toastError } = useToast();
+  const [downloading, setDownloading] = useState<number | null>(null);
+
+  const download = useCallback(
+    async (row: Homework) => {
+      setDownloading(row.id);
+      try {
+        const file = await api.download(
+          `/homework/${row.id}/attachment`,
+          {},
+          row.attachment_name ?? `homework-${row.id}`
+        );
+        saveFile(file);
+      } catch (caught) {
+        toastError(
+          'Could not download the attachment',
+          caught instanceof ApiError
+            ? caught.message
+            : 'Could not reach the server. Check your connection and try again.'
+        );
+      } finally {
+        setDownloading(null);
+      }
+    },
+    [toastError]
+  );
+
   const columns = useMemo<Column<Homework>[]>(
     () => [
       {
@@ -246,7 +284,8 @@ export default function HomeworkPage() {
               * The section has no join, so its *name* is unavailable — but whether the field is set
               * is itself a fact worth reporting: it decides whether the whole class owes this work
               * or one section does. Saying "one section" rather than printing an id is the honest
-              * version; which section it is has to come from the homework's own detail screen.
+              * version. There is no homework detail screen to say which section it is; naming it
+              * needs `list()` to include `Section`.
               */}
             <span className="ml-2 text-xs text-muted-soft">
               {row.section_id === null ? 'all sections' : 'one section'}
@@ -330,18 +369,30 @@ export default function HomeworkPage() {
          * leaves the service. Nothing on this screen could render it even by mistake — it is not in
          * the response and not in the interface above.
          *
-         * Not a link, and that is a deduction rather than a preference. The bytes come from
-         * `GET /homework/:id/attachment`, which sits behind `requirePermission('homework.view')`;
-         * the access token is held in memory and attached as an `Authorization: Bearer` header by
-         * `apiClient` (`apiClient.ts:274`). A plain `<a href>` is a browser navigation that carries
-         * no such header, so the link would 401 every time — a control that always fails is worse
-         * than an indicator that is honest about being one. Downloading needs a fetch through the
-         * client and an object URL, which belongs on the detail screen that can also show
-         * `attachment_name`.
+         * A button, not a link. The bytes come from `GET /homework/:id/attachment`, which sits
+         * behind `requirePermission('homework.view')`; the access token is held in memory and sent
+         * as an `Authorization: Bearer` header by `apiClient`'s `download()`. A plain `<a href>` is a
+         * browser navigation that carries no such header, so it would 401 every time. So the button
+         * fetches through the client and hands the bytes to `saveFile()`.
+         *
+         * This cell used to be the words "file attached" and a comment deferring the download to a
+         * homework detail screen. No such screen exists, so a coordinator could see that a teacher
+         * had attached a worksheet and had no way anywhere in the product to open it.
          */
         cell: (row) =>
           row.has_attachment ? (
-            <span className="whitespace-nowrap text-xs text-muted">file attached</span>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm whitespace-nowrap"
+              disabled={downloading === row.id}
+              aria-busy={downloading === row.id}
+              title={row.attachment_name ?? undefined}
+              onClick={() => void download(row)}
+            >
+              <Icon name="download" size={14} />
+              {downloading === row.id ? 'Downloading…' : 'Download'}
+              <span className="sr-only"> {row.attachment_name ?? 'the attachment'}</span>
+            </button>
           ) : (
             <span className="text-muted-soft">—</span>
           ),
@@ -360,7 +411,7 @@ export default function HomeworkPage() {
           ]
         : []),
     ],
-    [can]
+    [can, download, downloading]
   );
 
   /* Named once so the empty message and nothing else has to re-derive "a filter is on". */
@@ -377,14 +428,14 @@ export default function HomeworkPage() {
            * and which `POST /homework` requires. This is a courtesy, not a control: `requirePermission`
            * re-reads the permission from the database on the request itself, so a user who forced
            * this button into existence would still be refused by the API.
+           *
+           * `Link`, not `<a href>`: a raw anchor is a full document load, which discards the
+           * in-memory access token and re-runs the whole auth bootstrap for a jump between siblings.
            */
           can('homework.manage') ? (
-            <a
-              href="/school/homework/new"
-              className="btn btn-primary"
-            >
+            <Link href="/school/homework/new" className="btn btn-primary">
               Set homework
-            </a>
+            </Link>
           ) : null
         }
       />

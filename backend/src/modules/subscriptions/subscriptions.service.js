@@ -84,6 +84,8 @@ const ApiError = require('../../utils/ApiError');
 const logger = require('../../config/logger');
 const entitlementService = require('../../services/entitlementService');
 const tenantService = require('../../services/tenantService');
+/* For the prorated invoice an immediate plan change owes — see `changePlan()`. No require cycle: invoices reads subscriptions through the models only. */
+const invoicesService = require('../invoices/invoices.service');
 const money = require('../../utils/money');
 const dates = require('../../utils/dates');
 const { paginateQuery, getSort } = require('../../utils/pagination');
@@ -1220,6 +1222,22 @@ async function transition(req, id, action, reason, options = {}) {
 /* ────────── FR-SUB-013 / FR-SUB-014 — upgrade and downgrade (§12.3, §12.4) ────────── */
 
 /**
+ * Whether a price bills on the subscription's own cycle — the same `billing_cycle`, and for
+ * `custom_days` the same number of days.
+ *
+ * @param {object} subscription
+ * @param {object} price
+ * @returns {boolean}
+ */
+function sameCycle(subscription, price) {
+  if (price.billing_cycle !== subscription.billing_cycle) return false;
+  return (
+    price.billing_cycle !== BILLING_CYCLES.CUSTOM_DAYS ||
+    Number(price.cycle_days) === Number(subscription.cycle_days)
+  );
+}
+
+/**
  * SRS §12.3's four bullets, in one calculation.
  *
  * §12.3 names **Upgrade**, **Proration**, **Remaining Credit** and **New Price Calculation**, and
@@ -1249,13 +1267,21 @@ async function transition(req, id, action, reason, options = {}) {
  * prorate and every figure is zero. Documented rather than special-cased away, because a
  * `one_time` subscription being upgraded is a real arrangement and it must not divide by zero.
  *
+ * A new price on a **different** recurring cycle is the one refinement of the formula above. Its
+ * `newCycleAmount` pays for a period of another length, so multiplying it by the old period's fraction
+ * charged a yearly school moved halfway through onto a monthly price half of one month for six months.
+ * There the remainder is priced at the new price's own daily rate instead:
+ * `prorationDue = newCycleAmount × remainingDays / newPeriodDays`. On the same cycle `newPeriodDays`
+ * is `periodDays` and the figure is the formula's, unchanged.
+ *
  * @param {object} subscription
  * @param {number} newCycleAmount
  * @param {Date} at
+ * @param {object} [newPrice]  the `plan_prices` row being moved onto, when its cycle may differ
  * @returns {{periodDays: number, elapsedDays: number, remainingDays: number, unusedCredit: number,
  *            prorationDue: number, creditApplied: number, amountDue: number, creditBalance: number}}
  */
-function prorate(subscription, newCycleAmount, at) {
+function prorate(subscription, newCycleAmount, at, newPrice = null) {
   const periodDays = dates.billingCycleDays(
     subscription.billing_cycle,
     subscription.cycle_days,
@@ -1283,7 +1309,11 @@ function prorate(subscription, newCycleAmount, at) {
   const fraction = remainingDays / periodDays;
 
   const unusedCredit = money.multiply(subscription.cycle_amount, fraction);
-  const prorationDue = money.multiply(newCycleAmount, fraction);
+  const newPeriodDays =
+    newPrice && !sameCycle(subscription, newPrice)
+      ? dates.billingCycleDays(newPrice.billing_cycle, newPrice.cycle_days, at)
+      : periodDays;
+  const prorationDue = newPeriodDays ? money.multiply(newCycleAmount, remainingDays / newPeriodDays) : 0;
 
   const available = money.sum(openingCredit, unusedCredit);
   const creditApplied = Math.min(available, prorationDue);
@@ -1334,9 +1364,19 @@ async function changePlan(req, id, payload, direction) {
   const subscription = await findById(req.tenant, id, { detail: false });
 
   if (!SUBSCRIPTION_USABLE_STATES.includes(subscription.state)) {
-    /* Both FRs' precondition is *"Active subscription exists"*. */
+    /*
+     * Both FRs' precondition is *"Active subscription exists"*. The remedy is named per state: this
+     * said "Reactivate it first" to every one, and `reactivate` is only from suspended, expired or
+     * cancelled — a pending subscription is activated and a paused one resumed.
+     */
+    const remedy =
+      subscription.state === STATES.PENDING
+        ? 'Activate it first'
+        : subscription.state === STATES.PAUSED
+          ? 'Resume it first'
+          : 'Reactivate it first';
     throw ApiError.conflict(
-      `A ${subscription.state} subscription cannot be ${direction}d. Reactivate it first.`,
+      `A ${subscription.state} subscription cannot be ${direction}d. ${remedy}.`,
       {
         code: 'SUBSCRIPTION_NOT_CHANGEABLE',
         details: {
@@ -1389,14 +1429,85 @@ async function changePlan(req, id, payload, direction) {
     );
   }
 
-  const price = await selectPrice(targetPlan.id, payload);
+  const deferred =
+    direction === 'downgrade' && payload.timing === DOWNGRADE_TIMING.NEXT_BILLING_CYCLE;
+
+  /*
+   * A one-time subscription has no next billing cycle, so a change scheduled for it could never land:
+   * `renew()` refuses a one-time subscription and the lifecycle sweep never renews one. Refused here
+   * rather than recorded as a scheduled change nothing will ever apply — and before a price is chosen,
+   * because no price would make it possible.
+   */
+  if (deferred && (subscription.billing_cycle === BILLING_CYCLES.ONE_TIME || !subscription.current_period_end)) {
+    throw ApiError.conflict(
+      'A one-time subscription has no next billing cycle, so a downgrade cannot be scheduled for one. Downgrade it immediately instead.',
+      { code: 'SUBSCRIPTION_NO_NEXT_CYCLE', details: { subscriptionId: subscription.id } }
+    );
+  }
+
+  /*
+   * The subscription keeps its billing cycle unless the caller names another. Asked with neither a
+   * price nor a cycle, `selectPrice()` picks the target plan's default price on *any* cycle — so a
+   * school billed yearly could be moved onto a monthly price that nobody chose. Found by the audit of
+   * the plan-change panel; a plan with no price on this cycle is now a refusal that says so, not a
+   * silent switch. A cycle the caller does name is carried: see `prorate()` and the guards below.
+   */
+  const keepsCycle = !payload.plan_price_id && !payload.billing_cycle;
+  let price;
+  try {
+    price = await selectPrice(
+      targetPlan.id,
+      keepsCycle ? { ...payload, billing_cycle: subscription.billing_cycle } : payload
+    );
+  } catch (err) {
+    if (keepsCycle && err instanceof ApiError && err.code === 'PLAN_NOT_PRICEABLE') {
+      throw ApiError.conflict(
+        `"${targetPlan.name}" has no active ${subscription.billing_cycle} price, which is this subscription's billing cycle. Choose one of its prices to change the cycle as well.`,
+        { code: 'PLAN_PRICE_CYCLE_UNAVAILABLE', details: { planId: targetPlan.id, billingCycle: subscription.billing_cycle } }
+      );
+    }
+    throw err;
+  }
+
+  /*
+   * What a plan change cannot carry across, on either timing:
+   *
+   *  - **another currency.** The credit carried forward and the prorated figures are amounts in the
+   *    subscription's currency, and nothing in the platform converts one currency into another, so
+   *    they would be relabelled rather than converted. The add-on purchase refuses the same thing.
+   *  - **a one-time price on one side and a recurring one on the other.** A one-time period has no
+   *    length to prorate against, so the move bills nothing; and a subscription moved onto a
+   *    recurring price from one-time has no period that renewal will ever continue.
+   *
+   * Another recurring cycle *is* carried — `prorate()` prices the remainder at the new price's own
+   * daily rate. Found by the review of the plan-change panel.
+   */
+  if (price.currency && subscription.currency && price.currency !== subscription.currency) {
+    throw ApiError.conflict(
+      `This subscription is billed in ${subscription.currency}, and that price is in ${price.currency}. A plan change keeps the subscription's currency — its credit and proration cannot be converted — so choose a ${subscription.currency} price.`,
+      {
+        code: 'PLAN_PRICE_CURRENCY_MISMATCH',
+        details: { planPriceId: price.id, priceCurrency: price.currency, subscriptionCurrency: subscription.currency },
+      }
+    );
+  }
+  if ((price.billing_cycle === BILLING_CYCLES.ONE_TIME) !== (subscription.billing_cycle === BILLING_CYCLES.ONE_TIME)) {
+    throw ApiError.conflict(
+      price.billing_cycle === BILLING_CYCLES.ONE_TIME
+        ? 'A plan change cannot move a recurring subscription onto a one-time price. Choose a recurring price.'
+        : 'A plan change cannot move a one-time subscription onto a recurring price, because a one-time subscription is never renewed. Choose a one-time price.',
+      {
+        code: 'PLAN_PRICE_CYCLE_KIND_MISMATCH',
+        details: { planPriceId: price.id, priceCycle: price.billing_cycle, subscriptionCycle: subscription.billing_cycle },
+      }
+    );
+  }
+
   const quantity = payload.quantity || subscription.quantity;
   const newCycleAmount = computeCycleAmount(price, quantity);
 
   const at = new Date();
   const before = snapshot(subscription);
-  const deferred =
-    direction === 'downgrade' && payload.timing === DOWNGRADE_TIMING.NEXT_BILLING_CYCLE;
 
   /* ── The deferred form: record the intent, change nothing else. ── */
   if (deferred) {
@@ -1462,8 +1573,9 @@ async function changePlan(req, id, payload, direction) {
   }
 
   /* ── The immediate form: §12.3's arithmetic, then the switch. ── */
-  const proration = prorate(subscription, newCycleAmount, at);
+  const proration = prorate(subscription, newCycleAmount, at, price);
   let schoolState;
+  let prorationInvoice = null;
 
   await db.sequelize.transaction(async (transaction) => {
     await subscription.update(
@@ -1532,6 +1644,49 @@ async function changePlan(req, id, payload, direction) {
 
     /* The plan changed, not the state — but the plan is what the cached column is resolved from. */
     schoolState = await syncSchoolState(subscription.school_id, transaction);
+
+    /*
+     * The prorated amount due, invoiced — FR-SUB-013's outcome is "upgraded with correctly prorated
+     * billing". The panel showed "X due" and nothing ever billed X: the only invoice path,
+     * `generateForSubscription()`, bills the items at full price and refuses a second invoice for a
+     * period already billed. So a positive `amountDue` is issued here as its own invoice — one
+     * `custom` line for the remainder of the period, from now to its end — in this transaction, so a
+     * plan change and the money it owes land together or not at all. The credit was already applied
+     * by the proration, so the invoice takes none; tax is the default, as on every issued invoice.
+     */
+    if (money.toMinor(proration.amountDue) > 0) {
+      prorationInvoice = await invoicesService.issue(
+        req,
+        {
+          schoolId: subscription.school_id,
+          organizationId: subscription.organization_id,
+          subscriptionId: subscription.id,
+          planId: targetPlan.id,
+          planName: targetPlan.name,
+          billingPeriodStart: at,
+          billingPeriodEnd: subscription.current_period_end,
+          billingCycle: price.billing_cycle,
+          currency: price.currency,
+          lines: [
+            {
+              item_type: 'custom',
+              description: `${isUpgrade ? 'Upgrade' : 'Change'} to ${targetPlan.name} — prorated for ${proration.remainingDays} day(s)`.slice(0, 255),
+              quantity: 1,
+              unit_amount: proration.amountDue,
+              amount: proration.amountDue,
+              period_start: at,
+              period_end: subscription.current_period_end,
+              metadata: { proration: true, fromPlanId: before.plan_id, toPlanId: targetPlan.id },
+            },
+          ],
+          creditAvailable: 0,
+          issueDate: at,
+          dueDays: subscription.grace_period_days,
+          reason: payload.reason || `Prorated ${isUpgrade ? 'upgrade' : 'change'} to ${targetPlan.name}`,
+        },
+        { transaction }
+      );
+    }
   });
 
   await recordAudit(req, {
@@ -1557,6 +1712,14 @@ async function changePlan(req, id, payload, direction) {
       newCycleAmount,
       currency: price.currency,
       proration,
+      invoice: prorationInvoice
+        ? {
+            id: prorationInvoice.id,
+            invoice_number: prorationInvoice.invoice_number,
+            total: money.decimal(prorationInvoice.total),
+            due_date: prorationInvoice.due_date,
+          }
+        : null,
     },
   };
 }
@@ -1766,6 +1929,8 @@ async function renew(req, id, options = {}) {
     before,
     after: snapshot(subscription),
     reason: options.reason || null,
+    /* Renewed by the sweep there is no request; the row still belongs to this school. */
+    ...(req ? {} : { schoolId: subscription.school_id, organizationId: subscription.organization_id }),
   });
 
   await afterWrite(subscription.school_id, { tenant: schoolState.changed });
@@ -1876,6 +2041,35 @@ async function purchaseAddon(req, id, payload) {
         }
       );
     }
+    /*
+     * An add-on is billed once per subscription period, in the subscription's currency: its item's
+     * amount goes onto an invoice `generateForSubscription()` stamps with the subscription's currency,
+     * and nothing reads the price's own cycle. So a monthly price on a yearly subscription billed its
+     * monthly figure once a year, a EUR price billed as USD, and a one-time price recurred. Refused
+     * rather than mis-billed — found by the audit of the add-ons panel.
+     */
+    const cycleMismatch =
+      price.billing_cycle !== subscription.billing_cycle ||
+      (price.billing_cycle === BILLING_CYCLES.CUSTOM_DAYS &&
+        Number(price.cycle_days) !== Number(subscription.cycle_days));
+    const currencyMismatch = Boolean(price.currency && subscription.currency && price.currency !== subscription.currency);
+    if (cycleMismatch || currencyMismatch) {
+      throw ApiError.conflict(
+        `That add-on price bills ${price.currency} ${price.billing_cycle}, and this subscription is billed ${subscription.currency} ${subscription.billing_cycle}. Choose a price on the subscription's own cycle and currency.`,
+        {
+          code: 'ADDON_PRICE_CYCLE_MISMATCH',
+          details: {
+            addonPriceId: price.id,
+            price: { billingCycle: price.billing_cycle, cycleDays: price.cycle_days, currency: price.currency },
+            subscription: {
+              billingCycle: subscription.billing_cycle,
+              cycleDays: subscription.cycle_days,
+              currency: subscription.currency,
+            },
+          },
+        }
+      );
+    }
   }
 
   const quantity = payload.quantity || 1;
@@ -1931,6 +2125,8 @@ async function purchaseAddon(req, id, payload) {
         period_start: purchase.starts_at,
         period_end: purchase.ends_at,
         is_recurring: purchase.is_recurring,
+        /* Which purchase this line bills, so cancelling one purchase closes this line and no other. */
+        metadata: { subscription_addon_id: purchase.id },
       },
       { transaction }
     );
@@ -2032,17 +2228,21 @@ async function cancelAddon(req, id, purchaseId, reason) {
   await db.sequelize.transaction(async (transaction) => {
     await purchase.update({ status: 'cancelled', ends_at: at, is_recurring: false }, { transaction });
 
-    await db.SubscriptionItem.update(
-      { is_recurring: false, period_end: at },
-      {
-        where: {
-          subscription_id: subscription.id,
-          item_type: 'addon',
-          addon_id: purchase.addon_id,
-        },
-        transaction,
-      }
-    );
+    /*
+     * Close the line that bills **this** purchase, and only it. This used to close every add-on line
+     * with the same `addon_id`, so a school holding two purchases of one add-on that cancelled one kept
+     * the other's units and was never invoiced for them again. A line carries the purchase it bills in
+     * `metadata.subscription_addon_id`; a line written before that tag existed is matched as the one
+     * still-recurring line for the add-on with no tag, oldest first.
+     */
+    const lines = await db.SubscriptionItem.findAll({
+      where: { subscription_id: subscription.id, item_type: 'addon', addon_id: purchase.addon_id, is_recurring: true },
+      order: [['id', 'ASC']],
+      transaction,
+    });
+    const tagged = lines.find((line) => line.metadata && Number(line.metadata.subscription_addon_id) === Number(purchase.id));
+    const line = tagged || lines.find((row) => !row.metadata || row.metadata.subscription_addon_id === undefined);
+    if (line) await line.update({ is_recurring: false, period_end: at }, { transaction });
 
     await recordHistory(
       {
@@ -2358,6 +2558,9 @@ async function runLifecycleSweep(options = {}) {
       before,
       after: snapshot(subscription),
       reason: notes || null,
+      /* No request to take the tenant from; the row still belongs to this school. */
+      schoolId: subscription.school_id,
+      organizationId: subscription.organization_id,
     });
 
     await afterWrite(subscription.school_id, { tenant: schoolState.changed });

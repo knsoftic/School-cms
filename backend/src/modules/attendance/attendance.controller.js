@@ -19,6 +19,11 @@ async function markStudents(req, res) {
       section_id: register.sectionId,
       attendance_date: date,
       count: rows.length,
+      /*
+       * The validator accepts a `reason` and the mark screen asks for one when correcting a register;
+       * this row is the batch's only trail, so a reason not written here was taken and then dropped.
+       */
+      ...(req.body.reason ? { reason: req.body.reason } : {}),
     },
   });
   return ApiResponse.ok(res, { attendance: rows }, { message: 'Attendance recorded' });
@@ -35,7 +40,11 @@ async function markTeachers(req, res) {
   describeActivity(req, {
     entityId: rows.length ? rows[0].id : null,
     description: `Recorded attendance for ${rows.length} teacher(s) on ${date}`,
-    metadata: { attendance_date: date, count: rows.length },
+    metadata: {
+      attendance_date: date,
+      count: rows.length,
+      ...(req.body.reason ? { reason: req.body.reason } : {}),
+    },
   });
   return ApiResponse.ok(res, { attendance: rows }, { message: 'Teacher attendance recorded' });
 }

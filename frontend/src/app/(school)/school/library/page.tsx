@@ -20,6 +20,7 @@
  * looking at.
  */
 
+import Link from 'next/link';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 
@@ -28,6 +29,7 @@ import { useAuth } from '@/lib/auth';
 import { EditDialog } from '@/components/editDialog';
 import { useCollection } from '@/lib/useCollection';
 import { splitApiErrors } from '@/lib/formErrors';
+import { formatAmountWithCode, formatMoney } from '@/lib/money';
 import {
   Field,
   Notice,
@@ -103,12 +105,19 @@ interface LoanRow {
    * `clampNonNegative(fine_amount − fine_paid)`, or 0 when waived, in the money util's own minor
    * units. Recomputing it here would be a second opinion on a subtraction the server has already
    * done in the one place that does money arithmetic.
+   *
+   * None of the four is nullable, and they are typed so. `money()` is `allowNull: false` unless told
+   * otherwise and `fine_amount`/`fine_paid` are not told (`models/other.js`, `default 0`);
+   * `fine_outstanding` is always a number from the service; `currency` is `STRING(10)
+   * allowNull: false`, default `'USD'`. They were typed `| null`, which invited a null branch for a
+   * state no column can reach. All money is formatted by `lib/money.ts` — the hand-rolled
+   * `toFixed(2)` this used dropped thousands grouping, so a large fine read unlike every other cell.
    */
-  fine_amount: number | null;
-  fine_paid: number | null;
-  fine_outstanding: number | null;
+  fine_amount: number;
+  fine_paid: number;
+  fine_outstanding: number;
   fine_waived: boolean;
-  currency: string | null;
+  currency: string;
   book?: { id: number; title: string; author: string | null };
 }
 
@@ -123,11 +132,29 @@ function BooksPanel() {
   const { can } = useAuth();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [debounced, setDebounced] = useState('');
   const [available, setAvailable] = useState('');
 
+  /*
+   * 300 ms, as the sibling search screens do. `useCollection` refetches on every change to the
+   * query, so feeding `search` straight in sent one request per keystroke — each a leading-wildcard
+   * LIKE on `title`, `author` and `isbn` (`library.service.js` `listBooks()`).
+   */
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebounced(search);
+      /*
+       * Resetting to page one is part of the search, not a separate concern — searching from page
+       * three and staying there shows an empty table for a query that has two pages of results.
+       */
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const query = useMemo(
-    () => ({ page, limit: 20, q: search || undefined, available: available || undefined }),
-    [page, search, available]
+    () => ({ page, limit: 20, q: debounced || undefined, available: available || undefined }),
+    [page, debounced, available]
   );
   const { rows, meta, loading, error, refusal, reload } = useCollection<Book>('/library/books', query);
 
@@ -198,7 +225,7 @@ function BooksPanel() {
             label="Search the catalogue"
             placeholder="Title, author or ISBN…"
             value={search}
-            onChange={(value) => { setSearch(value); setPage(1); }}
+            onChange={setSearch}
           />
         </div>
         <div>
@@ -213,16 +240,26 @@ function BooksPanel() {
             <option value="false">All copies out</option>
           </FilterSelect>
         </div>
+        {/*
+          * `Link`, not `<a href>`: a raw anchor is a full document load, which discards the in-memory
+          * access token (`apiClient.ts`) and makes the form refresh the session before it can render.
+          */}
         {can('library.manage') ? (
-          <a
+          <Link
             href="/school/library/books/new"
             className="ml-auto self-start btn btn-primary"
           >
             Add book
-          </a>
+          </Link>
         ) : null}
       </FilterBar>
 
+      {/*
+        * Empty is not filtered-empty (`table.tsx`). This tested `search` alone, and `available` is a
+        * second filter the server applies hard — `available_quantity > 0`, or `= 0` — so "All copies
+        * out" on a fully shelved catalogue announced "The catalogue is empty" and sent a librarian
+        * looking for lost data. `debounced`, not `search`: the rows answer the query that was sent.
+        */}
       {refusal ? (
         <RefusalNotice refusal={refusal} />
       ) : error ? (
@@ -230,7 +267,27 @@ function BooksPanel() {
       ) : loading && rows.length === 0 ? (
         <LoadingBlock />
       ) : rows.length === 0 ? (
-        <EmptyNotice>{search ? `No book matches “${search}”.` : 'The catalogue is empty.'}</EmptyNotice>
+        debounced || available ? (
+          <EmptyNotice>
+            {debounced
+              ? `No book matches “${debounced}”${available ? ' with this availability' : ''}.`
+              : available === 'true'
+                ? 'No book has a copy on the shelf.'
+                : 'No book has every copy out.'}
+          </EmptyNotice>
+        ) : (
+          <EmptyNotice
+            action={
+              can('library.manage') ? (
+                <Link href="/school/library/books/new" className="btn btn-primary">
+                  Add book
+                </Link>
+              ) : undefined
+            }
+          >
+            The catalogue is empty.
+          </EmptyNotice>
+        )
       ) : (
         <>
           <DataTable columns={columns} rows={rows} rowKey={(row) => row.id} caption="Library catalogue"
@@ -395,22 +452,19 @@ function LoansPanel() {
          * are shown as such rather than as a figure that reads like a debt.
          */
         cell: (row) => {
-          const amount = Number(row.fine_amount ?? 0);
-          if (!amount) return <span className="text-muted-soft">—</span>;
+          if (!row.fine_amount) return <span className="text-muted-soft">—</span>;
           if (row.fine_waived) return <span className="text-muted-soft">waived</span>;
 
-          const outstanding = Number(row.fine_outstanding ?? 0);
           /* Settled, and only when nothing is left — a part-payment is still a debt. */
-          if (outstanding <= 0) return <span className="text-muted-soft">paid</span>;
+          if (row.fine_outstanding <= 0) return <span className="text-muted-soft">paid</span>;
 
-          const paid = Number(row.fine_paid ?? 0);
           return (
-            <span className="font-medium">
-              {outstanding.toFixed(2)} {row.currency ?? ''}
+            <span className="whitespace-nowrap font-medium">
+              {formatAmountWithCode(row.fine_outstanding, row.currency)}
               {/* Part-paid rows say so, because "6.00 owed" and "6.00 fine" are different facts. */}
-              {paid > 0 ? (
+              {row.fine_paid > 0 ? (
                 <span className="block text-xs font-normal text-muted-soft">
-                  {paid.toFixed(2)} of {amount.toFixed(2)} paid
+                  {formatMoney(row.fine_paid)} of {formatMoney(row.fine_amount)} paid
                 </span>
               ) : null}
             </span>
@@ -446,7 +500,7 @@ function LoansPanel() {
         header: 'Actions',
         cell: (row) => {
           const open = OPEN.includes(row.status);
-          const owed = Number(row.fine_outstanding ?? 0) > 0 && !row.fine_waived;
+          const owed = row.fine_outstanding > 0 && !row.fine_waived;
 
           if (!open && !owed) return <span className="text-muted-soft">—</span>;
 
@@ -538,7 +592,15 @@ function LoansPanel() {
       ) : loading && rows.length === 0 ? (
         <LoadingBlock />
       ) : rows.length === 0 ? (
-        <EmptyNotice>No loans match these filters.</EmptyNotice>
+        /*
+         * The inverse of the catalogue's fault: this blamed "these filters" whether or not any was
+         * set, so a school with no loans was told its filters had hidden them.
+         */
+        <EmptyNotice>
+          {status || outstanding
+            ? 'No loans match these filters.'
+            : 'No loans yet. A loan appears here once a book is issued.'}
+        </EmptyNotice>
       ) : (
         <>
           <DataTable columns={columns} rows={rows} rowKey={(row) => row.id} caption="Library loans"
@@ -1054,7 +1116,7 @@ function FineDialog({
   onClose: () => void;
   onDone: (waived: boolean) => void;
 }) {
-  const owed = Number(loan?.fine_outstanding ?? 0);
+  const owed = loan?.fine_outstanding ?? 0;
 
   const [waive, setWaive] = useState(false);
   const [amount, setAmount] = useState('');
@@ -1108,7 +1170,7 @@ function FineDialog({
       open={loan !== null}
       onClose={onClose}
       title="Settle the fine"
-      description={`${owed.toFixed(2)} ${loan?.currency ?? ''} is outstanding on this loan.`.trim()}
+      description={`${formatAmountWithCode(owed, loan?.currency)} is outstanding on this loan.`}
       size="sm"
       busy={busy}
       footer={

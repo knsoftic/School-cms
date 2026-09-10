@@ -16,8 +16,12 @@
  * than none. This screen is the third endpoint, `GET /timetable`, which is the paginated *register*
  * of every slot in the school. Pivoting a page of 20 rows into a grid would draw a week with holes
  * in it wherever the page boundary fell, which is exactly the failure those two views avoid by
- * refusing to paginate. So the register is rendered as a register, and the grid belongs to the two
- * per-class and per-teacher screens.
+ * refusing to paginate. So the register is rendered as a register.
+ *
+ * The grid would belong to per-class and per-teacher screens, and **neither exists**: both endpoints
+ * are mounted and nothing in the frontend calls them. The page description used to say a class's or
+ * a teacher's week "is on their own timetable", which sent people looking for a screen the product
+ * does not have; it now describes only what this one does.
  *
  * ## The module gate is not checked here
  *
@@ -148,17 +152,21 @@ export default function TimetablePage() {
    * than guessed.
    *
    * Three are wired to controls. The six id filters are not, because each needs a picker fed by
-   * another collection (`/classes`, `/subjects`, `/teachers`, `/academic-sessions`) and a bare
-   * numeric input asking an administrator for "class 7" would be worse than no control at all.
+   * another collection (`/classes`, `/subjects`, `/teachers`, `/sessions`) and a bare numeric input
+   * asking an administrator for "class 7" would be worse than no control at all.
    * `school_id` is omitted on purpose: this surface is one school, `tenantWhere` already scopes the
    * query to it, and naming a school here is how a request ends up refused with
    * `SCHOOL_CONTEXT_REQUIRED` or pointed at a school the caller does not hold.
    *
-   * **No `sortBy` is sent, and that is a decision rather than an omission.** `getSort`
-   * (`utils/pagination.js:35-43`) defaults `sortOrder` to `DESC` for anything that is not exactly
-   * `asc`, so sending `sortBy=day_of_week` without a direction would hand back the week backwards,
-   * Sunday first. Sending nothing lets the route's own fallback — `['day_of_week', 'ASC']` — stand,
-   * which is the natural week. Whoever adds a sort control here must send `sortOrder` with it.
+   * **The order.** With no `sortBy`, `list()` falls back to its own `WEEK_ORDER` — day, then period,
+   * then id — as the class and teacher views do, so the unfiltered week reads in order. (It used to
+   * fall back to `day_of_week` alone, and within a day the periods came in the order they were
+   * typed; `verify-timetable.js` now asserts the week order.)
+   *
+   * With a **day chosen**, `period_number` ascending is sent as well, which is the same order for a
+   * single day and keeps this screen right against an API that sorted by one column. `sortOrder`
+   * travels with it because `getSort` reads anything other than `asc` as `DESC`
+   * (`utils/pagination.js:37`) — a `sortBy` alone would hand the day back last period first.
    */
   const query = useMemo(
     () => ({
@@ -166,6 +174,8 @@ export default function TimetablePage() {
       limit: 20,
       q: debounced || undefined,
       day_of_week: day || undefined,
+      sortBy: day ? 'period_number' : undefined,
+      sortOrder: day ? ('asc' as const) : undefined,
       /*
        * `is_active` is a `Joi.boolean()` and `validate()` runs with `convert: true`, so the string
        * the `<select>` produces is coerced server-side. Sent as a string because `Query`'s index
@@ -340,7 +350,7 @@ export default function TimetablePage() {
     <div>
       <PageHeader
         title="Timetable"
-        description="Every scheduled period in the school. A single class or teacher’s week is on their own timetable."
+        description="Every scheduled period in the school, Monday first. Choose a day to read it period by period."
         action={
           /*
            * `timetable.manage` exists — `config/permissions.js:129`, granted to Principal, School

@@ -17,7 +17,7 @@ taken. Every question was put with a recommended option; every recommendation wa
 | D3 | **A Principal who belongs to another school** (triage finding 10) | **Refuse, with a correct message** telling the Super Admin to create a Principal for this school. The account's tenancy never moves | Move the account to the new school |
 | D4 | **Is a class required at admission?** (finding 17 — SRS:818 says yes, §15.1 lists Class Assignment separately) | **Class required.** Every admitted student gets a roll number at once | Optional, numbered when a class is first set |
 | D5 | **Wallet does nothing** (§13.2, Known Issues #19) | **Refunds credit, invoices spend.** A refund to the wallet adds to the subscription's balance; paying with Wallet takes from it and is refused if the balance is short. No new table | Also a manual Super Admin credit; remove Wallet |
-| D6 | **"A billing event" is never defined** (FR-BILL-001) | **Invoices are issued at each billing period.** The daily job issues a subscription's invoice when its period starts — first activation and every renewal — due when the plan's grace period ends. Manual Generate stays | Keep manual only |
+| D6 | **"A billing event" is never defined** (FR-BILL-001) | **Invoices are issued at each billing period.** A scheduled job (hourly, at ten past) issues a subscription's invoice once its period has started — first activation and every renewal — due when the plan's grace period ends. Manual Generate stays | Keep manual only |
 | D7 | **A `price` override is stored and does nothing** (finding 39) | **It replaces the plan price** on invoices and renewals while it is in effect (`effective_from` / `effective_until`). Setup fee and add-ons are unchanged | Refuse price overrides |
 | D8 | **Is a transaction id required?** (finding 52) | **A transaction id or a screenshot.** A manual submission with neither is refused | Transaction id for bank transfer only; both optional |
 | D9 | **Premium Reports unlocks nothing** (finding 64) | **It unlocks report exports** — PDF, Excel and Print. Without it a school still sees every report on screen | Stop selling it; leave inert |
@@ -28,6 +28,28 @@ taken. Every question was put with a recommended option; every recommendation wa
 | D14 | **Do teachers edit the timetable?** (finding 47 — §5 prose vs FR-TT-001's Actor line) | **View only**, as today: FR-TT-001's Actor line governs | Teachers can edit |
 | D15 | **Teacher and Super Admin receive no notification** (finding 63) | **Both do.** Teachers: exam announcements and published results for the classes they teach. Super Admin: payment received, payment failed and subscription expiry, as platform notifications | Super Admin only; teachers only; no change |
 | D16 | **Custom Domain unlocks nothing** — serving a school on its own domain is hosting work outside this application | **Ship it switched off.** A new install seeds it inactive; the Super Admin can switch it on once hosting supports it | Leave it purchasable |
+
+## Where each is built
+
+All sixteen were built in session 28 (commit `826e19f`) and each is asserted by the suite named, so
+a regression against a decision fails the loop rather than going unnoticed.
+
+| # | Code | Proven by |
+|---|---|---|
+| D1 | `POST /users` — `users.validation.js` `CREATABLE_ROLES`, `users.service.create()`; screens: Create login on teachers, staff and students, School Admins in Settings | `verify-users-roles.js` |
+| D2 | `usageService.reserveHeadcount(…, ADMIN_LIMIT)` on a School Admin login; counts Principals and School Admins | `verify-users-roles.js` |
+| D3 | `schools.service.js` Principal assignment refusal and its hint | `verify-platform-modules.js` |
+| D4 | `students.validation.js` `class_id` required on admission; the admission form | `verify-students.js` |
+| D5 | `payments.service.js` wallet debit on approval, balance check on submit, refund to wallet | `verify-billing.js` |
+| D6 | `invoices.service.issueForStartedPeriods()`, `jobs/tasks/invoiceIssue.js` | `verify-jobs.js` |
+| D7 | `invoices.service.generateForSubscription()` bills the plan line at an in-force price override | `verify-billing.js` |
+| D8 | `payments.service.js` `PAYMENT_EVIDENCE_REQUIRED` | `verify-billing.js` |
+| D9 | `reports.routes.js` export routes behind `requireFeature('premium_reports')` | `verify-reports.js` |
+| D10, D11, D14 | no change — today's behaviour confirmed | the existing suites for each |
+| D12 | `fees.service.alreadyAssigned()` keys a period-less fee by structure | `verify-fees.js` |
+| D13 | `POST/GET /students/:id/documents`; `documents.service.js` keeps generated-only types generated | `verify-students.js`, `verify-documents.js` |
+| D15 | `notifications.service.js` teacher recipients and platform copies | `verify-notifications.js` |
+| D16 | `seeders/05-addons.js` `SEEDED_INACTIVE` | `verify-seed.js` (on the seed definitions — an existing install keeps its own `is_active`) |
 
 ## What these decisions do not change
 

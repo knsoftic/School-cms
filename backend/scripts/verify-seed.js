@@ -272,6 +272,18 @@ async function main() {
   check('11 roles', (await one('SELECT COUNT(*) n FROM roles')).n === 11);
   check('109 permissions', (await one('SELECT COUNT(*) n FROM permissions')).n === 109);
   check('7 add-ons', (await one('SELECT COUNT(*) n FROM addons')).n === 7);
+  /*
+   * Owner decision D16: a new install seeds Custom Domain switched off, and only it. Read from the
+   * definitions the seeder inserts rather than from the table, because `is_active` is the operator's
+   * once a row exists (case 7) — this database's rows predate the decision.
+   */
+  const { ADDON_DEFINITIONS } = require('../src/database/seeders/05-addons');
+  const seededInactive = ADDON_DEFINITIONS.filter((d) => !d.is_active).map((d) => d.key);
+  check(
+    'a new install seeds only custom_domain switched off (D16)',
+    seededInactive.length === 1 && seededInactive[0] === 'custom_domain',
+    `inactive = ${JSON.stringify(seededInactive)}`
+  );
   check('353 default grants', (await one('SELECT COUNT(*) n FROM role_permissions')).n === 353);
   check('1 user', (await one('SELECT COUNT(*) n FROM users')).n === 1);
 

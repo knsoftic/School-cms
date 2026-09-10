@@ -230,6 +230,12 @@ const update = Joi.object({
   restricted_plan_ids: fields.restricted_plan_ids,
   restricted_school_ids: fields.restricted_school_ids,
   status: fields.status,
+  /*
+   * Accepted here as it is on create. The edit screen offered a "Reason — recorded in the audit
+   * trail" box and this schema had no key for it, so `stripUnknown` dropped it and the screen said
+   * the reason had been recorded when nothing had.
+   */
+  reason: fields.reason,
   ...refused,
 })
   .min(1)

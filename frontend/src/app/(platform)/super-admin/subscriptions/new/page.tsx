@@ -117,6 +117,11 @@ interface PlanOption {
  * and on the quantity — `subscriptions.service.pricingColumns()` is the one place that decides. A
  * figure rendered in this dropdown would be a second implementation of that calculation, free to
  * disagree with what the subscription is actually billed.
+ *
+ * The tier band **is** declared, because it is part of what makes a price row the row it is.
+ * `plans.validation.checkPriceSet()` keys a price by cycle, days, model *and* `tier_min_units` /
+ * `tier_max_units` — that is how §10.4's Student-Based bands are stored — so two rows differing only
+ * in their band are legal, and without the band this dropdown rendered them as identical options.
  */
 interface PriceOption {
   id: number;
@@ -124,8 +129,21 @@ interface PriceOption {
   cycle_days: number | null;
   pricing_model: string;
   currency: string;
+  /** The band this row applies to, inclusive. Null upper bound = open-ended; both null = unbanded. */
+  tier_min_units: number | null;
+  tier_max_units: number | null;
   is_active: boolean;
   is_default: boolean;
+}
+
+/** `101+ units`, `up to 100 units`, `101–500 units` — or nothing, for a row that is not banded. */
+function bandLabel(price: PriceOption): string {
+  const min = price.tier_min_units ?? null;
+  const max = price.tier_max_units ?? null;
+  if (min === null && max === null) return '';
+  if (max === null) return `${min}+ units`;
+  if (min === null) return `up to ${max} units`;
+  return `${min}–${max} units`;
 }
 
 interface PlanDetail {
@@ -452,6 +470,7 @@ export default function NewSubscriptionPage() {
                 {humanise(price.pricing_model)}
                 {' · '}
                 {price.currency}
+                {bandLabel(price) ? ` · ${bandLabel(price)}` : ''}
                 {price.is_default ? ' · default' : ''}
               </option>
             ))}

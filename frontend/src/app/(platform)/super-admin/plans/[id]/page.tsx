@@ -26,12 +26,27 @@
  * Deliberately, and for the same reason the create form has no status control: `plans.validation.js`
  * `update` does not accept `status`, because FR-SUB-004 and FR-SUB-005 own it and each has its own
  * endpoint with its own audit reason. Those are on the list screen, as row actions. A status select
- * here would be a field the API silently strips.
+ * here would be a field the API **refuses** — `update` declares `status: refusedStatus`, a
+ * `forbidden()` with its own message, so the save would come back 422 naming the two endpoints to
+ * use. (This used to say the key was silently stripped, which is what `stripUnknown` does to an
+ * undeclared key; `status` is declared precisely so that it is not.)
+ *
+ * ## Both tabs stay mounted
+ *
+ * The panels are hidden, not unmounted. Switching from Details to Pricing used to unmount the details
+ * form, so its unsaved edits were gone by the time the operator came back — and the same the other
+ * way round for a half-built price set. Each form also re-seeds from a reload only when the part of
+ * the plan it edits actually changed on the server, so saving one tab does not wipe the other's work.
+ *
+ * A hidden panel's controls are still in the document, so a stale field error on the Details form
+ * could have caught `focusFirstInvalidField()` when a Pricing save was refused, and focus would have
+ * gone nowhere. It now takes the first invalid control that is rendered — a `hidden` subtree has no
+ * client rects — so focus lands on the Pricing field that failed.
  */
 
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
@@ -123,9 +138,20 @@ function DetailsForm({
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [saving, setSaving] = useState(false);
 
-  /* Re-sync on reload, so what the form shows is what was stored. */
+  /*
+   * Re-sync on reload, so what the form shows is what was stored — but only when the plan's own
+   * columns changed. A save on the Pricing tab reloads the plan too, and both tabs stay mounted (see
+   * the header), so re-seeding on every new `plan` object would discard edits here that the operator
+   * had not saved yet. Comparing the seeded values tells the two apart: a pricing save leaves them
+   * identical, a save from this form (or anybody else's) does not.
+   */
+  const seeded = useRef(JSON.stringify(toValues(plan)));
   useEffect(() => {
-    setValues(toValues(plan));
+    const next = toValues(plan);
+    const key = JSON.stringify(next);
+    if (key === seeded.current) return;
+    seeded.current = key;
+    setValues(next);
     setFieldErrors({});
   }, [plan]);
 
@@ -178,6 +204,12 @@ function DetailsForm({
     try {
       await api.patch(`/plans/${plan.id}`, body);
       success('Plan updated');
+      /*
+       * This form's own save always re-seeds from the reload, even if what was stored happens to
+       * equal the previous seed — the server normalises (a trimmed name, say), and the form should
+       * show what it kept rather than what was typed.
+       */
+      seeded.current = '';
       onSaved();
     } catch (caught) {
       if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
@@ -465,13 +497,21 @@ function PlanDetailScreen() {
       </p>
 
       <Tabs tabs={TABS} active={active} onChange={setActive} label="Plan configuration" />
-      <TabPanel tabKey={active}>
-        {active === 'details' ? (
+      {/*
+        * Both panels rendered, the inactive one `hidden` — see the header. `hidden` rather than a
+        * conditional is the whole fix: a conditional unmounts the form and its state goes with it.
+        * Each tab's `aria-controls` now always points at a panel that exists.
+        */}
+      <div hidden={active !== 'details'}>
+        <TabPanel tabKey="details">
           <DetailsForm plan={detail} canEdit={canManage} onSaved={reload} />
-        ) : (
+        </TabPanel>
+      </div>
+      <div hidden={active !== 'pricing'}>
+        <TabPanel tabKey="pricing">
           <PricingEditor plan={detail} catalogue={catalogue} canEdit={canPrice} onSaved={reload} />
-        )}
-      </TabPanel>
+        </TabPanel>
+      </div>
     </div>
   );
 }

@@ -181,7 +181,11 @@ export default function NewOrganizationPage() {
             value={values.code}
             onChange={set('code')}
             error={fieldErrors.code}
-            hint="Letters, digits, hyphens and underscores. Stored in upper case."
+            /*
+             * Both rules `CODE_PATTERN` and `.min(2)` enforce, not just the character class: the hint
+             * used to allow `-ACME` and a single character, and the schema refuses both.
+             */
+            hint="2 to 40 characters, starting with a letter or digit, then letters, digits, hyphens and underscores. Stored in upper case."
           />
         </FormSection>
 

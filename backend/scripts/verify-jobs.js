@@ -66,7 +66,7 @@ const backupTask = require('../src/jobs/tasks/databaseBackup');
 const dates = require('../src/utils/dates');
 const {
   SUBSCRIPTION_STATES, NOTIFICATION_TYPES, NOTIFICATION_CHANNELS,
-  PLAN_STATUS, MODULE_LIST, ROLES, USER_STATUS, JOB_NAMES,
+  PLAN_STATUS, MODULE_LIST, ROLES, USER_STATUS, JOB_NAMES, QUOTATION_STATUS,
 } = require('../src/config/constants');
 const { hashPassword } = require('../src/utils/tokens');
 
@@ -100,10 +100,10 @@ function verifyContract() {
    * `a`, because indexOf returns -1 — the defect §5a recorded in session 22 and again in §21. An
    * array literal pins presence and order together and no deletion can satisfy it.
    */
-  check('six tasks, in the order a --once run uses',
+  check('seven tasks, in the order a --once run uses',
     names,
     ['subscription-lifecycle', 'invoice-issue', 'notification-dispatch', 'invoice-overdue',
-      'coupon-expiry', 'database-backup']);
+      'coupon-expiry', 'quotation-expiry', 'database-backup']);
   /*
    * Two real dependencies on the lifecycle sweep going first: `notification-dispatch` warns about the
    * `expiring` state it writes, and `invoice-issue` (owner decision D6) invoices the period a renewal
@@ -308,6 +308,8 @@ async function verifyExecution() {
       await db.Subscription.destroy({ where: { id: created.subscriptions }, force: true });
     }
     await db.User.destroy({ where: { email: { [db.Op.like]: `%@${DOMAIN}` } }, force: true });
+    /* By number: a quotation has no tenant to cascade from (both scopes are nullable, SET NULL). */
+    await db.Quotation.destroy({ where: { quotation_number: { [db.Op.like]: `${CODE_PREFIX}%` } } });
     if (created.plans.length) {
       await db.PlanModule.destroy({ where: { plan_id: created.plans } });
       await db.PlanLimit.destroy({ where: { plan_id: created.plans } });
@@ -337,7 +339,18 @@ async function verifyExecution() {
     });
   }
 
-  /* Clear anything a previously crashed run left behind, before this one plants its own. */
+  /*
+   * What a killed earlier run of this suite left behind — see scripts/lib/residue.js. **First**, while
+   * the dead run's schools still exist: the sweep finds the platform's copies of their notifications
+   * by those school ids, and `teardown()` below deletes the schools by prefix. In the other order the
+   * ids were gone before the sweep looked, and a killed run left two notifications behind for good.
+   */
+  const residueCleared = await sweepResidue(db, { codes: ['VJB-'], domains: ['verify-jobs.local'] });
+  if (residueCleared) {
+    console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
+  }
+
+  /* Clear anything else a previously crashed run left behind, before this one plants its own. */
   await teardown();
 
   try {
@@ -345,11 +358,6 @@ async function verifyExecution() {
 
     const at = new Date('2026-06-15T09:00:00Z');
 
-    /* What a killed earlier run of this suite left behind — see scripts/lib/residue.js. */
-    const residueCleared = await sweepResidue(db, { codes: ['VJB-'], domains: ['verify-jobs.local'] });
-    if (residueCleared) {
-      console.log(`(cleared ${residueCleared} row(s) left behind by an earlier run that did not finish)`);
-    }
     const org = await db.Organization.create({ name: 'Verify Jobs Org', code: `${CODE_PREFIX}ORG` });
     created.organizations.push(org.id);
     const school = await db.School.create({
@@ -403,6 +411,17 @@ async function verifyExecution() {
     check('the fixture starts ACTIVE, so nothing can notify about it yet',
       subscription.state, SUBSCRIPTION_STATES.ACTIVE);
 
+    /*
+     * Two `sent` quotations either side of `at`, for `quotation-expiry`: the sweep existed and nothing
+     * scheduled it, so a lapsed quote stayed `sent` for ever. Only the one past its `valid_until` may move.
+     */
+    const quote = (suffix, validUntil) => db.Quotation.create({
+      quotation_number: `${CODE_PREFIX}Q-${suffix}`, prospect_name: 'Verify Jobs Prospect', currency: 'USD',
+      subtotal: 10, total: 10, status: QUOTATION_STATUS.SENT, valid_until: validUntil,
+    });
+    const lapsedQuote = await quote('LAPSED', '2026-06-01');
+    const liveQuote = await quote('LIVE', '2026-07-01');
+
     /* ── one ordered run ── */
 
     /*
@@ -417,9 +436,15 @@ async function verifyExecution() {
     check('every task ran and none failed',
       [report.ran.map((r) => r.task), report.failed, report.skipped],
       [['subscription-lifecycle', 'invoice-issue', 'notification-dispatch', 'invoice-overdue',
-        'coupon-expiry', 'database-backup'], [], []]);
+        'coupon-expiry', 'quotation-expiry', 'database-backup'], [], []]);
     check('  and each carries the summary its own module returns',
       report.ran.every((r) => r.summary && typeof r.summary === 'object'), true);
+    check('the quotation sweep expired the quote past its validity, and only that one',
+      [
+        (await db.Quotation.findByPk(lapsedQuote.id)).status,
+        (await db.Quotation.findByPk(liveQuote.id)).status,
+      ],
+      [QUOTATION_STATUS.EXPIRED, QUOTATION_STATUS.SENT]);
 
     /*
      * The bug this assertion exists for: `database-backup` used to be ABSENT from `ran` — its
@@ -512,7 +537,8 @@ async function verifyExecution() {
     }
     check('a failing task is recorded and the others still ran — a broken backup must not stop '
       + 'the notifications',
-      [resilient.failed.map((f) => f.task), resilient.ran.length], [['database-backup'], 5]);
+      [resilient.failed.map((f) => f.task), resilient.ran.length],
+      [['database-backup'], cronModule.ORDER.length - 1]);
     check('  and the failure carries the reason',
       resilient.failed[0].error, 'deliberate backup failure');
 

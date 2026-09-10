@@ -60,8 +60,9 @@
  * None is in `EXPLAINED_CODES` — they are not entitlement or permission refusals — so each falls
  * through to the banner as its own message, and the message names which of the three axes clashed,
  * which is the one thing the operator has to change. The colliding row travels in `details` as an
- * object; `ApiError`'s constructor drops anything that is not an array of field errors, so it is not
- * available here and no `Array.isArray` guard is needed at this call site.
+ * object `{ conflict, with }`. `ApiError` keeps that object as `context` (it used to drop it), and
+ * the edit screen at `timetable/[id]` uses it to name and link the clashing entry; this screen still
+ * shows the server's sentence alone.
  *
  * ## Five pickers, one of them fatal, one of them dependent
  *
@@ -85,6 +86,13 @@
  * same school — not that the subject is assigned to the class, not that the teacher teaches it, not
  * that the session is current — so filtering here would be this screen inventing rules the module does
  * not have. Retired rows are marked in the option text rather than withheld, for the same reason.
+ *
+ * Nor is any of them cut at one page any more. `useTimetablePickers` reads a single page of
+ * `OPTION_LIMIT`, and at a school with 140 teachers the forty sorting last could not be assigned to
+ * a period at all — the form said "Showing the first 100 of 140" and offered no way through. A search
+ * box would reach the teachers (`teachers.service.js` LIKEs `q`) but not the subjects, classes or
+ * sessions, whose `list()` ignores `q`; so `useWholeList` (`lib/useTimetablePickers.ts`) reads the
+ * remaining pages instead, which works for all four.
  */
 
 import { useRouter } from 'next/navigation';
@@ -108,6 +116,7 @@ import { EXPLAINED_CODES } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
 import {
   useTimetablePickers,
+  useWholeList,
   teacherName,
   dayLabel,
 } from '@/lib/useTimetablePickers';
@@ -147,10 +156,10 @@ const FORM_FIELDS = new Set([
 ]);
 
 /*
- * The five option types, the `Picker<T>` state, `NO_SECTIONS`, `teacherName` and `dayLabel` all
- * live in `lib/useTimetablePickers.ts` now, with the loading they describe. The edit screen at
- * `timetable/[id]` needs the same five lists and the same four failure states, and a second copy
- * of ninety lines is where two screens quietly stop agreeing about what a picker does.
+ * The five option types, the `Picker<T>` state, `NO_SECTIONS`, `teacherName`, `dayLabel` and
+ * `useWholeList` all live in `lib/useTimetablePickers.ts`, with the loading they describe. The edit
+ * screen at `timetable/[id]` needs the same five lists and the same four failure states, and a second
+ * copy is where two screens quietly stop agreeing about what a picker does.
  */
 
 export default function NewTimetableEntryPage() {
@@ -175,11 +184,14 @@ export default function NewTimetableEntryPage() {
     reason: '',
   });
 
-  /* The five lists, their four failure states and the section-follows-class rule. */
-  const { classes, sections, subjects, teachers, sessions } = useTimetablePickers(
-    values.class_id,
-    can('timetable.manage')
-  );
+  /* The five lists, their four failure states and the section-follows-class rule — and the four
+     paginated ones read past their first page. Sections are one unpaginated call and need nothing. */
+  const pickers = useTimetablePickers(values.class_id, can('timetable.manage'));
+  const { sections } = pickers;
+  const classes = useWholeList('/classes', pickers.classes);
+  const subjects = useWholeList('/subjects', pickers.subjects);
+  const teachers = useWholeList('/teachers', pickers.teachers);
+  const sessions = useWholeList('/sessions', pickers.sessions);
 
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);

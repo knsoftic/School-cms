@@ -25,6 +25,10 @@
     {
       "files": ["tests/**/*.js"],
       "env": { "jest": true }
+    },
+    {
+      "files": ["scripts/**/*.js"],
+      "rules": { "no-inner-declarations": "off" }
     }
   ]
 }

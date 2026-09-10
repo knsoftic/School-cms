@@ -24,7 +24,11 @@ import { Suspense, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '@/lib/apiClient';
 import { AuthCard, Notice } from '@/components/form';
 
-type State = 'working' | 'verified' | 'failed' | 'no-token';
+/*
+ * `malformed` is a token that is present but the wrong shape — wrapped, truncated or padded by a mail
+ * client. See the catch below for why it cannot share `failed`.
+ */
+type State = 'working' | 'verified' | 'failed' | 'no-token' | 'malformed';
 
 function VerifyEmail() {
   const params = useSearchParams();
@@ -43,6 +47,17 @@ function VerifyEmail() {
         await api.post('/auth/verify-email', { token });
         setState('verified');
       } catch (caught) {
+        /*
+         * A token that fails the shape rule never reaches the service. `verifyEmail`'s schema is
+         * `singleUseToken` — 20 to 200 base64url characters — so a link a mail client wrapped or cut
+         * short is refused by `validate.js`, whose top-level message is the developer string
+         * "Validation failed". Echoing that told the user nothing about the link. It is the same
+         * situation as a missing token, so it gets the same explanation.
+         */
+        if (caught instanceof ApiError && caught.code === 'VALIDATION_ERROR') {
+          setState('malformed');
+          return;
+        }
         setState('failed');
         setMessage(
           caught instanceof ApiError
@@ -53,13 +68,15 @@ function VerifyEmail() {
     })();
   }, [token]);
 
-  if (state === 'no-token') {
+  if (state === 'no-token' || state === 'malformed') {
     return (
       <AuthCard title="That link is incomplete">
         <div className="mt-8">
           <Notice tone="error">
-            This verification link is missing its token. It may have been broken across two lines by
-            an email client — try copying the whole link.
+            {state === 'no-token'
+              ? 'This verification link is missing its token.'
+              : 'This verification link has been damaged on its way to you.'}{' '}
+            It may have been broken across two lines by an email client — try copying the whole link.
           </Notice>
         </div>
       </AuthCard>
@@ -91,7 +108,9 @@ function VerifyEmail() {
         {/*
           * One message covers an unknown token, a used one and an expired one — the service gives a
           * single code for all three, and inventing a more specific explanation here would be a
-          * guess presented as fact. Requesting a new link is the action in every case.
+          * guess presented as fact. Requesting a new link is the action in every case. A fourth
+          * case — a token of the wrong shape — never reaches the service and is answered by
+          * validation instead; it is caught above and shown as an incomplete link, not here.
           */}
         <Notice tone="error">{message}</Notice>
         {/*

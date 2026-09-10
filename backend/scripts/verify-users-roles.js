@@ -84,7 +84,13 @@ process.env.CACHE_TTL = '600';
  */
 
 const db = require('../src/models');
-const { sweepResidue, readJournal, writeJournal, clearJournal } = require('./lib/residue');
+const {
+  sweepResidue,
+  removeFailedSignIns,
+  readJournal,
+  writeJournal,
+  clearJournal,
+} = require('./lib/residue');
 const config = require('../src/config/env');
 const { createApp } = require('../src/app');
 const { hashPassword } = require('../src/utils/tokens');
@@ -615,6 +621,8 @@ async function removeFixtures() {
       where: { id: { [db.Op.gt]: baseline.auditLog }, [db.Op.or]: ownTenant },
     });
   }
+  /* A failed sign-in carries no user or tenant for the clauses above to match — see the helper. */
+  await removeFailedSignIns(db, { afterId: baseline.activityLog, domains: [DOMAIN] });
 
   /* The two seeded rows this run mutates, put back whether or not the run reached the restore. */
   await restoreSeeded();

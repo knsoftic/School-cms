@@ -43,7 +43,7 @@ async function listExams(req, res) {
 }
 
 async function showExam(req, res) {
-  const exam = await service.findExam(req, req.params.id);
+  const exam = await service.findExam(req, req.params.id, undefined, { detail: true });
   return ApiResponse.ok(res, { exam });
 }
 

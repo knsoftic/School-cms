@@ -49,7 +49,7 @@
  *  - **`reject()`** — `draft|sent → rejected`, stamps `rejected_at`.
  *  - **`expireLapsed()`** — `sent → expired` for quotes past `valid_until`. The clock is the actor, so —
  *    like `invoices.markOverdue()` and `subscriptions.runLifecycleSweep()` — it has **no route**; it is
- *    called by the Phase-5 scheduler and directly by `scripts/verify-billing.js`. Only `sent` quotes
+ *    called daily by `jobs/tasks/quotationExpiry.js` and directly by `scripts/verify-billing.js`. Only `sent` quotes
  *    expire: a `draft` is an unsent working document, not an offer that can lapse.
  *
  * `accepted`, `rejected` and `expired` are terminal.
@@ -71,8 +71,11 @@
  * which is correct — a real tax row is the only thing that can carry the rate.
  *
  * Conversion requires `school_id`: an invoice (and every `invoice_item`) needs a school to belong to, so
- * a quote for a pure prospect is accepted **without** an invoice, and `converted_invoice_id` stays null
- * until the school is onboarded. `convert: false` accepts without invoicing in every case.
+ * accepting a quote for a pure prospect with `convert: true` (the default) is **refused** with
+ * `QUOTATION_NOT_CONVERTIBLE`. The operator either names the school on the quotation first, or accepts
+ * with `convert: false`, which accepts without invoicing in every case. There is no later conversion:
+ * accepting is only possible while the quotation is open, so one accepted without an invoice keeps a
+ * null `converted_invoice_id` for good.
  *
  * ## Scope
  *
@@ -571,8 +574,8 @@ async function accept(req, id, spec = {}) {
 
 /**
  * `sent → expired` for every quote whose `valid_until` is before the reference date. The clock's, so no
- * route — called by the Phase-5 scheduler and by `scripts/verify-billing.js`. Bulk `update`, mirroring
- * `invoices.markOverdue()`.
+ * route — called daily by `jobs/tasks/quotationExpiry.js`, and by `scripts/verify-billing.js` and
+ * `scripts/verify-jobs.js`. Bulk `update`, mirroring `invoices.markOverdue()`.
  *
  * @param {{asOf?: Date|string, transaction?: object}} [options]
  * @returns {Promise<{expired: number}>}

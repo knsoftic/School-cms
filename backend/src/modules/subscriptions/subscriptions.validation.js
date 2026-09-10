@@ -455,6 +455,23 @@ const createOverride = Joi.object({
             '"target_key" must name one of the eight SRS §11.2 limits or the add-on-only sms_limit; entitlement resolution ignores an override naming anything else',
         }),
     })
+    /*
+     * The same shape `plans.validation` gives `plan_features.feature_key`. Without it `Premium_Reports`
+     * was accepted: `createOverride()` finds the existing `premium_reports` row under the
+     * case-insensitive collation and rewrites its key, while `entitlementService` keys features by the
+     * exact string — so the override stopped reaching the feature every guard asks for.
+     */
+    .when('override_type', {
+      is: OVERRIDE_TYPES.FEATURE,
+      then: Joi.string()
+        .lowercase()
+        .min(2)
+        .pattern(/^[a-z0-9][a-z0-9_.-]*$/)
+        .messages({
+          'string.pattern.base':
+            '"target_key" must start with a letter or digit and may contain only lower-case letters, digits, underscores, dots and hyphens',
+        }),
+    })
     .when('override_type', {
       is: OVERRIDE_TYPES.PRICE,
       then: Joi.string()

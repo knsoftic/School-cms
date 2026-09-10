@@ -75,6 +75,13 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly details: FieldError[];
+  /**
+   * The object-shaped `details` a conflict carries — `{ conflict, with }` from a timetable clash,
+   * `{ conflicts_with }` from a grade band, `{ blocking }` from a subject still in use. Kept beside the
+   * normalised `details` rather than dropped, so a screen can say *which* entry clashed instead of
+   * only that one did. `null` when the API sent an array or nothing.
+   */
+  readonly context: Record<string, unknown> | null;
   readonly requestId?: string;
 
   constructor(status: number, code: string, message: string, details: unknown = [], requestId?: string) {
@@ -109,6 +116,10 @@ export class ApiError extends Error {
             && typeof (d as FieldError).message === 'string'
         )
       : [];
+    this.context =
+      details && typeof details === 'object' && !Array.isArray(details)
+        ? (details as Record<string, unknown>)
+        : null;
     this.requestId = requestId;
   }
 

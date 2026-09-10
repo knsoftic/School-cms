@@ -63,7 +63,7 @@ const { cache } = require('../src/config/cache');
 const ApiError = require('../src/utils/ApiError');
 const asyncHandler = require('../src/middlewares/asyncHandler');
 const { requestContext } = require('../src/middlewares/requestContext');
-const { sanitizeRequest, sanitizeParsedBody } = require('../src/middlewares/sanitize');
+const { sanitizeRequest } = require('../src/middlewares/sanitize');
 const { authenticate } = require('../src/middlewares/authenticate');
 const { resolveTenant } = require('../src/middlewares/resolveTenant');
 const { enforceTenant } = require('../src/middlewares/enforceTenant');
@@ -1327,7 +1327,7 @@ async function main() {
   }
   {
     const results = [];
-    for (const attempt of [1, 2, 3]) {
+    for (const _attempt of [1, 2, 3]) {
       // eslint-disable-next-line no-await-in-loop
       results.push((await call('/plain/no-limit')).status);
     }

@@ -35,9 +35,9 @@
  * answers both selects and the section list narrows from data already in hand. The obvious
  * alternative, `GET /classes/{id}/sections`, was not used for two reasons: it is a request that has
  * already been answered, and its payload is `ApiResponse.ok(res, { sections: rows })` — an **object**,
- * not the bare array every other collection in this client returns. `sections/page.tsx` reads it
- * through `useCollection`, which assigns `data` straight to `rows`; that is not this file's to fix,
- * but it is a good reason not to repeat the call.
+ * not the bare array every other collection in this client returns. `classes/sections/page.tsx` reads
+ * it with `api.get<{ sections }>` and unwraps it itself, which is one more shape to get right for a
+ * list this form already has in hand.
  *
  * The section is cleared whenever the class changes. `loadSectionOfClass()` requires the section to
  * belong to the class it is sent with, so a selection carried over from the previous class is a

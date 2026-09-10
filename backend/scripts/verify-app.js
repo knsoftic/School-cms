@@ -667,7 +667,7 @@ function verifyStack() {
           .replace(/^\s*\/\/.*$/gm, '');
         if (!/requireModule\(|requireActiveSubscription\(/.test(src)) continue;
         aware += 1;
-        // eslint-disable-next-line global-require, import/no-dynamic-require
+        // eslint-disable-next-line global-require
         if (require(f).stack.filter((l) => !l.route).length === 0) none.push(m);
       }
       return [aware, none];
@@ -742,7 +742,11 @@ function verifyCorsOptions() {
 
   check('credentials are allowed, because the refresh cookie needs them', options.credentials, true);
   check('the double-submit header is in the preflight allow-list', options.allowedHeaders.includes('X-CSRF-Token'), true);
-  check('and the request id is readable by the client that made it', options.exposedHeaders, ['X-Request-Id']);
+  check(
+    'the request id is readable by the client that made it, and so is a download\'s filename',
+    options.exposedHeaders,
+    ['X-Request-Id', 'Content-Disposition']
+  );
   check('preflights are cacheable', options.maxAge, 600);
 
   return Promise.all([
@@ -963,7 +967,11 @@ async function verifyHttp(app) {
     check('an allow-listed origin is served', r.status, 200);
     check('echoed exactly, not as a wildcard', r.header('access-control-allow-origin'), 'http://localhost:3000');
     check('with credentials permitted', r.header('access-control-allow-credentials'), 'true');
-    check('and the request id readable', r.header('access-control-expose-headers'), 'X-Request-Id');
+    check(
+      'and the request id and download filename readable',
+      r.header('access-control-expose-headers'),
+      'X-Request-Id,Content-Disposition'
+    );
   }
   {
     const r = await call(`${PREFIX}/health`, {

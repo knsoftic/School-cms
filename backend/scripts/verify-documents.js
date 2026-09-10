@@ -610,7 +610,7 @@ async function verifyHttp() {
       name: 'Mid Term 2026', exam_type: 'midterm', class_id: A.klass.id,
       start_date: '2026-02-01', end_date: '2026-02-10', status: EXAM_STATUS.PUBLISHED,
     });
-    const result = await db.Result.create({
+    await db.Result.create({
       school_id: schoolA.id, organization_id: org.id, exam_id: exam.id, student_id: amina.id,
       /* §19's own column names — `total_marks`/`obtained_marks`/`grade` do not exist on this table. */
       total_full_marks: 200, total_marks_obtained: 176, percentage: 88,

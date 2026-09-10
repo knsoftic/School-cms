@@ -24,8 +24,9 @@ therefore `real-blocked`:
 | 17 | real-fixable | **real-blocked** | `class_id` is optional on admission where SRS:818 says "Student is assigned to a Class and Section". But §15.1 lists **Admission**, **Class Assignment** and **Section Assignment** as three separate features — which is what the code implements — and `verify-students.js:122` deliberately asserts the permissive contract. The source answers the question two ways. |
 
 The pattern is now consistent enough to name: **where the SRS lists a capability without specifying
-it, a "fix" is a specification decision wearing implementation clothes.** Thirteen findings sat there;
-**eleven still do** — 18 and 60 were closed in session 28, see the section below.
+it, a "fix" is a specification decision wearing implementation clothes.** Thirteen findings sat there.
+18 and 60 were closed in session 28, and the owner then answered the other eleven — see
+"the owner answered all eleven" below. **None is blocked now.**
 
 ## All 44 `real-fixable` findings have now been applied
 
@@ -82,6 +83,27 @@ part needing an answer from the part needing only honesty; the second part is do
 So the eleven are now blocked on nothing but the answers themselves. Each open question is stated in
 its own section below, in the form a person who knows what the product should do could answer in a
 sentence.
+
+## Later in session 28: the owner answered all eleven, and each is built
+
+The questions were put to the project owner, each with a recommended option, and every
+recommendation was accepted. The answers are recorded as an addendum to the SRS in
+`docs/OWNER-DECISIONS.md`, which names the code and the suite behind each. **No finding in this file
+is blocked any more.** The sections below are kept as the reasoning that stood until then.
+
+| # | Question | Answered by | What was built |
+|---|---|---|---|
+| 10 | A Principal who belongs to another school | **D3** — refuse, with a correct message | The remediation hint now tells the Super Admin to create a Principal for this school; the account's tenancy never moves |
+| 11 | May a plan be created Active? | **D11** — no, a plan starts inactive | No change: the refusal already in `plans.validation.js` is the answer |
+| 16 | Admission "Documents" | **D13** — upload on `students.manage`, view on `students.view`, as uploaded `documents` rows | `POST/GET /students/:id/documents`; the documents module serves generated rows only |
+| 17 | Is a class required at admission? | **D4** — yes | `class_id` required on create; the admission form requires it |
+| 20 | Two period-less fees of one component | **D12** — a different structure is a different fee | `fees.service.alreadyAssigned()` keys a period-less fee by structure |
+| 39 | A `price` override does nothing | **D7** — it replaces the plan price while in effect | The invoice bills the plan line at the override |
+| 47 | Do teachers edit the timetable? | **D14** — view only | No change |
+| 52 | Is a transaction id required? | **D8** — a transaction id or a screenshot | A manual submission with neither is refused |
+| 53 | Who buys add-ons? | **D10** — the Super Admin and the school | No change |
+| 63 | Teacher and Super Admin receive no notification | **D15** — both do | Teachers get exam announcements and published results for their classes; the Super Admin gets platform copies of payment received, payment failed and subscription expiry |
+| 64 | Premium Reports unlocks nothing | **D9** — it unlocks report exports | The export routes require `premium_reports` |
 
 ## The 13 `real-blocked` findings were re-triaged adversarially, and none was overturned
 

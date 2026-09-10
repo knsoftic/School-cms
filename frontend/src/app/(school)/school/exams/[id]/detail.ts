@@ -47,7 +47,9 @@ export interface ExamDetail {
   published_at: string | null;
   announced_at: string | null;
   description: string | null;
+  /* Joined by `GET /exams/:id` (`findExam(…, { detail: true })`); absent from the write routes' rows. */
   class?: { id: number; name: string } | null;
+  section?: { id: number; name: string } | null;
 }
 
 /** One `exam_subjects` row — a **paper**, in the language this screen uses with the user. */
@@ -155,7 +157,20 @@ export function useExamDetail(id: string | null): ExamScope {
   }, [id, nonce]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
-  const adoptExam = useCallback((next: ExamDetail) => setExam(next), []);
+  /*
+   * A write returns the bare row, without the `class` and `section` the read joins. This screen offers
+   * neither `class_id` nor `section_id`, so the joined names from the read still describe the row, and
+   * are kept rather than dropped from the header on every save.
+   */
+  const adoptExam = useCallback(
+    (next: ExamDetail) =>
+      setExam((previous) => ({
+        ...next,
+        class: next.class ?? previous?.class ?? null,
+        section: next.section ?? previous?.section ?? null,
+      })),
+    []
+  );
 
   return { exam, subjects, loading, error, refusal, reload, adoptExam };
 }

@@ -15,8 +15,8 @@
  *   - **`valid_now`** — the question it is asked second, and the one `status` cannot answer. An
  *     `active` coupon whose `starts_at` is still in the future does not work yet, and one whose
  *     `expires_at` has passed does not work any more — `status` only catches the second case *after*
- *     `expireLapsed()` has swept, and `coupons.routes.js` says plainly that the sweep has no scheduler
- *     yet. So "active" and "usable right now" are genuinely different sets today.
+ *     `expireLapsed()` has swept (`jobs/tasks/couponExpiry.js`, on the cron), and never catches the
+ *     first. So "active" and "usable right now" are genuinely different sets.
  *
  * `discount_type` gets no control: it has two values, and the Discount column already spells the type
  * out on every row, so filtering by it hides rows to reveal something already visible.
@@ -27,15 +27,15 @@
  * the table shows. The control is therefore disabled while `valid_now` is on, and the parameter is not
  * sent, rather than left enabled and quietly ignored.
  *
- * ## Money is a string, and a percentage has no currency
+ * ## Money arrives as a number, and a percentage has no currency
  *
- * `discount_value`, `max_discount_amount` and `min_order_amount` are `DECIMAL(14,2)` and arrive as JS
- * **numbers** — `config/database.js` sets `decimalNumbers: true`. Both formatters below take either,
- * because they already run `Number()` first; the types were declared `string` and that was wrong,
- * harmlessly here and not harmlessly elsewhere. (`models/columns.js`
- * `money()`), which the driver hands over as a **string** — `"15.00"`, not `15`. Interpolating one
- * straight into a cell prints "15.00%" where the operator typed 15, so every amount goes through the
- * helpers below.
+ * `discount_value` and `max_discount_amount` are `money()` — `DECIMAL(14,2)` — and arrive as JS
+ * **numbers**: `config/database.js` sets `decimalNumbers: true`, and `lib/money.ts` records the
+ * measurement. They are typed `number` here for that reason. An amount goes through `lib/money`, which
+ * always prints two decimal places and the currency as a code rather than a glyph — this list spans
+ * every school, so two rows can share a symbol and differ in currency. A percentage is formatted by
+ * `formatPercent` below instead, with trailing zeros trimmed, because 15 percent is what the operator
+ * typed and "15.00%" reads like a rate someone measured.
  *
  * A percentage coupon has **no currency at all**: `coupons.validation.js` forbids the column on one,
  * on the grounds that a percentage discount is currency-agnostic and its `max_discount_amount` cap is
@@ -47,6 +47,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
+import { formatCodeWithAmount, formatMoney } from '@/lib/money';
 import { useCollection } from '@/lib/useCollection';
 import {
   SearchField,
@@ -101,31 +102,14 @@ const PERCENTAGE = 'percentage';
 /** `config/constants.js` COUPON_STATUS, in the order an operator scans them. */
 const STATUSES = ['active', 'inactive', 'expired'];
 
-/**
- * A money figure, formatted in the currency it is denominated in.
- *
- * `currency` is `STRING(10)` in the database while `Intl.NumberFormat` accepts only a valid ISO 4217
- * code — it throws `RangeError` on anything else. The request schema constrains new rows to three
- * characters, but a single legacy row with a malformed code would throw inside a cell and take the
- * whole table down with it, so the failure is caught and degraded to the code plus the number.
+/*
+ * There used to be a file-local `formatMoney` here, built on the premise that the amount arrived as a
+ * string and formatting it with `Intl`'s currency style — a glyph, where every other platform list
+ * shows the code. `lib/money` is the one place money is formatted; see its header for why.
  */
-function formatMoney(value: number | string | null, currency: string | null): string | null {
-  if (value === null) return null;
 
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) return null;
-
-  if (!currency) return amount.toFixed(2);
-
-  try {
-    return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(amount);
-  } catch {
-    return `${currency} ${amount.toFixed(2)}`;
-  }
-}
-
-/** A percentage, with the trailing zeros the DECIMAL column carries trimmed off. */
-function formatPercent(value: number | string): string {
+/** A percentage, with the trailing zeros trimmed — 15 rather than 15.00. */
+function formatPercent(value: number): string {
   const percent = Number(value);
   if (!Number.isFinite(percent)) return `${value}%`;
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(percent)}%`;
@@ -208,7 +192,8 @@ export default function CouponsPage() {
         header: 'Discount',
         cell: (row) => {
           if (row.discount_type === PERCENTAGE) {
-            const cap = formatMoney(row.max_discount_amount, null);
+            /* A bare figure: the cap has no currency of its own. See the header. */
+            const cap = row.max_discount_amount === null ? null : formatMoney(row.max_discount_amount);
             return (
               <span>
                 {formatPercent(row.discount_value)}
@@ -217,7 +202,7 @@ export default function CouponsPage() {
             );
           }
 
-          return <span>{formatMoney(row.discount_value, row.currency) ?? row.discount_value}</span>;
+          return <span>{formatCodeWithAmount(row.currency, row.discount_value)}</span>;
         },
       },
       {

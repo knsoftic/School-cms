@@ -136,7 +136,7 @@ async function duplicate(req, res) {
  * prices and received three rows needs to be told why without reading the API docs.
  */
 async function setPrices(req, res) {
-  const { plan, created: createdCount, deleted, retired } = await service.setPrices(
+  const { plan, created: createdCount, updated, deleted, retired } = await service.setPrices(
     req,
     req.params.id,
     req.body.prices
@@ -144,13 +144,13 @@ async function setPrices(req, res) {
 
   describeActivity(req, {
     entityId: plan.id,
-    description: `Configured pricing for plan ${plan.name} (${plan.code}): ${createdCount} price(s)`,
-    metadata: { created: createdCount, deleted, retired },
+    description: `Configured pricing for plan ${plan.name} (${plan.code}): ${createdCount + updated} price(s)`,
+    metadata: { created: createdCount, updated, deleted, retired },
   });
 
   return ApiResponse.ok(
     res,
-    { plan: present(plan), created: createdCount, deleted, retired },
+    { plan: present(plan), created: createdCount, updated, deleted, retired },
     {
       message: retired
         ? `Plan pricing updated. ${retired} price(s) in use by an existing subscription or quotation were deactivated rather than removed.`
