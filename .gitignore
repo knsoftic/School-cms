@@ -58,4 +58,7 @@ tmp/
 # `tests/baseline.json` is NOT ignored: it is the recorded per-suite assertion count the run is
 # checked against, and it only changes when `npm run test:baseline` is run deliberately.
 backend/tests/.last-run.json
+# The harness's run lock. Removed on a clean exit, so it only ever appears after a killed run — which is
+# exactly when `git add -A` would sweep it into a commit.
+backend/tests/.suite-run.lock
 frontend/tsconfig.tsbuildinfo

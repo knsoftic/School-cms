@@ -3,28 +3,44 @@
 **Project:** Multi-School Management System (multi-tenant SaaS)
 **Source of truth:** `SRS_Multi-School-Management-System.docx` (36 sections)
 **Root:** `E:\School Managment System`
-**Last updated:** 2026-09-09 (session 26, part 44 — the plan catalogue was write-once)
-**Overall state:** **The Super Admin platform surface, accounts-and-access, the whole subscription
-*catalogue* — plans and add-ons — the subscription *lifecycle*, Phase 3.H billing, and Phase 3.I
-school setup are complete and verified.** SRS §9 works end to end; §10 / §11's Plan Builder can build a
-plan the entitlement engine resolves against; §11.3's seven add-ons can be configured and priced;
-§12 / §30 / §33 can put a school on a plan and move it through all ten states; SRS §13 can **issue the
-bill, apply a coupon, take a school payment, approve it and refund it** over HTTP; and SRS §14 can now
-**configure a school's own settings, run its academic session lifecycle, and build its classes,
-sections and subjects with class-teacher and subject-teacher assignment**.
-All fourteen middleware files plus the barrel are implemented; the authentication / tenant-isolation
-chain, the subscription entitlement engine, and the upload / rate-limit / CSRF / activity-log hardening
-layer each have their own verification suite; `src/app.js` / `src/server.js` wire them into a running
-process.
-**5,495 checks pass, 0 fail, 0 skip, across forty scripts**, every script exit 0, measured as one
-**serial** loop against a live MariaDB in **session 28**. **SRS §14 through §23 are closed in full**, and
-so is **Known Issues #26** — the six columns that accepted a caller-supplied filesystem path. **Every SRS
-section of the backend is now implemented**; what remains of the backend is Phase 5, and the entire
-frontend is still unstarted.
-Two Phase 5 items are what completed requirements now wait on: **5.4** PDF rendering, which FR-EXAM-005,
-FR-HW-001, FR-ASG-001, FR-DOC-001 and FR-REPORT-002's PDF half all need and which #26 had to be closed
-before, and **5.2** the
-Anthropic adapter, which is written against §21's driver contract and has never been executed.
+**Last updated:** 2026-09-10 (session 28)
+
+## Where this stands, in one place
+
+**The product is built and verified against its source. What is left needs a decision or a credential,
+not code.**
+
+This header described a mid-build state for several sessions after that state ended — it stopped at
+Phase 3.I and said *"the entire frontend is still unstarted"* while `next build` was generating 82
+pages. It is now written from measurement, and the figures below were taken on 2026-09-10.
+
+| | |
+|---|---|
+| Backend | Every SRS section implemented. 64 domain tables (§29, plus `sequelize_meta`), 109 permissions, 11 roles |
+| Frontend | Next.js 16.3.4 / React 19.2.8 / Tailwind 4.3.3 / TypeScript 5.9.3 — **82 pages**, `tsc` clean, `eslint .` exit 0 |
+| API reach | **150 write routes mounted, 149 with a frontend caller.** The exception is `POST /auth/refresh`, reached by a raw `fetch` because it *is* the refresh mechanism |
+| Verification | **40 suites, 5,495 assertions, 0 FAIL, 0 SKIP, every script exit 0** — one serial loop against live MariaDB. `npm test` wraps it as **5,705 cases** |
+| Checklist | 159 rows `Completed`, 4 `In Progress`, 2 `Implemented`, 1 `Will not be built`. None is blocked on engineering |
+| Known Issues | **6 open of 33.** Not one is waiting on code being written here |
+
+**The four `In Progress` rows and what each waits on.** **5.2** — the Anthropic adapter is exercised with
+the SDK replaced in `require.cache`, so prompt construction and response parsing both run; the live
+round trip needs an API key this environment does not have. **7.13** — eleven `real-blocked` findings,
+each a decision the SRS declines to make; they are stated in `docs/SRS-TRIAGE-VERDICTS.md`. **FR-SUB-008**
+— `enforceLimit` guards six of §11.2's eight keys; `admin_limit` has no guard mounted and `api_limit`
+names no unit. **FR-STUDENT-001** — §15.1's "Documents" half has no code path, and giving it one needs a
+document type and a permission the fixed catalogue does not contain.
+
+**The two `Implemented` rows** mean no check can reach what is missing, not that nothing is tested.
+**FR-BILL-001** — all eleven invoice fields are written and asserted, but its actor is *System* and its
+trigger, *"a billing event occurs"*, appears once in the SRS and is never defined; invoices are issued by
+a Super Admin until that is answered. **5.3** — PDF extraction is verified end to end; the image branch
+waits on 5.2's key.
+
+**Start here if you are picking this up.** §7 below is the stopping point and the next action. §5 is the
+Known Issues register. §6 is the file-by-file map. §8 is the rules this log is kept by — read it before
+adding to any of them. `docs/VERIFICATION.md` records what was measured and, more usefully, **what has
+never been run**.
 
 **Read this before trusting the §2j entry.** The four Phase 3.I modules and the first draft of
 `scripts/verify-school-setup.js` were already on disk, unrecorded, when session 16 opened — file mtimes
@@ -5010,10 +5026,13 @@ not. Nothing here is a new finding; it is the same work, said once in the place 
 absent.*
 
 `frontend/` exists, builds and typechecks — Next.js 16.3.4 App Router, React 19.2.8, Tailwind 4.3.3,
-TypeScript 5.9.3, **63 pages**. `AuthProvider`, `EntitlementProvider` and `apiClient` are done (§2ah);
-the shell and all five auth pages (§2ai); the sixteen Super Admin screens (§2aj), the seventeen School
-screens (§2ak) and the three role surfaces (§2al); the eighteen create screens and the subscription
-detail screen (§2am). Verified by `backend/scripts/verify-frontend.js`, which checks every path the
+TypeScript 5.9.3, **82 pages** (63 at the end of session 27; the difference is session 27's later
+detail screens and session 28's photo viewer). `AuthProvider`, `EntitlementProvider` and `apiClient`
+are done (§2ah); the shell and all five auth pages (§2ai); the sixteen Super Admin screens (§2aj), the
+seventeen School screens (§2ak) and the three role surfaces (§2al); the eighteen create screens and the
+subscription detail screen (§2am); and **four screens beyond §33's two lists** — `school/settings`,
+`school/assignments`, `school/ai` and `school/notifications` — each reached from a dashboard or a
+sibling rather than from a nav the suite still pins at sixteen and seventeen. Verified by `backend/scripts/verify-frontend.js`, which checks every path the
 client calls against the **generated** OpenAPI document.
 
 What is left is not screens: it is **the write routes no screen calls**, 75 of 150, sized and split in
@@ -11534,10 +11553,71 @@ Session 16 (2026-09-02, same calendar day) opened on that stop and found it alre
 402. `.git` was copied to the scratchpad before any of it ran, so the operation was reversible while it
      was happening. The rewrite cost nothing beyond the hashes: this repository has **no remote**, so
      there was no force-push and no collaborator to disturb.
+403. **Brought every markdown file current, asked for in these words: "make sure that work can be done
+     from the md files".** Audited all eleven against the tree rather than against each other, and the
+     worst offender was the one a newcomer reads first.
+404. **This log's own header described a state that ended sessions ago.** It stopped at Phase 3.I and
+     said *"the entire frontend is still unstarted"* while `next build` generated 82 pages. Rewritten
+     from measurement as one table — backend, frontend, API reach, verification, checklist, register —
+     with a "start here" paragraph naming which section holds what.
+405. **`docs/ARCHITECTURE.md` was wrong in three sections, one of them load-bearing.** It listed a
+     `src/payments/` directory with five provider files, none of which has ever existed, and that
+     claim had been copied from here into §7's work plan **twice**. It also named a
+     `SubscriptionAccessService` nothing uses, and drew an entitlement snapshot with `state` and
+     `usage` at the top level — the real object has neither there, and **usage is deliberately not in
+     the snapshot at all**, because a ceiling enforced against a cached count could be ten minutes
+     stale. Each is corrected with what it used to say, under a new header stating that where the
+     document and the code disagree, the code wins.
+406. **`deploy/monitoring/README.md` cited 24 source lines that no longer said what it claimed.** It was
+     written 2026-09-04; `env.js`, `server.js`, `subscriptionLifecycle.js` and a test file changed
+     after. `env.js` had a 24-line block inserted, so every later citation was off by exactly 24 — an
+     operator looking for backup retention was sent to `'wallet'`. `server.js` had the §29 schema
+     guard added at boot, shifting its citations by differing amounts; one called the `app.listen`
+     line the SIGTERM handler. Found by printing each citation beside the current source, and
+     re-pointed **by content** — the setting name, the log message — rather than by adding the offset.
+     The `.env.example`, `app.js`, `cache.js` and `cron.js` citations all held.
+407. Smaller corrections, each measured: `UI-AUDIT-FINDINGS.md` said *"84 closed, 90 open"* while its
+     own status lines count **94 and 80** — ten closures recorded on the finding and nowhere else, so
+     the **Wrong** category is in fact fully closed. `SRS-FINAL-PASS-FINDINGS.md` still read
+     *"Triage state: 9 of 70"*; it is 70 of 70. The checklist and `VERIFICATION.md` said 63 pages;
+     the build says **82**.
+408. **Added a root `README.md`**, which the repository never had. It points at the documents rather
+     than repeating their figures, so it cannot become one more place for a number to go stale, and
+     every command in it was checked against `package.json` and the database CLI first. One claim was
+     caught before it shipped: the API reference path, which is `/api/v1/docs` because `docs` is
+     mounted on the versioned router.
+409. **A session restart killed `npm test` inside `verify-finance.js`, and the leftovers broke the next
+     run twice over.** MariaDB went down with it (Known Issues #2) and was restarted as a tracked
+     process. Then `verify-finance.js` crashed on `code must be unique` — its own `VFN-WITH` and
+     `VFN-WITHOUT` plans from the killed run — and `verify-seed.js` failed two assertions because it
+     counts users and found the dead run's `verify-finance.local` user.
+410. **The cause was that `teardown()` only deletes ids created in the current run**, which is right for
+     a run that finishes and useless for one that does not. Gave `verify-finance.js` a `sweepResidue()`
+     that finds leftovers by the suite's **own** markers — the `VFN-` code prefix and its email domain —
+     and hands them to the existing `teardown()`, which already knows the deletion order. Scoped to
+     those markers so it cannot touch another suite's rows. Proved by planting a colliding plan: the
+     suite cleared it and passed. No assertion was added, so the baseline did not move.
+411. **Did not harden the other 39 suites in this change**, because updating documents is what was asked
+     and that is a separate job. The same weakness is probable elsewhere and is flagged as a task that
+     says how to measure it: plant a row with a suite's own prefix, and see whether the next run fails.
+412. Final run: **40 suites, 5,495 assertions, 0 FAIL, 0 SKIP, every script exit 0**; `npm test`
+     **5,705 tests, exit 0**; both lints exit 0; `tsc` clean; `next build` 82 pages.
 
 ### Next task — what is left, and why each item is where it is
 
-**Read this first: nothing on this list is blocked on effort.** Session 28 closed the last three Known Issues rows that a patch could close — #21 (all four racing limit keys), #17 and #32. What remains is three checklist rows and five register rows, and **every one of them is waiting on something outside this repository**: an API key, a specification decision, a deployment, or a house-style choice. Each is named below with what it waits on, so the next session can tell in one read whether the thing it was waiting for has arrived.
+**The next action, if you want one that is engineering:** make the other 39 verification suites survive
+a killed run the way `verify-finance.js` now does (step 410). It is the only code-shaped work left, and
+it is measured, not guessed — plant a row carrying a suite's own code prefix or email domain in
+`msms_test`, run that suite, and see whether it fails; for each that does, add the same
+`sweepResidue()`. The baseline must not move, because the sweep adds no assertions. Start by reading
+`sweepResidue()` in `verify-finance.js`.
+
+**Otherwise, nothing on this list is blocked on effort.** Session 28 closed every Known Issues row a
+patch could close — **#17, #21 (all four racing limit keys), #31, #32 and #33** — and what remains is
+four `In Progress` checklist rows, two `Implemented`, one `Will not be built`, and six register rows.
+**Every one of them is waiting on something outside this repository**: an API key, a specification
+decision, a deployment, or the environment. Each is named below with what it waits on, so the next
+session can tell in one read whether the thing it was waiting for has arrived.
 
 
 **The uncalled-write-route queue is closed** (§2an). `docs/VERIFICATION.md` sized it at 99; measured
@@ -11550,10 +11630,24 @@ Reproduce that before trusting it. The script is short — `buildDocument(create
 this session found twice: a path built from a variable reads as uncalled when it is not, and a call
 made outside the client is invisible.
 
-**Three rows in `docs/IMPLEMENTATION_CHECKLIST.md` are not `Completed`, and none of the three can be
-finished here.** Session 28 also moved two rows *down* to `In Progress` on an accurate reading of the
-legend — FR-SUB-008 (six of §11.2's eight keys are enforced) and FR-STUDENT-001 (§15.1's "Documents"
-half has no code path) — and gave 3.S.1 the terminal `Will not be built` status it had earned.
+**Seven rows in `docs/IMPLEMENTATION_CHECKLIST.md` are not `Completed`, and none of them can be
+finished here.** This paragraph said three, and named only the three below; counted from the status
+column on 2026-09-10 it is seven. The other four, each with what it waits on:
+
+- **FR-SUB-008 — `In Progress`.** `enforceLimit` guards six of §11.2's eight keys. `admin_limit` has no
+  guard mounted, and `api_limit` names no unit the source defines. Moved *down* from `Tested` in
+  session 28.
+- **FR-STUDENT-001 — `In Progress`.** §15.1's "Documents" half has no code path, and giving it one
+  needs a document type and a permission the fixed catalogue does not contain (triage finding 16).
+- **FR-BILL-001 — `Implemented`.** All eleven §13.1 invoice fields are written and asserted. What is
+  absent is the trigger: the requirement's actor is **System** and its precondition is *"a billing
+  event occurs"*, a phrase that appears once in the SRS and is never defined — so which events count,
+  when in the period to issue, and what due date to set are decisions §35 forbids making. Invoices
+  are issued by a Super Admin through `POST /invoices/generate` until that is answered.
+- **5.3 — `Implemented`.** PDF extraction is verified end to end; the image branch calls the provider
+  and waits on 5.2's key.
+
+Session 28 also gave 3.S.1 the terminal `Will not be built` status it had earned. The three it named:
 
 - **5.2 — the Anthropic adapter's round trip.** Everything but the network hop is exercised and
   regressed (§2af). What is left needs a real key and a real request, which this environment does not

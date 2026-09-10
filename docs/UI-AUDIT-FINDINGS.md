@@ -1,6 +1,7 @@
 # Frontend audit — confirmed findings
 
-Produced in session 26 by a 24-agent sweep over all 59 screens: twelve agents read a group of five
+Produced in session 26 by a 24-agent sweep over the 59 screens that existed then — there are **79**
+now, and the twenty added since have not been through a sweep of this kind. Its method: twelve agents read a group of five
 against the backend module each `api.*` call reaches, and twelve more tried to **refute** what the
 first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
@@ -18,7 +19,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
   fixed at 109 permissions / 11 roles / 20 module keys / 8 limit keys / 64 domain tables (SRS §29,
   §35), and `docs/SRS-extracted.md` remains the sole source of truth.
 
-**84 closed, 90 open.**
+**94 closed, 80 open**, re-counted from the status lines on 2026-09-10 — this header read *"84 closed, 90 open"* and the four section lines below agreed with it, because ten findings closed in sessions 27 and 28 were marked closed on the finding and nowhere else. The **Wrong** category is now clear: all 42 of its findings are closed, as are all 17 **Broken** ones. What is left is 43 **Poor** and 37 **Minor** — none of which is a user meeting an error or a wrong answer.
 
 ## Broken — a user meets an error, a dead end, or a wrong answer
 
@@ -179,7 +180,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 ## Wrong — renders or behaves incorrectly without erroring
 
-42 finding(s) — 32 closed, 10 open.
+42 finding(s) — **42 closed, 0 open.**
 
 ### The failure state tells the user to 'request a new link from your profile', but no profile screen exists and nothing in the frontend ever calls POST /auth/resend-verification. — `src/app/(auth)/verify-email/page.tsx`
 

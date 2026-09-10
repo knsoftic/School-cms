@@ -3,6 +3,22 @@
 Derived from SRS §3 (Technology Stack), §4 (System Architecture), §8 (Multi-Tenant), §29 (Database),
 §30 (Non-Negotiable Development Rules).
 
+**Re-checked against the tree on 2026-09-10.** Read that date as a warning rather than a guarantee: this
+document describes intent, and intent drifts from code silently. Three of its sections were **wrong** when
+that check was made — a directory that has never existed, a service under a name nothing uses, and a
+snapshot shape with two fields the object does not have — and one of those errors had been copied out of
+here into the work plan twice. Each is corrected below **with what it used to say**, because a document
+that quietly rewrites itself teaches nobody where to be careful.
+
+So: **where this file and the code disagree, the code wins, and the disagreement is a defect in this
+file.** The three records that are checked mechanically, and are therefore the ones to trust:
+
+| Document | What it holds | Kept honest by |
+|---|---|---|
+| `IMPLEMENTATION_PROGRESS.md` | the running log, the Known Issues register, the file-by-file map | §8's own rules; the per-suite figures are re-derived from `backend/tests/baseline.json` |
+| `docs/IMPLEMENTATION_CHECKLIST.md` | every requirement, its status and its evidence | `npm test` fails when a suite figure quoted here disagrees with the baseline |
+| `docs/VERIFICATION.md` | what was measured, on what date, and what has never been run | re-measured rather than edited |
+
 ---
 
 ## 1. Repository layout
@@ -66,13 +82,18 @@ and tenant-scoped by construction rather than by remembering to be. The rest are
 | `src/database/seeders` | roles, permissions, role_permissions, super admin, add-ons |
 | `src/middlewares` | auth, tenant, rbac, pbac, subscription gating, validation, upload, rate limit, error, csrf |
 | `src/modules/<name>` | one folder per feature: `*.routes.js`, `*.controller.js`, `*.service.js`, `*.validation.js` |
-| `src/services` | cross-module domain services shared by the modules: permissions, tenancy, entitlement, usage |
-| `src/payments` | plugin-based gateway registry (§13.2) + built-in providers |
+| `src/services` | cross-module domain services: `permissionService`, `tenantService`, `entitlementService`, `usageService`, `mailService`, `paymentGatewayService` |
 | `src/ai` | provider-agnostic AI client, content extraction, MCQ generation pipeline (§21) |
-| `src/jobs` | queue worker definitions + cron schedules (§25, §27) |
-| `src/utils` | ApiError, ApiResponse, pagination, pdf, excel, mailer, crypto, dates, money |
-| `src/docs` | Swagger/OpenAPI definition + per-module JSDoc annotations (§28) |
-| `tests` | Jest + Supertest integration tests including the critical isolation scenario |
+| `src/jobs` | `cron.js` schedules, `worker.js`, and five tasks under `tasks/` (§25, §27) |
+| `src/utils` | `ApiError`, `ApiResponse`, `pagination`, `pdf`, `fileResponse`, `dates`, `money`, `tokens`, `schoolScope`, `documentNumber`, `createRouter`, `routeMeta` |
+| `src/docs` | Swagger/OpenAPI definition, generated from the mounted Express stack (§28) |
+| `tests` | the jest fold: `globalSetup.js` spawns all forty `scripts/verify-*.js` suites serially, `verify.test.js` reports each assertion as a named case against `baseline.json` |
+
+> **`src/payments/` is not in this table any more, and its absence is the point.** This document listed
+> it for two weeks and the directory has never existed. The claim was copied out of here into the
+> progress log's "what is left to build" section **twice**, and corrected twice — the second time with
+> the note that *a path is not a capability*. What §13.2 actually requires lives at
+> `src/services/paymentGatewayService.js` (366 lines) and is described in §5 below.
 
 ---
 
@@ -116,41 +137,65 @@ plan_modules / plan_features / plan_limits  (the subscribed plan's configuration
 deny
 ```
 
-`SubscriptionAccessService` returns a cached, per-school **entitlement snapshot**:
+`services/entitlementService.js` returns a cached, per-school **entitlement snapshot**. Its real shape,
+read off `resolve()` rather than from memory:
 
 ```js
 {
-  state: 'active',                       // one of the 10 SRS lifecycle states
-  modules: { students: true, ai: true, hostel: false, ... },   // the 20 SRS modules
-  features: { 'reports.premium': true, ... },
-  limits:   { student_limit: { type: 'fixed', value: 500 },     // Fixed | Unlimited
-              ai_limit:      { type: 'unlimited' }, ... },
-  usage:    { student_limit: 132, ai_limit: 750, ... }          // from usage_records
+  schoolId, organizationId,
+  subscription: { id, planId, state, isUsable, billingCycle, currentPeriodStart, currentPeriodEnd,
+                  startsAt, trialEndsAt, gracePeriodEndsAt, renewalMode },   // null when unsubscribed
+  plan:     { id, code, name, tierRank },
+  modules:  { students: true, ai: true, hostel: false, ... },        // the 20 §11.1 modules
+  features: { premium_reports: true, ... },
+  limits:   { student_limit: { key, type, value, baseValue, addonUnits, unit, allowOverage, source },
+              ai_limit:      { type: 'unlimited', ... }, ... },      // the 8 §11.2 keys
+  resolvedAt
 }
 ```
 
-`requireModule('ai')` and `enforceLimit('ai_limit')` read that snapshot. Adding a plan never requires a code
-change — the check is always "look up the configuration in the database".
+**This section named `SubscriptionAccessService` and put `state` and `usage` at the top level.** No such
+class exists; `state` lives under `subscription`; and there is no `usage` key at all — **usage is
+deliberately not in the snapshot**, because the two are invalidated by different events. A headcount is
+counted live from its source table by `usageService.countHeadcount()` at the moment a guard runs, and
+`usage_records` is a reporting mirror rather than the enforcement path. Caching a usage figure beside a
+plan would mean a ceiling enforced against a number that could be ten minutes old.
+
+`requireModule('ai')` and `enforceLimit('ai_limit')` read that snapshot. Adding a plan never requires a
+code change — the check is always "look up the configuration in the database".
 
 ---
 
 ## 5. Payment gateway plugin architecture (§13.2)
 
+**Everything this section previously described is fiction, and it is replaced rather than deleted so the
+next reader knows why the tree does not match it.** It drew a `src/payments/` directory with a registry,
+a `BaseGateway` contract and five provider files — `CashGateway.js`, `BankTransferGateway.js`,
+`ManualPaymentGateway.js`, `WalletGateway.js`, `OnlineGatewayTemplate.js`. None of them has ever existed.
+The phrase "five providers" was read back out of this document into the progress log as outstanding work,
+twice.
+
+What §13.2 requires is one file:
+
 ```
-src/payments/
-├── PaymentGatewayRegistry.js     register() / get() / list()
-├── BaseGateway.js                contract: createCharge, verifyWebhook, refund, describe
-└── providers/
-    ├── CashGateway.js
-    ├── BankTransferGateway.js
-    ├── ManualPaymentGateway.js   txn id + screenshot → Pending → Super Admin approve/reject
-    ├── WalletGateway.js
-    └── OnlineGatewayTemplate.js  drop-in template for any online provider
+src/services/paymentGatewayService.js     366 lines
+    register({ key, label, charge, refund })   the adapter contract, validated on registration
+    dispatch() / verifyWebhook()               charge and refund, writing payment_transactions on both
+    assertMethodEnabled()                      the deployment's METHOD allow-list, a different question
 ```
 
-The SRS names the five *methods* but **no specific online provider** (§35: "Additional payment gateways" is
-explicitly out of scope). `OnlineGatewayTemplate` therefore implements the contract and is registered under a
-configurable key, so a real provider is added by dropping in a file — no core change.
+**It ships zero adapters, and that is the finished state of the requirement rather than a gap in it.**
+§13.2 lists five payment *methods* — Cash, Bank Transfer, Manual Payment, Online Gateway, Wallet — and
+four of them are **recorded, not processed**: cash is counted, a transfer is reconciled from a statement,
+a manual payment is reviewed by a Super Admin under FR-BILL-003/004, and a wallet is an internal balance.
+Only Online Gateway talks to a third party, and the SRS names no provider for it — not Stripe, not PayPal,
+not a local processor. §35 lists *"Additional payment gateways"* among what it does not specify, so
+shipping one would invent a requirement **and** falsify the plugin claim by making the built-in the
+assumed shape.
+
+Adding a real provider is `register({ key, label, charge, refund })` plus one environment variable, with
+**no change to `payments.service.js`** — which is the test of whether the architecture is actually
+plugin-based, and it passes. `verify-billing.js` covers the seam.
 
 ---
 
@@ -181,7 +226,7 @@ No numeric targets are asserted anywhere: SRS §25 explicitly leaves them unspec
 | SQL injection | Sequelize parameter binding everywhere; zero string-concatenated SQL; identifier allow-lists for sort columns |
 | XSS | `helmet` CSP, output escaped by React, recursive input sanitiser on body/query/params |
 | CSRF | double-submit cookie token required on cookie-authenticated state-changing requests |
-| File upload | per-surface extension + declared-MIME allow-list cross-checked against each other, size cap from the plan's File Upload Limit, randomised stored filenames, per-school directories. **No magic-byte sniffing** — the declared type must match the extension it carries, which defeats the renamed-payload case without an extra dependency; noted as a known limitation in `upload.js`. Nothing serves uploads back yet |
+| File upload | per-surface extension + declared-MIME allow-list cross-checked against each other, size cap from the plan's File Upload Limit, randomised stored filenames, per-school directories. **No magic-byte sniffing** — the declared type must match the extension it carries, which defeats the renamed-payload case without an extra dependency; noted as a known limitation in `upload.js`. **Uploads are served back**, by nine controller routes through `utils/fileResponse.js` — this cell read "nothing serves uploads back yet" until session 28, which was true when written and stopped being true with the payment screenshot route. The stored path never leaves the API in any response: a caller gets `has_photo` / `has_screenshot` / `has_attachment` and asks the file route by **record id**, which re-checks the tenant |
 | API security | helmet, CORS allow-list, `hpp`, body size caps, request ids |
 | Rate limiting | global limiter + stricter limiter on auth and AI endpoints; per-school API Limit from the plan |
 | JWT security | separate access/refresh secrets, `iss`/`aud` claims, `jti`, algorithm pinned to HS256, refresh reuse detection |
@@ -201,6 +246,14 @@ frontend/src/app/
 ├── (parent)/parent/…           parent dashboard, children
 └── (student)/student/…         student's own records
 ```
+
+**§33's two lists are screen lists, not the requirement, and the tree now shows that.** The nav carries
+exactly sixteen and seventeen — `verify-frontend.js` pins both counts in both directions — and **four
+screens exist beyond them**: `school/settings` (FR-SCHOOL-001 and FR-SCHOOL-002, which had nine working
+endpoints and no caller at all), `school/assignments` (§20.3), `school/ai` (§21) and `school/notifications`
+(§23). Each is reached from a dashboard or a sibling screen rather than from the nav. Every one of those
+is a stated requirement with a human actor that was `Completed` against an API nothing could reach; the
+reasoning is in `docs/SRS-TRIAGE-VERDICTS.md`, findings 18 and 60.
 
 * `AuthProvider` holds the session; access token in memory, refresh via httpOnly cookie.
 * `EntitlementProvider` reads the school's entitlement snapshot and hides/disables gated modules —
@@ -249,8 +302,11 @@ the directory did not exist; it was created in session 26.
   64 tables while §35 forbids a 65th. Durability across restarts comes from the cron reconciliation
   sweeps instead. PM2 manages the API and the cron scheduler — two apps, not three.
 
-Provenance, from file mtimes, since this project has no git history: `ARCHITECTURE.md` was last
-written 2026-08-26 18:34. `rateLimit.js` (2026-08-26 14:53) predates it by four hours, so the
+Provenance, from file mtimes — which was the only evidence available when this was written, the
+repository having been initialised on 2026-09-09 with everything already in place. **There is git
+history now**, so a claim about a change made after that date can be attributed properly and should be;
+`§8` of the progress log carries the rule. For anything earlier, mtimes remain the only evidence and
+"unknown" remains the honest answer. `ARCHITECTURE.md` was last written 2026-08-26 18:34. `rateLimit.js` (2026-08-26 14:53) predates it by four hours, so the
 "cluster" claim was already contradicted when it was written. `worker.js` (2026-09-04 14:58) and
 `fileResponse.js` (2026-09-04 15:15) came nine days later, so those two claims became wrong
 afterwards rather than starting that way.

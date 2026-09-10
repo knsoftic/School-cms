@@ -31,6 +31,18 @@ and handlers, status codes, log messages and their levels, cron schedules, env-v
 defaults, and the two rate-limit numbers. Where this document states a number, that number came from
 a named line, not from an estimate.
 
+**Every citation was re-checked on 2026-09-10, and 24 of them had gone stale.** This runbook was
+written on 2026-09-04; four of the files it cites changed afterwards, and a line number does not move
+when the code under it does. `config/env.js` had a 24-line block inserted between lines 131 and 181,
+so every citation below that point was off by exactly 24 — the runbook sent an operator looking for
+backup retention to a line reading `'wallet'`. `server.js` had the §29 schema guard added mid-file at
+boot, which shifted most of its fifteen citations by differing amounts; one claimed the SIGTERM
+handler was the `app.listen` call. Each was re-pointed **by content** — the setting, the log message,
+the handler — rather than by adding the offset, and the `.env.example`, `app.js`, `cache.js` and
+`jobs/cron.js` citations were confirmed still correct. **Re-check them against the source before
+trusting one, and re-check them all whenever `env.js` or `server.js` changes.** This is the failure
+mode `IMPLEMENTATION_PROGRESS.md` §8 records for cited line numbers: they are as perishable as counts.
+
 **Verified by running it on the authoring machine** (Windows + Git Bash, against this repository's
 own `backend/storage/logs`): the multi-line shell checks in §5 and their one-line forms in §6 parse
 under both `sh -n` and `bash -n`; the heartbeat check finds the real `notification-dispatch` line
@@ -68,12 +80,12 @@ Handler: `system.controller.js:37-42`. `uptime` is `Math.floor(process.uptime())
 More than a TCP check, and this is worth knowing because it is the one thing this endpoint is
 genuinely good for:
 
-- **The whole module graph loaded.** `server.js:98-99` builds the app — which requires every route
+- **The whole module graph loaded.** `server.js:116` builds the app — which requires every route
   module, model and middleware — *before* `listen`. A route file with a syntax error or a bad
   require never reaches the point of binding a port.
 - **`assertRuntimeConfig()` passed and the database answered once, at boot.** Both run before
-  `listen` (`server.js:86-88`). A process with a short `JWT_ACCESS_SECRET` or an unreachable
-  database exits 1 without binding (`server.js:141-148`).
+  `listen` (`server.js:87` and `:106`; `listen` is `:117`). A process with a short `JWT_ACCESS_SECRET`
+  or an unreachable database exits 1 without binding (`server.js:159-167`).
 - **The event loop is not wedged.** The handler touches nothing, so a slow answer here is the
   process being blocked, not a dependency being slow. That is why the probe timeout is 5 s: at this
   endpoint, slow *is* the fault.
@@ -266,7 +278,7 @@ Anything that does not match the id pattern is silently replaced with a generate
 
 `apiLimiter` is mounted app-wide, before the router, with **no skip for the health routes**
 (`app.js:283`; limiter at `middlewares/rateLimit.js:206-210`). Defaults: 1000 requests per 15
-minutes per key (`config/env.js:181-182`).
+minutes per key (`config/env.js:205-206`).
 
 The §6 schedule costs **33 requests per 15-minute window**: P1 and P2 every minute (30) plus P3 every
 five minutes (3). Against a 1000-request budget that is 3.3%. Fine. P1 and P2 come from the loopback
@@ -291,9 +303,9 @@ A 429 is logged at `warn` with the offending key (`rateLimit.js:143-150`) — if
 ### 5.1 The process — PM2
 
 The API exits **1** on an unhandled rejection or an uncaught exception, after closing the pool
-(`server.js:125-136`), and PM2 restarts it. Between the exit and the restart, probes get connection
+(`server.js:143-154`), and PM2 restarts it. Between the exit and the restart, probes get connection
 refused and nginx returns 502. A graceful `SIGTERM` behaves the same way for up to
-`SHUTDOWN_TIMEOUT_MS = 15000` ms (`server.js:33`) while in-flight requests drain.
+`SHUTDOWN_TIMEOUT_MS = 15000` ms (`server.js:34`) while in-flight requests drain.
 
 So the signal is **the restart counter, not the probe**. A process that crashes and recovers between
 two 60-second probes leaves no trace in the probe history at all.
@@ -306,9 +318,9 @@ pm2 logs msms-api --lines 100  # stdout/stderr — see the warning below
 ```
 
 **A non-zero exit code after a deliberate reload is not by itself evidence of a crash.** If the drain
-overruns `SHUTDOWN_TIMEOUT_MS`, `server.js:51-54` logs `Graceful shutdown exceeded 15000ms; exiting
+overruns `SHUTDOWN_TIMEOUT_MS`, `server.js:52-54` logs `Graceful shutdown exceeded 15000ms; exiting
 now` at **error** level and calls `process.exit(code || 1)`. SIGTERM passes `code = 0`
-(`server.js:117`), and `0 || 1` is **1** — so a slow-but-correct stop reports exit 1 to PM2 *and*
+(`server.js:134-136`), and `0 || 1` is **1** — so a slow-but-correct stop reports exit 1 to PM2 *and*
 writes an error line that the §5.4 error-delta will count. Look for that message before treating a
 `pm2 reload` as a fault.
 
@@ -318,25 +330,25 @@ console transport is only added when the process is neither production nor test
 `storage/logs/pm2-api-out.log` and `pm2-api-error.log` (the `out_file` / `error_file` settings in
 `deploy/pm2/ecosystem.config.js`), and what reaches them is only what is written outside winston:
 
-- **boot failure** — `server.js:147` writes `Failed to start: …` to stderr as well as the log,
+- **boot failure** — `server.js:165` writes `Failed to start: …` to stderr as well as the log,
   because a configuration error can be thrown before the log directory is usable. This is the one
   API failure that is reliably visible in `pm2 logs`;
 - **the cron process's refusal** (§5.2), which is a `console.error` (`jobs/cron.js:250-254`).
 
-**`EADDRINUSE` is not on that list, and the reason is worth knowing.** `server.js:106-114` handles it
+**`EADDRINUSE` is not on that list, and the reason is worth knowing.** `server.js:123-131` handles it
 with `logger.error(...)` and then `process.exit(1)`; there is no stderr write on that path. The only
-`process.stderr.write` in the API (`server.js:147`) sits inside `start().catch(...)`, which a port
+`process.stderr.write` in the API (`server.js:165`) sits inside `start().catch(...)`, which a port
 clash never reaches — the `error` event is emitted on the server object asynchronously, *after*
 `start()` has already resolved. With no console transport in production, the message goes only to
 `storage/logs/error-*.log`, and even that is not guaranteed: `process.exit(1)` fires immediately
 after an asynchronous transport write that may not have flushed. **The dependable signature of a port
 clash is behavioural — PM2's restart counter climbing, an immediate exit 1, and no `listening on
-port` line (`server.js:100-103`) in `combined-*.log` for that restart.**
+port` line (`server.js:117-121`) in `combined-*.log` for that restart.**
 
 ### 5.2 The cron process — two distinct failures
 
 **Failure A: it never started.** Resident mode refuses to run unless `ENABLE_CRON=true`
-(`config/env.js:257`, `.env.example:116`) and exits 1 with an explanation
+(`config/env.js:281`, `.env.example:116`) and exits 1 with an explanation
 (`jobs/cron.js:249-255`). Under PM2 that is a restart loop: the restart counter climbs, the process
 never reaches `online` for long, and the message repeats in `pm2 logs` — for the cron app, in
 `storage/logs/pm2-cron-error.log`. It is the most likely way this deployment ends up with no sweeps
@@ -349,7 +361,7 @@ the most frequent task by a wide margin:
 
 | Task | Schedule | Source |
 |---|---|---|
-| `subscription-lifecycle` | `5 * * * *` (hourly) | `jobs/tasks/subscriptionLifecycle.js:18` |
+| `subscription-lifecycle` | `5 * * * *` (hourly) | `jobs/tasks/subscriptionLifecycle.js:22` |
 | `notification-dispatch` | `*/15 * * * *` | `jobs/tasks/notificationDispatch.js:23` |
 | `invoice-overdue` | `20 2 * * *` | `jobs/tasks/invoiceOverdue.js:14` |
 | `coupon-expiry` | `25 2 * * *` | `jobs/tasks/couponExpiry.js:14` |
@@ -447,8 +459,8 @@ app in PM2 cluster mode or with `-i` > 1. `pm2 list` showing two cron entries is
 
 ### 5.3 Backups
 
-Written to `backend/storage/backups` (`config/env.js:249-251`, `.env.example:111`), daily at 03:00
-(`jobs/tasks/databaseBackup.js:193`), retained 30 days (`config/env.js:252`, `.env.example:112`).
+Written to `backend/storage/backups` (`config/env.js:273-275`, `.env.example:111`), daily at 03:00
+(`jobs/tasks/databaseBackup.js:193`), retained 30 days (`config/env.js:276`, `.env.example:112`).
 
 **The filename prefix is the configured database name, not the literal string `msms`.**
 `databaseBackup.js:39-42` builds it as `` `${config.db.name}-${stamp}.sql` ``, where `stamp` is the
@@ -467,7 +479,7 @@ cannot leave one behind: a `mysqldump` failure deletes the part-written file
 1. **No new file at all** — the cron process is dead, or `MYSQLDUMP_PATH` still points at a Windows
    binary. That is not hypothetical: this repository's own `backend/.env:97` reads
    `MYSQLDUMP_PATH=C:/xampp/mysql/bin/mysqldump.exe`. The key itself is defined with a Linux-safe
-   default (`config/env.js:253`, `str('MYSQLDUMP_PATH', 'mysqldump')`; `.env.example:113` matches),
+   default (`config/env.js:277`, `str('MYSQLDUMP_PATH', 'mysqldump')`; `.env.example:113` matches),
    so the way this breaks is a production `.env` copied from the dev box. **Check that one line
    before the first 03:00 after go-live.**
 2. **A file that is much smaller than yesterday's** — a dump that succeeded against the wrong or a
@@ -509,15 +521,15 @@ restore drill has a known expected answer.
 
 ### 5.4 The logs
 
-Two rotating files in `backend/storage/logs` (`config/env.js:242-244`, `.env.example:107`), retained
-`LOG_RETENTION_DAYS=30` (`config/env.js:245`, `.env.example:108`), previous days gzipped
+Two rotating files in `backend/storage/logs` (`config/env.js:266-268`, `.env.example:107`), retained
+`LOG_RETENTION_DAYS=30` (`config/env.js:269`, `.env.example:108`), previous days gzipped
 (`config/logger.js:27-41`):
 
 - **`error-%DATE%.log`** — `level: 'error'` only (`config/logger.js:28`). What reaches it is narrow
   and therefore meaningful: **5xx responses with their stack** (`errorHandler.js:245-256`), readiness
   failures (`system.controller.js:64`), `cron: task failed` (`jobs/cron.js:169`), unhandled
-  rejections and uncaught exceptions (`server.js:125-136`), the overrun-shutdown line
-  (`server.js:52`), and explicit failures like `notifications: email delivery failed`.
+  rejections and uncaught exceptions (`server.js:143-154`), the overrun-shutdown line
+  (`server.js:53`), and explicit failures like `notifications: email delivery failed`.
 - **`combined-%DATE%.log`** — everything at `LOG_LEVEL` and above, including one morgan line per
   request (`app.js:216-219`) and every 4xx at `warn` (`errorHandler.js:257-258`).
 
@@ -576,7 +588,7 @@ Five things that will trip you up here:
    request log when nginx's access log already covers it — but `cron: task finished`
    (`jobs/cron.js:166`), `cron: scheduler started` (`jobs/cron.js:202`) and `Database backup written`
    (`jobs/tasks/databaseBackup.js:179`) are all `info` too. Turning morgan down turns the cron
-   heartbeat and the backup record off with it. **Keep `LOG_LEVEL=info` (`config/env.js:241`,
+   heartbeat and the backup record off with it. **Keep `LOG_LEVEL=info` (`config/env.js:265`,
    `.env.example:106`), and control volume with disk checks instead.**
 5. **Every path here assumes `LOG_DIR` and `BACKUP_DIR` are left at their relative defaults.** Both
    accept an absolute path and are then used verbatim (`config/env.js:242-244` and `249-251`:
@@ -732,7 +744,7 @@ delivery path is explicitly **outside this deliverable** — said here rather th
 because cron's `MAILTO` discards output silently when no `sendmail`-compatible binary exists, and
 "no news" then looks exactly like "all healthy".
 
-The application's own mail configuration (`MAIL_*`, `config/env.js:207-215`, `mail.driver` defaulting
+The application's own mail configuration (`MAIL_*`, `config/env.js:231-239`, `mail.driver` defaulting
 to `log`) is **not** available for this: it belongs to the API process, is reachable only through the
 notification service, and would be down in exactly the incidents worth alerting on.
 
@@ -791,14 +803,14 @@ Lines are single-line JSON with keys sorted alphabetically (confirmed against th
 | `"Unhandled promise rejection"` / `"Uncaught exception"` | error | error | `server.js:126,134` | The process is about to exit 1 |
 | `"Graceful shutdown exceeded"` | error | error | `server.js:52` | A drain that ran past 15 s. Expected on a busy `pm2 reload`, not a fault — but it exits **1** and it counts toward the §5.4 delta |
 | `"Shutting down ("` / `"HTTP server closed"` / `"Database pool closed"` | info | combined | `server.js:49,64,67` | A clean stop |
-| `"listening on port"` | info | combined | `server.js:100` | A clean start. Its **absence** after a restart is the port-clash signature (§5.1) |
-| `"Failed to start"` | error | error + **stderr** | `server.js:146-147` | Boot refused; the one API failure also visible in `pm2 logs` |
+| `"listening on port"` | info | combined | `server.js:119` | A clean start. Its **absence** after a restart is the port-clash signature (§5.1) |
+| `"Failed to start"` | error | error + **stderr** | `server.js:164-165` | Boot refused; the one API failure also visible in `pm2 logs` |
 | `"statusCode":5` | error | error | `errorHandler.js:245-256` | Any 5xx, with `requestId`, `path`, stack. **Match on `5`, not on `500`** |
 | `"statusCode":503` | error | error | mapped at `errorHandler.js:116-128`, logged at `:245-256` | The database-outage signature: Sequelize `ConnectionError` → `DATABASE_UNAVAILABLE`, `TimeoutError` → `DATABASE_TIMEOUT` |
 
 **Do not grep for `"statusCode":500` when hunting a database outage.** `errorHandler.js:116-128` maps
 `Sequelize.TimeoutError` and `Sequelize.ConnectionError` to **503**, not 500, and
-`scripts/verify-error-handler.js:94-105` asserts exactly that. Since §2's whole incident model is a
+`scripts/verify-error-handler.js:117-127` asserts exactly that. Since §2's whole incident model is a
 database outage, a 500-only grep is the one that returns nothing at the moment you need it. Every
 line in `error-*.log` also carries `"level":"error"`, so that string is the widest net when you do
 not yet know the code.

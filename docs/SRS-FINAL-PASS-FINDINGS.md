@@ -8,7 +8,14 @@ established defect — several proved wrong on inspection (one asserted the §2 
 table sums to 5,060; it sums to 5,133). Verify before acting, the way the four high-severity ones
 were.
 
-## Triage state: 9 of 70
+## Triage state: **complete — 70 of 70**
+
+All seventy were triaged; the verdicts are in `docs/SRS-TRIAGE-VERDICTS.md`. **44 real-fixable, all
+applied. 11 real-blocked, then 13 after two reclassifications, now 11 again after session 28 closed two
+that the tree had overtaken. 5 refused. 1 already-fixed.** The section below is the state as of the
+first nine and is kept as the record of how the pass proceeded; the verdicts file supersedes it.
+
+### The original nine
 
 **Four `high`** — all resolved. **Three `medium`**, verified by hand and resolved:
 

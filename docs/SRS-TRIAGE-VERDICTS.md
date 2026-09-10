@@ -42,8 +42,8 @@ Two corrections were made to the verdicts themselves while applying them, both a
 | 59 | FR-EXAM-004's Actor line is SRS:1026 | :1026 is *Preconditions*. The Actor line is **:1025** |
 | 30 | the six 200s prove the `isPlatform` short-circuit | They do not — deleting it leaves all six answering 200, because the school named is subscribed to Reports on its own merits. What the short-circuit governs is the refusal a caller with **no** school sees, which is what the three assertions below it measure. Established by breaking the source, not by reading it |
 
-What remains open is the **13 `real-blocked`** findings above and below, each needing a decision the
-SRS does not supply.
+What remained open at this point was the **13 `real-blocked`** findings above and below, each needing a
+decision the SRS does not supply. **It is eleven now** — see the next section.
 
 ## Session 28: two are no longer blocked, and the other eleven have had their unblocked half done
 

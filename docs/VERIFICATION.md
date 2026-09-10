@@ -74,9 +74,9 @@ them — not a backlog. **Each has since had the half of it that needed no decis
 consequence documented beside the code that causes it, a silent discard turned into a refusal, or a
 gap recorded in the checklist row it belongs to rather than only in the triage file.
 
-## 3. What was measured, on 2026-09-09
+## 3. What was measured, on 2026-09-09, and again on 2026-09-10
 
-**Re-measured at the end of session 28.** The figures below are the second set; the first is kept
+**Re-measured at the end of session 28, and the loop re-run from cold on 2026-09-10** — after a session restart that killed a run mid-suite and took MariaDB down with it. That run's leftover fixture rows broke the next two runs until `verify-finance.js` was given a sweep for its own residue; see `IMPLEMENTATION_PROGRESS.md` §7, steps 409–411. The figures below are the second set; the first is kept
 beneath each one where it differed, because a verification record that quietly overwrites its own
 numbers is the thing it exists to prevent.
 
@@ -89,7 +89,7 @@ numbers is the thing it exists to prevent.
 | `npm run lint` (backend) | exit 0 |
 | `npm run lint` (frontend) | **exit 0** — it failed when this document was first written; `eslint.config.mjs` was added in session 27 |
 | `tsc --noEmit` (frontend) | exit 0 |
-| `next build` | clean |
+| `next build` | clean, **82 pages** — 43 when the create screens were missing, 63 at the end of session 27 |
 | Schema | **65 tables** — §29's 64 plus `sequelize_meta`, the migration ledger |
 | Permission catalogue | **109 permissions, 11 roles** |
 | Git | initialised 2026-09-09; 397 files in the first commit; no `.env` in history |
@@ -107,10 +107,13 @@ the manifest of that moment summed to a different number, and the same 5,512 app
 **unknown** and is not guessed at here. What is recorded now is what a run today prints, which is the
 standard the rest of this document is written to.
 
-**Why the baseline exists at all:** nineteen of the 38 suites answer an unreachable database by
-skipping their HTTP half, printing "All pure … checks passed" and exiting **0**. Measured against a
-database that does not exist: **3,143 of 5,112 assertions vanished and 19 suites stayed green.** The
-baseline is the missing knowledge (Known Issue 28).
+**Why the baseline exists at all:** nineteen of the then 38 suites **used to** answer an unreachable
+database by skipping their HTTP half, printing "All pure … checks passed" and exiting **0**. Measured on
+2026-09-05 against a database that does not exist: **3,143 of 5,112 assertions vanished and 19 suites
+stayed green.** The baseline is the missing knowledge (Known Issue 28). **That defect is fixed at source**:
+each of the nineteen now refuses to exit 0 on a degraded run, with `--allow-skip` for a deliberate
+pure-checks run, and `npm test` would have caught it regardless through the exact per-suite count. The
+paragraph is kept because it is the reason the baseline is exact rather than a floor.
 
 ## 4. Coverage of the SRS, by section
 
@@ -125,6 +128,8 @@ status is `docs/IMPLEMENTATION_CHECKLIST.md`; this document records only where t
 | 3.S.1 | Will not be built | Demo seed data. Optional, and §35 forbids inventing the plans, classes and students it would contain. It sat at `Pending` until session 28 while its own note said the work must not be done. |
 | FR-SUB-008 | In Progress | Six of the eight plan limits are enforced. `admin_limit` is counted and never blocks; `api_limit` is neither counted nor blocked, because §11.2 names "API Limit" without saying what it measures. *(Read `Tested` until session 28, which was wrong in the other direction — that status means unreachable, and `enforceLimit` has been mounted since session 16.)* |
 | FR-STUDENT-001 | In Progress | Admission, profile, photo, class/section, student ID and roll number are all delivered and reachable. **§15.1's "Documents" half has no code path at all** — `UPLOAD_PROFILES.STUDENT_DOCUMENT` cites the FR in its own rule and has never had a caller, and giving it one needs a `document_type` and a permission the fixed catalogue does not contain (triage finding 16). |
+| FR-BILL-001 | Implemented | All eleven §13.1 invoice fields are written and asserted — Add-ons included, each checked against the fixture rather than a literal. **The trigger is absent**: the requirement's actor is *System* and its precondition is *“a billing event occurs”*, a phrase that appears exactly once in the SRS and is never defined, so which events count, when to issue and what due date to set are decisions §35 forbids. A Super Admin issues invoices through `POST /invoices/generate` until then. |
+| 5.3 | Implemented | PDF extraction is verified end to end against a real pdfkit document. The image branch sends the file to the provider as an image block, so it waits on 5.2's key. |
 
 **Two rows left this table in session 28.** FR-SCHOOL-002 and FR-SCHOOL-003 are `Completed`:
 `school/settings` reaches session create, activate and close — the nine endpoints finding 18 recorded
