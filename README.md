@@ -12,11 +12,10 @@ filled with an invented requirement, table, permission or seed row.
 
 ## Where it stands
 
-**Built and verified against the SRS.** What is left needs a decision or a credential, not code: an
-Anthropic API key to make the AI adapter's first live call, and one question for the owner — whether
-`students.view` should keep showing Teacher, Accountant and Librarian the whole student record. The
-thirty-seven gaps the SRS left open that have been answered are in
-[`docs/OWNER-DECISIONS.md`](docs/OWNER-DECISIONS.md). The measured figures — suites, assertions,
+**Built and verified against the SRS.** What is left needs a credential, not code: an Anthropic API
+key to make the AI adapter's first live call. No question is open for the owner — the thirty-eight
+gaps the SRS left open are answered in [`docs/OWNER-DECISIONS.md`](docs/OWNER-DECISIONS.md), and each
+answer is built or recorded. The measured figures — suites, assertions,
 pages, routes, open issues — are in the first table of
 [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md), and they are kept there rather than here so
 that there is exactly one place for them to go stale.

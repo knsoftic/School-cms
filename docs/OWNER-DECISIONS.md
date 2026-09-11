@@ -59,6 +59,17 @@ option and the owner approved all 21 recommendations at once.
 | D36 | **§26's heavy reports run inside the request**, not through the queue — a queued report would need somewhere to be stored and fetched | **Keep reports synchronous, recorded** | Queue them into document storage |
 | D37 | **Online Exams, Laboratory, Transport and Hostel** can be sold and have no requirement behind them (no FR; §29 gives Online Exams a table and nowhere to store an attempt) | **Leave them unbuilt, recorded** | Build them, with table decisions |
 
+## Third round — D38
+
+**Decided:** 2026-09-11 (session 30), by the project owner. The question was left open at the end of
+session 29: its audit of what each low role reads had projected the teacher, staff and parent records
+for readers without the module's `.manage` key, and left the student record whole, because narrowing
+it changes what a catalogue grant means.
+
+| # | Gap | Decision | Not chosen |
+|---|---|---|---|
+| D38 | **`students.view` shows Teacher, Accountant, Librarian and the Organization Admin the whole student row** — the office's notes, the leaving reason and the internal metadata among it | **Withhold `notes`, `metadata` and `leaving_reason` from a reader without `students.manage`**; contacts, date of birth and guardian details stay | A directory only (also withholding date of birth, address, religion, nationality, blood group); keep the full row |
+
 ## Where each is built
 
 All sixteen were built in session 28 (commit `826e19f`) and each is asserted by the suite named, so
@@ -105,6 +116,20 @@ The second round was built in session 29, each again asserted by the suite named
 | D34 | `GET /documents/pickers/teachers` and `/pickers/exams` under `documents.generate` | `verify-documents.js` |
 | D35 | `utils/schoolScope.js` `schoolBrand()`: `/auth/me` `school` for every school role, the currency default on fee structures and ledger entries, the display name on documents (snapshotted), result cards, the class-result PDF and report exports | `verify-fees.js`, `verify-finance.js`, `verify-reports.js`, `verify-documents.js`, `verify-exams.js` |
 | D36, D37 | no change — recorded | — |
+
+The third round was built in session 30:
+
+| # | Code | Proven by |
+|---|---|---|
+| D38 | `students.service.js` `OFFICE_ONLY`, `findForView()` for `GET /students/:id` and the list's attribute exclusion, over `utils/recordView.js`; the student screen leaves Notes out for a reader | `verify-students.js` |
+
+**Where D38 stops.** It governs the student record. A generated **Leaving Certificate** states the
+recorded leaving reason as part of its text (`documents.service.js`). The school's documents are read
+under `documents.generate` — everyone else sees only their own (`selfScope()`), so a Teacher does not
+reach it — and FR-DOC-001 names the **Accountant** among that key's four actors. So an Accountant, who
+no longer reads the reason on the record, can still read it on a certificate the school issued, as can
+the student and parents it was issued to. That is the document's content under a grant the SRS names,
+and is not changed without a decision of its own.
 
 ## What these decisions do not change
 

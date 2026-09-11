@@ -1268,6 +1268,37 @@ async function verifyHttp() {
     });
     check('but may not admit one', teacherWrite.status, 403);
 
+    /*
+     * The owner's decision D38 — a reader without `students.manage` gets the record without the office's
+     * notes, the leaving reason and the metadata. Aimed at a student who has all three, beside a
+     * contact field that must survive, and with a manager reading the same row as the positive: a
+     * projection that dropped the fields for everyone would pass the negative alone.
+     */
+    const officeTarget = dataOf(second).student.id;
+    await expectOk(`/students/${officeTarget}`, {
+      method: 'PATCH',
+      token: principalA,
+      body: { notes: 'Office note: fee plan agreed', metadata: { file_ref: 'OF-17' }, guardian_phone: '+15550100' },
+    }, 200);
+    const OFFICE_FIELDS = ['notes', 'metadata', 'leaving_reason'];
+    const managerView = dataOf(await expectOk(`/students/${officeTarget}`, { token: principalA }, 200)).student;
+    /* MariaDB hands a JSON column back as a string; MySQL as an object. */
+    const managerMeta = typeof managerView.metadata === 'string' ? JSON.parse(managerView.metadata) : managerView.metadata;
+    check('D38 — a manager still reads the office notes, the leaving reason and the metadata',
+      [managerView.notes, managerView.leaving_reason, managerMeta && managerMeta.file_ref],
+      ['Office note: fee plan agreed', 'Family relocated', 'OF-17']);
+    const receptionView = dataOf(await expectOk(`/students/${officeTarget}`, { token: reception }, 200)).student;
+    check('  so does the Receptionist — the key decides, not the role', receptionView.notes, 'Office note: fee plan agreed');
+    const teacherView = dataOf(await expectOk(`/students/${officeTarget}`, { token: teacher }, 200)).student;
+    check('D38 — a teacher reads the record without them', OFFICE_FIELDS.filter((field) => field in teacherView), []);
+    check('  and keeps the guardian contact a teacher needs', teacherView.guardian_phone, '+15550100');
+    const teacherRow = dataOf(await expectOk('/students?status=left', { token: teacher }, 200))
+      .find((row) => Number(row.id) === Number(officeTarget));
+    check('  the list is projected the same way', Boolean(teacherRow) && OFFICE_FIELDS.filter((field) => field in teacherRow), []);
+    const managerRow = dataOf(await expectOk('/students?status=left', { token: principalA }, 200))
+      .find((row) => Number(row.id) === Number(officeTarget));
+    check('  and a manager\'s list row still carries them', Boolean(managerRow) && managerRow.leaving_reason, 'Family relocated');
+
     const platformRead = await call(`/students/${first.id}`, { token: platform });
     check('the platform admin reads any school', platformRead.status, 200);
 

@@ -58,6 +58,7 @@ const { cleanupUploads, relativeUploadPath, uploadedFiles } = require('../../mid
 const usageService = require('../../services/usageService');
 const selfScope = require('../../services/selfScope');
 const usersService = require('../users/users.service');
+const { canManage, withoutFields } = require('../../utils/recordView');
 const { LIMITS, STUDENT_STATUS, DOCUMENT_OWNER_TYPES } = require('../../config/constants');
 
 const SORTABLE = Object.freeze([
@@ -394,8 +395,25 @@ async function findById(req, id, namedSchoolId = undefined) {
   return row;
 }
 
+/**
+ * What a caller without `students.manage` is not shown: the office's record-keeping behind the profile —
+ * the owner's decision D38. Teacher, Accountant, Librarian and the Organization Admin hold
+ * `students.view` to teach, bill, lend and oversee, and read the office's notes, the reason a student
+ * left and the internal metadata through it. Contacts, date of birth and guardian details stay: reaching
+ * a family needs them. The three withheld are the ones `SELF_ATTRIBUTES` already keeps from the student
+ * and parents. See `utils/recordView.js`.
+ */
+const OFFICE_ONLY = Object.freeze(['notes', 'metadata', 'leaving_reason']);
+
+/** `GET /:id` — the student as this caller may see them. */
+async function findForView(req, id) {
+  const row = await findById(req, id);
+  return (await canManage(req, 'students.manage')) ? row : withoutFields(row, OFFICE_ONLY);
+}
+
 async function list(req, query, pagination) {
   const where = tenantWhere(req.tenant, {});
+  const full = await canManage(req, 'students.manage');
   if (query.school_id) {
     const school = await resolveSchool(req, query.school_id);
     where.school_id = school.id;
@@ -416,7 +434,11 @@ async function list(req, query, pagination) {
 
   return paginateQuery(
     db.Student,
-    { where, order: getSort({ query }, SORTABLE, ['first_name', 'ASC']) },
+    {
+      where,
+      ...(full ? {} : { attributes: { exclude: [...OFFICE_ONLY] } }),
+      order: getSort({ query }, SORTABLE, ['first_name', 'ASC']),
+    },
     pagination
   );
 }
@@ -897,6 +919,8 @@ async function mine(req) {
 module.exports = {
   list,
   findById,
+  findForView,
+  OFFICE_ONLY,
   mine,
   create,
   update,

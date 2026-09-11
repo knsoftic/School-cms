@@ -81,7 +81,8 @@ import {
  * One row of `GET /students`, as `students.service.present()` leaves it.
  *
  * Only the fields this screen renders are declared. The row the API sends is wider — guardian
- * details, address, `notes`, `metadata`, the FR-STUDENT-002 lifecycle stamps — but a type that
+ * details, address, the FR-STUDENT-002 lifecycle stamps, and for a caller holding `students.manage`
+ * also `notes`, `metadata` and `leaving_reason` (withheld from a reader, D38) — but a type that
  * enumerated them would read as a licence to put them in a column, and a roster is not a profile.
  *
  * Nullability is the model's, not a guess: `student_id`, `first_name`, `admission_date` and `status`

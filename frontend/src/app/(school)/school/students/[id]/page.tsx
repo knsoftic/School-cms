@@ -47,7 +47,10 @@
  * every field disabled, no Save and no Reason, and no upload for the photo or the documents; a
  * document still downloads. There were never transition or delete controls here to hide — promote,
  * transfer and leave are row actions on the list, behind `students.progression`, and D13 decided no
- * removal of a document at all.
+ * removal of a document at all. **And no Notes**: the owner's decision D38 withholds the office's
+ * notes, the leaving reason and the metadata from a reader, so `GET /students/:id` does not send them,
+ * and an empty disabled box would read as "no notes" when there may be some — the field is left out,
+ * as `teachers/[id]` leaves out Salary.
  *
  * A reader is the case the pickers' failures were written for. The class, section and session
  * selects are named from `GET /classes`, `GET /classes/:id/sections` and `GET /sessions`, behind
@@ -1088,17 +1091,19 @@ export default function StudentDetailPage() {
             <option value="true">Uses school transport</option>
             <option value="false">Does not use it</option>
           </SelectField>
-          <TextAreaField
-            id="notes"
-            label="Notes"
-            rows={3}
-            disabled={!canManage}
-            maxLength={2000}
-            value={values.notes}
-            onChange={set('notes')}
-            error={fieldErrors.notes}
-            hint="Kept on the record and never shown to the student or their guardian."
-          />
+          {/* D38 — a reader is not sent the notes; see the header. */}
+          {canManage ? (
+            <TextAreaField
+              id="notes"
+              label="Notes"
+              rows={3}
+              maxLength={2000}
+              value={values.notes}
+              onChange={set('notes')}
+              error={fieldErrors.notes}
+              hint="Kept on the record for staff who manage students — never shown to the student, their guardian, or a reader without that permission."
+            />
+          ) : null}
           {/* A reason explains an edit, and a reader makes none. */}
           {canManage ? (
             <Field

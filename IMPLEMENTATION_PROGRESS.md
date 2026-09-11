@@ -3,7 +3,7 @@
 **Project:** Multi-School Management System (multi-tenant SaaS)
 **Source of truth:** `SRS_Multi-School-Management-System.docx` (36 sections)
 **Root:** `E:\School Managment System`
-**Last updated:** 2026-09-11 (end of session 29 — the SRS re-audited, twenty-one more owner decisions built, three screen reviews closed)
+**Last updated:** 2026-09-11 (end of session 30 — the last owner question answered and built as D38, the development database seeded)
 
 ## Where this stands, in one place
 
@@ -16,11 +16,11 @@ pages. It is now written from measurement, and the figures below were taken on 2
 
 | | |
 |---|---|
-| Backend | Every SRS section implemented. 64 domain tables (§29, plus `sequelize_meta`), 109 permissions, 11 roles, 359 default grants. **Thirty-seven owner decisions** (D1–D37, `docs/OWNER-DECISIONS.md`) settle what the SRS leaves open; each is built and asserted, or recorded as confirming today's behaviour |
+| Backend | Every SRS section implemented. 64 domain tables (§29, plus `sequelize_meta`), 109 permissions, 11 roles, 359 default grants. **Thirty-eight owner decisions** (D1–D38, `docs/OWNER-DECISIONS.md`) settle what the SRS leaves open; each is built and asserted, or recorded as confirming today's behaviour |
 | Frontend | Next.js 16.3.4 / React 19.2.8 / Tailwind 4.3.3 / TypeScript 5.9.3 — **103 routes** in the build (89 static, 14 dynamic), `tsc` clean, `eslint .` exit 0. **Every UI audit finding is closed** — 174 from session 26's sweep, 132 from session 28's sweep of the twenty newer screens, and 36 from session 29 — the building agents' reports and three reviews of the portal, billing and logs screens (35 fixed, one left with its reason) — but none of the session-28 or session-29 changes was reproduced in a browser (see "Next task") |
 | API reach | **152 write routes mounted, all 152 with a frontend caller** — `POST /auth/refresh` through a raw `fetch`, because it *is* the refresh mechanism. Re-measured at the end of session 29, whose decisions added no write route; it read 149 of 150 before D1 and D13 added two |
-| Verification | **40 suites, 5,792 assertions, 0 FAIL, 0 SKIP, every script exit 0** — one serial loop against live MariaDB. `npm test` wraps it as **6,002 cases**. A run killed partway no longer poisons the next: `scripts/kill-test.js`, 39 of 39 killable suites SAFE, re-measured after the last code change of session 29 |
-| Checklist | **169 rows `Completed`, 2 `In Progress`, 1 `Implemented`, 1 `Will not be built`** — counted under each table's `Status` column, unchanged by session 29, whose decisions deepened rows already `Completed`. It read 165 / 5 / 2 / 1 until the first round of owner decisions answered what §13.2 Wallet, FR-SUB-008, FR-STUDENT-001 and FR-BILL-001 were blocked on. None is blocked on engineering |
+| Verification | **40 suites, 5,798 assertions, 0 FAIL, 0 SKIP, every script exit 0** — one serial loop against live MariaDB. `npm test` wraps it as **6,008 cases**. A run killed partway no longer poisons the next: `scripts/kill-test.js`, 39 of 39 killable suites SAFE in one full run after the last code change of session 29, and `verify-students.js` — the one suite session 30 changed — SAFE (killed at 145 of 171, rerun green, nothing left) after that change |
+| Checklist | **169 rows `Completed`, 2 `In Progress`, 1 `Implemented`, 1 `Will not be built`** — counted under each table's `Status` column, unchanged by sessions 29 and 30, whose decisions deepened rows already `Completed`. It read 165 / 5 / 2 / 1 until the first round of owner decisions answered what §13.2 Wallet, FR-SUB-008, FR-STUDENT-001 and FR-BILL-001 were blocked on. None is blocked on engineering |
 | Known Issues | **4 open of 34** (#19 closed by D5, #18 by D21). Not one is waiting on code being written here |
 
 **The two `In Progress` rows and what each waits on.** **5.2** — the Anthropic adapter is exercised with
@@ -31,10 +31,10 @@ triage finding is blocked any more (the owner answered the last eleven); the row
 **The one `Implemented` row** means no check can reach what is missing, not that nothing is tested.
 **5.3** — PDF extraction is verified end to end; the image branch waits on 5.2's key.
 
-**One question is open for the owner** — whether `students.view` should keep showing Teacher,
-Accountant and Librarian the whole student row. It is set out, with a recommendation, under "Next task"
-in §7. Session 28's three are answered: Known Issues #18 by D21, FR-SCHOOL-001's "applied" by D35, and
-the currency change by D22.
+**No question is open for the owner.** The last — whether `students.view` should keep showing three
+roles the whole student row — was answered in session 30 (D38: the office's notes, the leaving reason
+and the metadata are withheld from a reader) and is built. Session 28's three were answered by D21,
+D35 and D22.
 
 **Start here if you are picking this up.** §7 below is the stopping point and the next action. §5 is the
 Known Issues register. §6 is the file-by-file map. §8 is the rules this log is kept by — read it before
@@ -114,7 +114,7 @@ table back to 0, `users` 1, `activity_logs` 1.
 | `verify-billing.js` | 280 | SRS §13 / §33 — billing math, route tables, schemas, scheduled sweeps, and the HTTP money path |
 | `verify-school-setup.js` | 175 | SRS §14 — the twenty-nine school-setup endpoints, the audit trail, and the organization-scope regression |
 | `verify-teachers.js` | 91 | SRS §15.3 — the six teacher endpoints, the first entitlement guard, and the teacher_limit ceiling |
-| `verify-students.js` | 165 | SRS §15.1 — the seven student endpoints, the admission ceiling, and the promotion / transfer / leaving machine |
+| `verify-students.js` | 171 | SRS §15.1 — the seven student endpoints, the admission ceiling, and the promotion / transfer / leaving machine |
 | `verify-parents.js` | 129 | SRS §15.2 — the eight parent endpoints, the account the module creates, and the children join |
 | `verify-staff.js` | 91 | SRS §15.4 — the four staff endpoints, the four categories, and the ceiling on both paths |
 | `verify-attendance.js` | 83 | SRS §16 — the five attendance endpoints, the bulk upsert, and the three report periods |
@@ -138,12 +138,12 @@ table back to 0, `users` 1, `activity_logs` 1.
 | `verify-performance.js` | 16 | SRS §25 — indexes, pagination bounds and caching (row 6.15). **No timing assertion, deliberately**: §25 sets no numeric target, and "under 50 ms" would measure this machine on this afternoon. Structural instead — all **50** tables carrying `school_id` have a `school_id`-**leading** index (leading, because MySQL reads a composite left to right), no tenant list query is a full scan forced by a missing index, and the cache is measured by **counting queries** rather than by the clock: first read hits the database, second reads none of it, and `invalidateSchool` sends the next one back |
 | `verify-concurrency.js` | 19 | Known Issues #21 — the limit check and the write it guards. The only suite in the loop that runs anything **in parallel**: it fires eight concurrent creates at a school whose `student_limit`, `teacher_limit` and `staff_limit` are each **1**, and reads the table afterwards. It is one suite rather than three assertions in three module suites because what races is the guard, not any module. Its central assertion is the **row count**, not the number of successful calls — a create that succeeded and rolled back would move one and not the other, and it is the table that decides whether a school is over its plan — with a third assertion that the other seven were refused by the **limit** and not by a deadlock or a unique-key collision, so a "fix" that merely made concurrent creates fail some other way cannot pass. Proved against the defect: with the three `reserveHeadcount()` calls commented out it reports **8 rows against a ceiling of 1, on all three modules, 9 FAILED** |
 | `verify-quotations.js` | 11 | Known Issues #31 — the fabricated-citation class, made assertable. This project's comments carry authority by quoting the SRS, so a quotation that is not in the source reads as authority and cannot be checked without going and looking. The obvious guard was measured and **rejected** by an earlier session: 45 of 207 SRS-adjacent quotations were not verbatim, almost all legitimately, because the same convention quotes model column comments and the project's own maxims. The distinction it wanted turned out to be mechanical after all — **a quotation must be traceable to something this repository can point at**, so the haystack is the SRS *plus every `.js` file* with every quotation span **stripped out first**, and nothing can be its own evidence. That took 45 to 8 with no exemptions at all; the eight are enumerated with what each actually quotes. Four rules keep a faithful quotation passing — an ellipsis is an omission, joined bullets are still quoting each bullet, added emphasis is the quoter's, and quote marks fold — and a **2,000-character proximity window** is what makes "in order" mean anything: without it the ordering control passed reversed, because any two phrases occur in both orders somewhere across two hundred files. Excludes itself from both the scan and the haystack, which is load-bearing: it names the fabrications it found, and leaving it in inverted all five controls |
-| **Total** | **5,792** | Forty scripts, measured in one **serial** loop in session 29 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25. **Every figure in this column was re-derived from `tests/baseline.json` in session 27**, which is the file `npm test` checks each suite against; nineteen of them had drifted, `verify-frontend.js` by 154. **Re-derived again at the end of session 28**, by script, when fifteen had moved with the owner's decisions and the fixes after them (5,495 → 5,573), and **again at the end of session 29**, when twenty-eight moved with the second round of decisions (D17–D37) and the reviews after them (5,573 → 5,792) |
+| **Total** | **5,798** | Forty scripts, measured in one **serial** loop in session 30 (all exit 0, 0 FAIL, 0 SKIP). A parallel run reports false failures — Known Issues #25. **Every figure in this column was re-derived from `tests/baseline.json` in session 27**, which is the file `npm test` checks each suite against; nineteen of them had drifted, `verify-frontend.js` by 154. **Re-derived again at the end of session 28**, by script, when fifteen had moved with the owner's decisions and the fixes after them (5,495 → 5,573), and **again at the end of session 29**, when twenty-eight moved with the second round of decisions (D17–D37) and the reviews after them (5,573 → 5,792), and in session 30 by one, `verify-students.js` for D38 (5,792 → 5,798) |
 
 Counts are assertions, not output lines. Thirty-nine of the forty scripts print one `PASS` line per
 assertion; `verify-seed.js` prints a single `PASS (25)` summary line followed by 25 sub-bullets, so
-counting output lines undercounts the loop by 24 — a serial run prints 5,768 `PASS` lines for **5,792**
-assertions (`scripts/record-baseline.js`, end of session 29).
+counting output lines undercounts the loop by 24 — a serial run prints 5,774 `PASS` lines for **5,798**
+assertions (`scripts/record-baseline.js`, session 30).
 
 **The per-script list above was re-measured in session 26**, in the alphabetical order the loop
 runs. It had drifted by two: `verify-billing` read 216 against a real 220, and `verify-auth-module`
@@ -9918,7 +9918,7 @@ The Phase 3.J module (SRS §15.3):
 | `teachers/teachers.validation.js` | 146 | Create / update / list schemas, every string width taken from the model rather than chosen (§5a defect 24) |
 | `students/students.routes.js` | 214 | Nine routes — `GET /:id/photo` joined its writer in session 28 (Known Issues #32), on `students.view` and declared above `GET /:id` so the literal segment can never be swallowed. `requireModule(MODULES.STUDENTS)` router-level, `enforceLimit(LIMITS.STUDENT_LIMIT)` on `POST /`, and the SRS's own actor split — `students.manage` for admission and profile, `students.progression` for the three lifecycle routes |
 | `students/students.controller.js` | 207 | Nine handlers. `photo` is the reader Known Issues #32 wanted: the same tenant-scoped `findById()` `show` uses, `sendStoredFile` inline, named by the school's own `student_id` rather than the primary key, and a 404 with a message for a student who has none |
-| `students/students.service.js` | 914 | `list`, `findById`, `create`, `update`, the `TRANSITIONS` table and `applyTransition` (promote / transfer / leave), `resolvePlacement` (§5a defects 27 and 29), `allocateStudentId` / `allocateRollNumber` (§5a defects 26, 28 and 30), `loadUserInSchool`, `dateOnly`, `syncStudentHeadcount` |
+| `students/students.service.js` | 938 | `list`, `findById`, `create`, `update`, the `TRANSITIONS` table and `applyTransition` (promote / transfer / leave), `resolvePlacement` (§5a defects 27 and 29), `allocateStudentId` / `allocateRollNumber` (§5a defects 26, 28 and 30), `loadUserInSchool`, `dateOnly`, `syncStudentHeadcount` |
 | `parents/parents.routes.js` | 115 | Eight routes. `requireModule(MODULES.PARENT_PORTAL)` router-level; no `enforceLimit`, because §11.2 defines no parent limit and a parent account is not in `SCHOOL_ADMIN_ROLES` |
 | `parents/parents.controller.js` | 73 | Eight handlers |
 | `parents/parents.service.js` | 575 | `create` (account + profile + children in one transaction, then `sendVerificationEmail`), `update`, `listChildren` / `linkChild` / `unlinkChild`, `dashboard`, `childScope` (§5a defect 16's shape, avoided), `loadStudentInSchool`, and a `rethrow` that maps four unique indexes by **prefix** — see its header for why `includes()` was wrong |
@@ -10061,7 +10061,7 @@ The Phase 3.J module (SRS §15.3):
 
 | `verify-teachers.js` | 1036 | 85 checks on SRS §15.3 in three parts: the request schemas (21, including the column-width bounds of §5a defect 24), the route table plus the router-level guard (9), and 52 over real HTTP. **The fixture shape is the point**: one organization, four schools, and two plans differing in exactly one thing — whether the Teachers module is enabled — so a refusal can only be about the module under test. School A is on the enabled plan at `teacher_limit: 2`, B on the disabled plan, C has **no subscription**, D is on the same plan as A. B and C prove the two refusals are distinct (`MODULE_NOT_SUBSCRIBED` vs `SUBSCRIPTION_INACTIVE`, which is **402**, not 403); D exists so a cross-school read can be tested *at all* — as B or C it would be refused by entitlement before isolation was reached, which would look like a passing isolation test while proving nothing. The ceiling is proven as a cycle (create → refuse → deactivate → mirror falls → reuse → **re-activation refused**), and `joining_date` is asserted at a flipped `process.env.TZ` |
 
-| `verify-students.js` | 1572 | 136 checks on SRS §15.1 in three parts: schemas (35), the route table and router-level guard (8), and 68 over real HTTP. **Four schools and three plans**, because the fixture shape is what makes the assertions mean anything: A carries the module and a `student_limit` of 2, B a plan without the module, C no subscription, D a roomy plan with its own classes and sections. B and C keep `MODULE_NOT_SUBSCRIBED` and `SUBSCRIPTION_INACTIVE` (402) distinguishable; D clears the guard so a cross-school 404 is isolation rather than entitlement refusing first, and gives the allocator and promotion tests headroom school A no longer has. Proves the ceiling as a cycle (admit → refuse → transfer → leave → re-admit into the freed allowance) with the promotion in the middle asserted **not** to move the figure; proves the receptionist may admit but not promote; and asserts the id allocator at the four-digit boundary and against a non-numeric caller-supplied id (§5a defect 26) |
+| `verify-students.js` | 1603 | 136 checks on SRS §15.1 in three parts: schemas (35), the route table and router-level guard (8), and 68 over real HTTP. **Four schools and three plans**, because the fixture shape is what makes the assertions mean anything: A carries the module and a `student_limit` of 2, B a plan without the module, C no subscription, D a roomy plan with its own classes and sections. B and C keep `MODULE_NOT_SUBSCRIBED` and `SUBSCRIPTION_INACTIVE` (402) distinguishable; D clears the guard so a cross-school 404 is isolation rather than entitlement refusing first, and gives the allocator and promotion tests headroom school A no longer has. Proves the ceiling as a cycle (admit → refuse → transfer → leave → re-admit into the freed allowance) with the promotion in the middle asserted **not** to move the figure; proves the receptionist may admit but not promote; and asserts the id allocator at the four-digit boundary and against a non-numeric caller-supplied id (§5a defect 26) |
 
 | `verify-parents.js` | 1222 | 116 checks on SRS §15.2 in three parts: schemas (31), the route table and router-level guard (9), and 48 over real HTTP. Four schools, two plans differing only in the Parent Portal module. The assertions that matter are the ones about the **account this module creates**: a failed create is proven to leave no orphan user by counting `users` before and after rather than by trusting the status; and the created account is then signed in, asserted to be told to change its password (§9.3), changed, and only then used to read the dashboard — so the account, the flag and FR-PARENT-002 are proven end to end. The organization-scoped read of `parent_students` is asserted against the service directly, because no seeded role both resolves to that tenant shape and holds `parents.view` — which is exactly why §5a defect 16 got through twice |
 
@@ -11970,33 +11970,71 @@ Session 16 (2026-09-02, same calendar day) opened on that stop and found it alre
      tracked and rode along in every commit since; it is untracked — the Known Issues #33 lesson that
      an ignore rule does not untrack what is already tracked.
 
+**Session 30 — the last open question answered (D38), and the development database brought up to D27.**
+
+456. **The session opened on a cold loop.** MariaDB had stopped with the host again and was restarted
+     from `mysqld.exe`; `msms_test` came back intact (65 tables, 359 grants, an empty journal), and
+     `npm test` passed **6,002 of 6,002** from cold. One qualification, so the figure is not read as
+     more than it is: the D38 change below was written while that loop was still running — it had
+     finished 27 suites when I next looked — so at least the last 13, `verify-students.js` among them
+     (before its new checks existed), ran against the change rather than against `4ba5af7`.
+457. **D38 — the owner answered the one open question.** Put with three options (the recommended
+     projection, a stricter directory-only view, and no change), the owner chose to withhold `notes`,
+     `metadata` and `leaving_reason` from a reader without `students.manage` — Teacher, Accountant,
+     Librarian and the Organization Admin — and keep contacts, date of birth and guardian details,
+     since reaching a family needs them. `students.service.js` gains `OFFICE_ONLY` and
+     `findForView()`, the shape teachers and staff already have over `utils/recordView.js`: the detail
+     route reads through it and the list excludes the three columns. Six checks in
+     `verify-students.js`, aimed at a departed student holding all three, with a Principal and the
+     Receptionist — who holds `students.manage` — reading the same row as the positive: a projection
+     that stripped the fields from everyone would pass the negative alone. Each part was mutated back
+     in turn — the detail to `findById`, the list's exclusion removed, the projection applied to
+     everyone — and each mutation failed exactly the checks aimed at it; the files were restored
+     byte-identical. Every other module was read for the same row through another door, and none sends
+     it: fees, attendance, exams, parents, assignments and library each include a student by named
+     columns.
+458. **Traced through every reader, which found where D38 stops** — the rule session 29's renewal
+     defect wrote into `memory/`. The student screen showed a reader the Notes box disabled and empty,
+     which would now read as "no notes" when there may be some; it is left out for them, as the
+     teacher screen leaves out Salary. And a generated Leaving Certificate states the recorded reason
+     in its text: the school's documents are read under `documents.generate`, which FR-DOC-001 gives
+     the Accountant, so an Accountant can still read a reason on a certificate the school issued. That
+     is the document's content under a grant the SRS names, so it is recorded in
+     `docs/OWNER-DECISIONS.md` rather than changed. **My first draft of that note named the Teacher**,
+     who holds `documents.view` — wrong: `documents.service.selfScope()` narrows every caller without
+     `documents.generate` to their own documents. The code was read before the note was kept.
+459. **The development database was seeded, on the owner's yes.** `msms` held 353 grants and none of
+     D27's six. Around `npm run db:seed`, every one of its 65 tables was counted, each role's grants,
+     and the add-on and user rows read in full: the only difference was `role_permissions` 353 → 359,
+     three each for Principal and School Admin. Its three schools and five users are untouched.
+460. **Final state, every figure from a run after the last change.** `scripts/record-baseline.js`
+     re-recorded **40 suites, 5,798 assertions** (+6, all `verify-students.js`, 165 → 171);
+     `npm test` passed **6,008 of 6,008** after the checklist — the document the harness reads —
+     was updated. `scripts/kill-test.js students`: **SAFE** (killed at 145 of 171, rerun green,
+     nothing left). Both backend lints exit 0; the frontend's `eslint .` and `tsc --noEmit` exit 0;
+     `next build` **103 routes** (89 static, 14 dynamic); **152 of 152** write routes with a caller — D38 adds none. The checklist still
+     reads **169 / 2 / 1 / 1**. `msms_test` ends at one user, no school, 11 roles, 109 permissions,
+     359 grants, 7 add-ons, 65 tables and an empty journal. Nothing was reproduced in a browser.
+
 ### Next task — what is left, and why each item is where it is
 
-**Updated at the end of session 29 (steps 442–455). There is no engineering next action left in this
-log's own queue.** Session 28's three owner questions were answered in the second round of decisions
-(Known Issues #18 → D21, FR-SCHOOL-001's "applied" → D35, the currency change → D22) and the answers
-are built. What remains is one new question for the owner, one thing only a person can do, and the
-credential below.
+**Updated at the end of session 30 (steps 456–460). There is no engineering next action left in this
+log's own queue, and no question is open for the owner** — D38 answered the last, and it is built.
+Session 28's three were answered in the second round (Known Issues #18 → D21, FR-SCHOOL-001's
+"applied" → D35, the currency change → D22). The development database has D27's grants (step 459).
+What remains is one thing only a person can do, and the credential below.
 
-**One question for the product owner**, with the option this log would recommend:
-
-1. **`students.view` shows Teacher, Accountant and Librarian the whole student row** — notes, the
-   leaving reason, date of birth, contacts. The seeded catalogue grants the key to those roles on
-   purpose. Step 447's audit projected every other record it found a low role reading in full —
-   teachers', staff members', parents' — to a directory for readers who do not hold the module's
-   `.manage` key; the student record was left as it is because narrowing it changes what a catalogue
-   grant means, and that is the owner's call. Project it the same way, or keep the grant's full
-   reach? *Recommended: project it as teachers and staff now are, and restore any field a role's work
-   is shown to need* — none of the three roles' §5 duties names the notes or the leaving reason.
+**If the owner wants D38 to reach the Leaving Certificate too**, that is a new decision: the
+certificate states the recorded reason, and FR-DOC-001's Accountant reads the school's documents
+(step 458). Nothing is built for it, deliberately.
 
 **One thing only a person can do: look at the changed screens.** About two hundred UI findings were
-closed in session 28 and thirty-six more in session 29, and session 29 built the student and parent
-portals, the logs screens and the school's Renew and Cancel. Every change was reviewed against the
-backend, type-checks, lints and passes `verify-frontend.js`, but none was reproduced in a browser —
-signing in needs a password, and this log's author does not enter one. `docs/UI-AUDIT-FINDINGS.md`
-lists each, so a walk-through can follow it. **Also for a person, once:** the development database
-`msms` holds 353 grants and none of D27's six (read at the end of session 29); `npm run db:seed`
-there applies them, since the seeder upgrades an install still on the old defaults.
+closed in session 28 and thirty-six more in session 29; session 29 built the student and parent
+portals, the logs screens and the school's Renew and Cancel, and session 30 took Notes off the student
+screen for a reader. Every change was reviewed against the backend, type-checks, lints and passes
+`verify-frontend.js`, but none was reproduced in a browser — signing in needs a password, and this
+log's author does not enter one. `docs/UI-AUDIT-FINDINGS.md` lists each, so a walk-through can
+follow it.
 
 **Nothing else on this list is blocked on effort.** What remains in the checklist is two
 `In Progress` rows, one `Implemented` and one `Will not be built`, and four register rows. **Every one
