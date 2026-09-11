@@ -67,12 +67,13 @@
  *
  * ## What has no route, and why
  *
- *  - **`markOverdue()`** — the clock is the actor. `package.json` declares `"cron": "node src/jobs/cron.js"`
- *    and `src/jobs/` is Phase 5; the same argument keeps `subscriptions.runLifecycleSweep()` off its
- *    router. The behaviour is implemented and asserted by direct call.
+ *  - **`markOverdue()`** — the clock is the actor: the daily `invoice-overdue` job
+ *    (`src/jobs/tasks/invoiceOverdue.js`), which also moves the subscriptions of newly-overdue invoices to
+ *    `past_due`. The same argument keeps `subscriptions.runLifecycleSweep()` off its router.
  *  - **`reminderCandidates()` / `markReminderSent()`** — the selection and the marker for
  *    `reminder_sent_at`, whose column comment names *"the fee/subscription reminder cron"*. Delivery is
- *    §26's notification module.
+ *    the notification sweep's `invoiceReminders` pass (the owner's decision D28), run by the
+ *    `notification-dispatch` job.
  *  - **`applyPayment()` / `applyRefund()`** — called by `payments` and `refunds` inside their
  *    transactions. An endpoint that set `amount_paid` directly would make it a claim rather than the sum
  *    of approved payments, which is the whole of FR-BILL-004.

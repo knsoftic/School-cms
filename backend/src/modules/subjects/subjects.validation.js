@@ -98,7 +98,10 @@ const list = listQuery(
     type: fields.type,
     is_active: Joi.boolean(),
     is_elective: Joi.boolean(),
-  })
+    /* A class's curriculum, and a section of it — see `subjects.service` `list()`. */
+    class_id: Joi.number().integer().min(1),
+    section_id: Joi.number().integer().min(1),
+  }).with('section_id', 'class_id')
 );
 
 const showQuery = Joi.object({

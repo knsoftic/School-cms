@@ -194,6 +194,9 @@ const showQuery = Joi.object({
   school_id: fields.school_id,
 });
 
+/** `GET /mine` takes nothing: whose records they are is the caller's identity, never a parameter. */
+const mineQuery = Joi.object({});
+
 /**
  * The body of `POST /students/:id/photo` — FR-STUDENT-001's capture step.
  *
@@ -243,6 +246,7 @@ module.exports = {
     leave,
     list,
     showQuery,
+    mineQuery,
     idParam: commonSchemas.idParam,
   },
   fields,

@@ -345,9 +345,60 @@ function main() {
   const schoolBlockSrc = blockOf('SCHOOL_NAV', 'TEACHER_NAV');
 
   const platformItems = (platformBlockSrc.match(/href:\s*'\/super-admin/g) || []).length;
-  const schoolItems = (schoolBlockSrc.match(/href:\s*'\/school/g) || []).length;
-  check('the Super Admin nav covers §33\'s sixteen screens', platformItems, 16);
-  check('the School nav covers §33\'s seventeen screens', schoolItems, 17);
+  /*
+   * Sixteen for §33 and one for SRS §26 — "Errors and activity are auditable via logs" — whose
+   * activity and audit trails are read on `logs.view`. The seventeenth is asserted by name, so the
+   * slot §26 opened cannot be taken by a screen with no source.
+   */
+  check('the Super Admin nav covers §33\'s sixteen screens and SRS §26\'s Logs', platformItems, 17);
+  check('  and the one beyond §33 is §26\'s Logs',
+    /href:\s*'\/super-admin\/logs'/.test(code(platformBlockSrc)), true);
+
+  /*
+   * The School nav is §33's seventeen, each by the route that answers it, plus the entries a source
+   * other than §33 names — and nothing else.
+   *
+   * This was a bare count of seventeen, which held two rules in one number: every §33 screen is there,
+   * and nothing is there that §33 does not list. The second stopped being the product's rule when a
+   * requirement or an owner's decision put a screen in the sidebar that §33's MVP list does not name —
+   * so each is allow-listed below with the source that puts it there. A nav entry with no source still
+   * fails, and so does a §33 screen that goes missing; a count could not tell those two apart.
+   */
+  const SRS33_SCHOOL = [
+    ['Principal Dashboard', '/school'],
+    ['Teachers', '/school/teachers'],
+    ['Staff', '/school/staff'],
+    ['Students', '/school/students'],
+    ['Parents', '/school/parents'],
+    ['Classes', '/school/classes'],
+    ['Sections', '/school/classes/sections'],
+    ['Subjects', '/school/subjects'],
+    ['Attendance', '/school/attendance'],
+    ['Fees', '/school/fees'],
+    ['Finance', '/school/finance'],
+    ['Exams', '/school/exams'],
+    ['Results', '/school/results'],
+    ['Timetable', '/school/timetable'],
+    ['Homework', '/school/homework'],
+    ['Library', '/school/library'],
+    ['Documents', '/school/documents'],
+  ];
+  const SCHOOL_BEYOND_33 = {
+    /* SRS §22 — FR-REPORT-001's actors include Principal, School Admin, Accountant and Teacher (SRS:1190). */
+    '/school/reports': 'SRS §22',
+    /* The owner's decision D27 — the school's own subscription, invoices and payments. */
+    '/school/billing': 'owner decision D27',
+    /* SRS §26 — "Errors and activity are auditable via logs", read on `logs.view`. */
+    '/school/logs': 'SRS §26',
+  };
+  const schoolHrefs = [...code(schoolBlockSrc).matchAll(/href:\s*'(\/school[^']*)'/g)].map((m) => m[1]);
+  check('the School nav covers each of §33\'s seventeen screens',
+    SRS33_SCHOOL.filter(([, href]) => !schoolHrefs.includes(href)).map(([label]) => label), []);
+  check('  and every entry beyond them is allow-listed with its source',
+    schoolHrefs.filter((href) => !SRS33_SCHOOL.some(([, known]) => known === href)
+      && !Object.prototype.hasOwnProperty.call(SCHOOL_BEYOND_33, href)), []);
+  check('  and lists no screen twice',
+    schoolHrefs.filter((href, index) => schoolHrefs.indexOf(href) !== index), []);
 
   /*
    * The platform surface must carry no module gate. A Super Admin administers plans; gating their
@@ -1397,9 +1448,10 @@ check('  and it does not mount AppShell, which would make the public page redire
   ));
   check('the library screen shows the fine balance the server computes',
     /row\.fine_outstanding/.test(libraryScreen), true);
+  /* Every row through `presentTransaction`, which now also takes whether the caller is the borrower. */
   check('  and the list endpoint puts it on every row',
     /fine_outstanding:/.test(libraryService)
-      && /rows: result\.rows\.map\(presentTransaction\)/.test(libraryService), true);
+      && /rows: result\.rows\.map\((?:presentTransaction\)|\(row\) => presentTransaction\(row\b)/.test(libraryService), true);
 }
 
 /* ────────────────────── a rejected submit always says something ────────────────────── */
@@ -1573,13 +1625,100 @@ check('  naming only permissions that exist in the fixed catalogue',
   landingOrder.map(([key]) => key).filter((key) => !PERMISSION_KEY_SET.has(key)), []);
 
 /*
- * The platform surface is `platformOnly()` on every route, and `organization_admin` holds
- * `platform.dashboard.view` while being `isPlatform: false`. Without the scope test it would be sent
- * to a console that refuses it — a worse outcome than the `/school` it reaches today.
+ * The platform surface is for a caller with no school in scope, and it is claimed on scope as well as
+ * permission.
+ *
+ * This asserted `isPlatform` instead, on the premise that every `/super-admin` route is
+ * `platformOnly()`. That holds for the platform's writes and not for its reads: `GET /platform/dashboard`
+ * is `platform.dashboard.view` alone, and the reads behind the screens the Organization Admin holds keys
+ * for confine their rows to its organization on the server. So the owner's decision D18 sends an
+ * `organization_admin` — `schoolId: null`, `isPlatform: false`, holding `platform.dashboard.view` — to
+ * `/super-admin`, where the old rule sent it to a `/school` dashboard that reports it has no school.
+ *
+ * The rule has two halves and each is asserted: a caller with a school in scope never lands on the
+ * platform surface, whatever it holds, and an organization-scoped caller holding the key does. The skip
+ * is pinned as written, the function is held to that one scope test, and the table it reads is then run
+ * against both callers — every key in the catalogue for the first, the seeded grant for the second.
  */
+const landingBody = navCode.slice(navCode.indexOf('export function landingRouteFor('));
 check('  and gates the platform surface on scope as well as permission',
-  /platformOnly:\s*true/.test(navCode)
-    && /route\.platformOnly && !profile\.tenant\.isPlatform/.test(navCode), true);
+  /permission:\s*'platform\.dashboard\.view',\s*href:\s*'\/super-admin',\s*aboveSchool:\s*true\s*\}/.test(navCode)
+    && /if \(route\.aboveSchool && profile\.tenant\.schoolId\) continue;/.test(landingBody)
+    && (landingBody.match(/\bcontinue;/g) || []).length === 1
+    && !/isPlatform/.test(landingBody), true);
+
+const landingTable = [
+  ...navCode.matchAll(/\{\s*permission:\s*'([^']+)',\s*href:\s*'([^']+)'(?:,\s*aboveSchool:\s*(true))?\s*\}/g),
+].map((m) => ({ permission: m[1], href: m[2], aboveSchool: m[3] === 'true' }));
+/* A row the pattern above failed to read would make both cases below pass by looking at less. */
+check('  and the two cases below run over every row of the landing table',
+  landingTable.map((route) => [route.permission, route.href]), landingOrder);
+/* The loop the regex above pins, run over the table as `nav.ts` declares it. */
+const landsOn = (schoolId, permissions) => {
+  const held = new Set(permissions);
+  for (const route of landingTable) {
+    if (route.aboveSchool && schoolId) continue;
+    if (held.has(route.permission)) return route.href;
+  }
+  return '/school';
+};
+const { DEFAULT_ROLE_PERMISSIONS } = require('../src/config/permissions');
+const { ROLES } = require('../src/config/constants');
+check('  a caller with a school in scope never lands on /super-admin, whatever it holds',
+  landsOn(7, [...PERMISSION_KEY_SET]) !== '/super-admin' && landsOn(7, ['platform.dashboard.view']) === '/school',
+  true);
+check('  and an organization-scoped caller holding platform.dashboard.view does (D18)',
+  [
+    DEFAULT_ROLE_PERMISSIONS[ROLES.ORGANIZATION_ADMIN].includes('platform.dashboard.view'),
+    landsOn(null, DEFAULT_ROLE_PERMISSIONS[ROLES.ORGANIZATION_ADMIN]),
+  ],
+  [true, '/super-admin']);
+
+/*
+ * ── the second prerequisite, and the other keys that reach a screen (session 29) ──
+ *
+ * A portal timetable's first read is on another router — the student's own record, the parent's
+ * dashboard, the teacher's dashboard — each with its own module and key, so the nav names that too
+ * (`requires`); and Billing is reached by an Accountant through `invoices.self.view`, not the
+ * subscription read (`anyPermission`). Held here because both only matter when a role or plan is
+ * edited, which is exactly when nobody re-reads the nav.
+ */
+const navItems = [...navCode.matchAll(/\{\s*label:\s*'([^']+)',\s*href:\s*'([^']+)'[^}]*?permission:\s*'([^']+)'([^\n]*)\}/g)]
+  .map((m) => {
+    const rest = m[4];
+    const requires = /requires:\s*\{\s*permission:\s*'([^']+)',\s*module:\s*'([^']+)'\s*\}/.exec(rest);
+    const any = /anyPermission:\s*\[([^\]]*)\]/.exec(rest);
+    return {
+      href: m[2],
+      permission: m[3],
+      requires: requires ? { permission: requires[1], module: requires[2] } : null,
+      anyPermission: any ? [...any[1].matchAll(/'([^']+)'/g)].map((k) => k[1]) : [],
+    };
+  });
+const backendModuleKeys = Object.keys(require('../src/config/constants').MODULE_LABELS);
+check('every key a nav entry names beyond its own permission is in the catalogue, and every module exists',
+  navItems.flatMap((item) => [
+    ...(item.requires ? [item.requires.permission] : []), ...item.anyPermission,
+  ]).filter((key) => !PERMISSION_KEY_SET.has(key))
+    .concat(navItems.filter((item) => item.requires && !backendModuleKeys.includes(item.requires.module)).map((item) => item.href)),
+  []);
+const requiresOf = (href) => (navItems.find((item) => item.href === href) || {}).requires || null;
+check('  each portal timetable requires what its first read needs — the self view it finds its class or teacher through',
+  [requiresOf('/student/timetable'), requiresOf('/parent/timetable'), requiresOf('/teacher/timetable')],
+  [{ permission: 'students.self.view', module: 'students' },
+    { permission: 'parents.dashboard.view', module: 'parent_portal' },
+    { permission: 'teachers.dashboard.view', module: 'teachers' }]);
+const billing = navItems.find((item) => item.href === '/school/billing') || { anyPermission: [] };
+check('  and Billing reaches the Accountant, who pays invoices without the subscription read',
+  [DEFAULT_ROLE_PERMISSIONS[ROLES.ACCOUNTANT].includes('subscriptions.self.view'),
+    billing.anyPermission.some((key) => DEFAULT_ROLE_PERMISSIONS[ROLES.ACCOUNTANT].includes(key))],
+  [false, true]);
+const visibleBody = navCode.slice(navCode.indexOf('export function visibleNav('), navCode.indexOf('export function landingRouteFor('));
+check('  which visibleNav applies: any of the keys, then the second prerequisite\'s key and module',
+  [/!can\(item\.permission\) && !\(item\.anyPermission \|\| \[\]\)\.some\(\(key\) => can\(key\)\)/.test(visibleBody),
+    /item\.requires\.permission && !can\(item\.requires\.permission\)/.test(visibleBody),
+    /item\.requires\.module && !hasModule\(item\.requires\.module\)/.test(visibleBody)],
+  [true, true, true]);
 
 /* ────────────────────── the duplicated module list stays in step ────────────────────── */
 

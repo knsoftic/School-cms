@@ -3,10 +3,11 @@
 /**
  * PM2 ecosystem — SRS §27 "PM2", "Cron Jobs", "Queue Workers"; FR-DEPLOY-001.
  *
- * Two supervised processes, and a third that is deliberately absent:
+ * Three supervised processes, and a fourth that is deliberately absent:
  *
  *   msms-api    node src/server.js       one instance, fork mode, never clustered
  *   msms-cron   node src/jobs/cron.js    exactly one instance, and it can never become two
+ *   msms-web    next start               the dashboard (frontend/), on loopback behind nginx
  *   (no app)    node src/jobs/worker.js  runs one job and exits. PM2 *can* supervise that shape;
  *                                        the reason there is no app for it is the queue, not PM2 —
  *                                        see WHY THERE IS NO WORKER APP below
@@ -98,7 +99,7 @@
  *
  * `config/queue.js:107` constructs one `MemoryQueue` per process and `app.js:242` calls the handler
  * registration inside `createApp()` (required at `app.js:164`), so an `enqueue()` from a request path
- * (`auth.service.js:548`, the password-reset mail, and `:728`, email verification — the only two call
+ * (`auth.service.js:549`, the password-reset mail, and `:736`, email verification — the only two call
  * sites in `src/`) is drained by the same process that accepted it. Clustered, that still works:
  * each worker drains its own queue. It is listed because it is a reason a restart is not free, not a
  * reason clustering is unsafe.
@@ -147,8 +148,8 @@
  * marker column and no sweep — see `max_memory_restart` below.
  *
  * One further gap this file cannot close: `sync_usage` has a registered handler
- * (`jobs/handlers/index.js:78`) and **nothing schedules it** — it is not among the five tasks in
- * `cron.js:72-78`. Its own comment calls it "the one job that is genuinely periodic". Making it
+ * (`jobs/handlers/index.js:78`) and **nothing schedules it** — it is not among the eight tasks in
+ * `cron.js:74-84`. Its own comment calls it "the one job that is genuinely periodic". Making it
  * periodic belongs in `cron.js`'s `ORDER`, where the skip-if-running and sequencing rules already
  * live — not in a PM2 `cron_restart` that would invent a schedule the codebase never states.
  */
@@ -167,6 +168,12 @@ const path = require('path');
  * to `<project>/deploy/` and `BACKEND` silently becomes `<parent-of-project>/backend`.
  */
 const BACKEND = path.resolve(__dirname, '..', '..', 'backend');
+
+/**
+ * The dashboard's root — `frontend/`, the other sibling. `next start` serves the build in `.next/` from
+ * the directory it is started in, so this must be the directory holding the frontend's `package.json`.
+ */
+const FRONTEND = path.resolve(__dirname, '..', '..', 'frontend');
 
 /*
  * Checked rather than assumed, because the failure it prevents is a bad hour.
@@ -241,7 +248,7 @@ const PM2_LOG_DIR = '/var/log/msms';
 if (process.platform !== 'win32' && !fs.existsSync(PM2_LOG_DIR)) {
   throw new Error(
     'ecosystem.config.js: ' + PM2_LOG_DIR + ' does not exist, and PM2 opens its log files there '
-    + 'before starting either process. Create it first (see deploy/logrotate/msms:153):\n'
+    + 'before starting any process. Create it first (see deploy/logrotate/msms:153):\n'
     + '  mkdir -p /var/log/msms && chown msms:msms /var/log/msms && chmod 0750 /var/log/msms\n'
     + 'Not created from here on purpose: /var/log is root-owned, so a mkdir that succeeded would '
     + 'leave a root-owned directory the deploy user cannot write into.'
@@ -276,7 +283,7 @@ const shared = {
 
   /*
    * `assertRuntimeConfig()` throws and `server.js:141-149` exits 1 on a bad configuration; `cron.js`
-   * exits 1 when `ENABLE_CRON` is not set (`cron.js:249-255`). Neither is fixed by trying again, and
+   * exits 1 when `ENABLE_CRON` is not set (`cron.js:255-261`). Neither is fixed by trying again, and
    * without a delay PM2 retries as fast as the process can boot — writing a stack trace to disk each
    * time and burying the first, real failure under thousands of identical ones.
    *
@@ -317,7 +324,7 @@ const shared = {
    * scheduler exhausts it, PM2 parks it `errored` and nothing else in this deployment notices:
    * readiness is API-only and database-only (`system.controller.js:51-74` reports `{ checks:
    * { database } }` and no scheduler signal), and `cron.js` has no endpoint and no heartbeat. What
-   * stops, silently, is the five tasks at `cron.js:72-78` — including `database-backup` at 0 3 * * *
+   * stops, silently, is the eight tasks at `cron.js:74-84` — including `database-backup` at 0 3 * * *
    * (`databaseBackup.js:193`). `pm2 describe msms-cron` is therefore in the operator checklist at
    * the foot of this file, and it is a check a person has to actually perform.
    */
@@ -404,12 +411,12 @@ module.exports = {
        * gracefully, so in-flight HTTP requests drain rather than being cut. What does NOT drain is
        * the in-process queue: `shutdown()` closes the HTTP server and the Sequelize pool and exits
        * (`server.js:45-76`) without waiting for it. The queue's real contents are the two
-       * `enqueue()` call sites in `src/` — `auth.service.js:548` (password reset) and `:728` (email
+       * `enqueue()` call sites in `src/` — `auth.service.js:549` (password reset) and `:736` (email
        * verification), both `JOB_NAMES.SEND_EMAIL`.
        *
        * **Those are not re-derived by anything.** The cron sweeps reconcile from five marker columns
        * (`cron.js:47-48`) and none of them is a reset or verification token; there is no mail
-       * re-send among the five tasks at `cron.js:72-78`. And the user is told nothing:
+       * re-send among the eight tasks at `cron.js:74-84`. And the user is told nothing:
        * `auth.service.js:542-543` returns `{ issued: true }` for any address by design, so a reset
        * requested in the second before a restart looks successful and no mail ever arrives. The only
        * remedy is for the user to request another link. Every deploy has this property too, not just
@@ -461,8 +468,8 @@ module.exports = {
        *    same second write the same file — two mysqldump streams interleaved into one unrestorable
        *    `.sql`, which passes the non-empty check at `databaseBackup.js:173`.
        *
-       * The in-process guard that makes overlap safe is a `Set` in one process (`cron.js:85`,
-       * checked at `:148`). It cannot see another process. There is no lock table — §29 fixes the
+       * The in-process guard that makes overlap safe is a `Set` in one process (`cron.js:91`,
+       * checked at `:154`). It cannot see another process. There is no lock table — §29 fixes the
        * schema at 64 tables — so nothing in the database would catch this either.
        *
        * `instances: 2` here does not make the sweeps faster. It makes them wrong.
@@ -477,7 +484,7 @@ module.exports = {
        * `ENABLE_CRON` lives here rather than in `.env`. Be precise about what that buys, because it
        * is narrower than "exactly one scheduler, guaranteed".
        *
-       * `cron.js:249-255` refuses to start the resident scheduler unless the flag is set;
+       * `cron.js:255-261` refuses to start the resident scheduler unless the flag is set;
        * `env.js:257` defaults it to false and `env.js:49-53` accepts the string `'true'`. Put the
        * flag in `backend/.env` and the opt-in becomes machine-wide: every process on that box reads
        * the same file, so an operator who types `npm run cron` to "check something" starts a second
@@ -521,7 +528,7 @@ module.exports = {
       /*
        * No `kill_timeout`, and no `max_memory_restart`, because of the same fact:
        *
-       * `cron.js` installs no signal handler at all — `cron.js:258` says so outright ("SIGTERM is
+       * `cron.js` installs no signal handler at all — `cron.js:264` says so outright ("SIGTERM is
        * left to the process manager"). Node's default action for SIGINT/SIGTERM terminates the
        * process immediately, so whatever PM2 waits for, this process is already gone. A
        * `kill_timeout` here would be a setting with no effect: it cannot make this shutdown graceful,
@@ -537,12 +544,54 @@ module.exports = {
        * `max_memory_restart` is omitted for that reason: an automatic restart is a restart the
        * operator did not choose the timing of, and here it can manufacture a file that looks like a
        * backup and is not. The scheduler holds no request state and each task is bounded at ten
-       * minutes (`cron.js:101`), so a runaway shows up as a climbing figure in `pm2 list` — §27's
+       * minutes (`cron.js:107`), so a runaway shows up as a climbing figure in `pm2 list` — §27's
        * Monitoring — which is a slower signal, chosen deliberately over a kill that can corrupt.
        */
 
       out_file: path.join(PM2_LOG_DIR, 'msms-cron-out.log'),
       error_file: path.join(PM2_LOG_DIR, 'msms-cron-error.log'),
+    },
+
+    /* ─────────────────────────── the dashboard ─────────────────────────── */
+    {
+      name: 'msms-web',
+
+      /*
+       * `frontend/package.json` — `npm start` is `next start -p 3000`. Run through Next's own binary
+       * rather than npm, so the process PM2 supervises is the server and not an npm wrapper around it;
+       * the arguments add `-H 127.0.0.1`, because `next start` binds every interface by default
+       * (`--hostname`, default 0.0.0.0) and this server is meant to be reachable only through nginx —
+       * the hazard the API's upstream block records for :4000.
+       *
+       * **It serves a build; it does not make one.** `next build` must have run in `frontend/` first,
+       * and `NEXT_PUBLIC_API_URL` must be set when it runs: Next inlines `NEXT_PUBLIC_*` values into
+       * the browser bundle at build time (`frontend/src/lib/apiClient.ts` reads it, falling back to
+       * `http://localhost:4000/api/v1`), so setting it here, at start, changes nothing the browser sees.
+       * `frontend/.env.example` documents it; the operator steps at the foot of this file build first.
+       */
+      script: 'node_modules/next/dist/bin/next',
+      args: 'start -p 3000 -H 127.0.0.1',
+      ...shared,
+      /* The shared restart and logging settings, run from the frontend's root instead. */
+      cwd: FRONTEND,
+
+      /*
+       * One instance, fork mode — a capacity choice, not the correctness constraint msms-api carries.
+       * This process holds none of the API's per-process state (entitlements, rate limits, the queue):
+       * the browser calls the API directly with its own token. More instances have simply not been
+       * needed or measured, and cluster mode is not claimed to work for it until someone has.
+       */
+      instances: 1,
+      exec_mode: 'fork',
+
+      env: {
+        NODE_ENV: 'production',
+      },
+
+      autorestart: true,
+
+      out_file: path.join(PM2_LOG_DIR, 'msms-web-out.log'),
+      error_file: path.join(PM2_LOG_DIR, 'msms-web-error.log'),
     },
   ],
 
@@ -557,8 +606,11 @@ module.exports = {
    *
    *   mkdir -p /var/log/msms && chown msms:msms /var/log/msms && chmod 0750 /var/log/msms
    *                                                must exist first; this file throws if it does not
-   *   pm2 start deploy/pm2/ecosystem.config.js     both apps — the SCHEDULER host only
-   *   pm2 start  ... --only msms-api               EVERY other host, because this file carries
+   *   cd frontend && npm ci && NEXT_PUBLIC_API_URL=https://<api-domain>/api/v1 npm run build
+   *                                                before the first start and after every frontend
+   *                                                change — msms-web serves this build (see msms-web)
+   *   pm2 start deploy/pm2/ecosystem.config.js     all three apps — the SCHEDULER host only
+   *   pm2 start  ... --only msms-api,msms-web      EVERY other host, because this file carries
    *                                                ENABLE_CRON=true with it (see msms-cron above)
    *   pm2 save                                     persist the list PM2 resurrects
    *   pm2 startup                                  print the boot command for this init system

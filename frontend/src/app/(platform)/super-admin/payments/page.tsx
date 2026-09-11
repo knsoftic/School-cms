@@ -130,7 +130,7 @@ function formatDay(iso: string | null): string | null {
 }
 
 export default function PaymentsPage() {
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
   const { nameFor, schools } = useSchoolNames();
   const { success, error: errorToast } = useToast();
 
@@ -361,7 +361,12 @@ export default function PaymentsPage() {
     <div>
       <PageHeader
         title="Payments"
-        description="Every payment recorded or submitted across the platform, newest first."
+        description={
+          /* An Organization Admin reads this list too, confined to their organization by `tenantWhere()`. */
+          profile?.tenant.isPlatform === false
+            ? 'Every payment recorded or submitted for your organization’s schools, newest first.'
+            : 'Every payment recorded or submitted across the platform, newest first.'
+        }
         action={
           <div className="flex gap-2">
             {canReview && status !== 'pending' ? (

@@ -44,12 +44,10 @@
  * ## `runLifecycleSweep()` has no route, on purpose
  *
  * FR-SUB-010's actor is *"System / Super Admin"* and FR-SUB-015's Automatic Renewal is
- * *"initiated by the system at cycle end"* — a scheduler, not a request. `package.json` already
- * declares `"cron": "node src/jobs/cron.js"` and `src/jobs/` does not exist yet, so the trigger is
- * genuinely Phase 5 work. What is *not* deferred is the behaviour: the sweep is a plain exported
- * function, fully implemented, and `scripts/verify-subscriptions.js` calls it directly. Adding a
- * `POST /subscriptions/run-renewals` endpoint to make it reachable today would be inventing a
- * requirement, which SRS §35 forbids.
+ * *"initiated by the system at cycle end"* — a scheduler, not a request: the hourly
+ * `subscription-lifecycle` job in `src/jobs/` runs it. The sweep is a plain exported function, and
+ * `scripts/verify-subscriptions.js` calls it directly. A `POST /subscriptions/run-renewals` endpoint
+ * as well would be inventing a requirement, which SRS §35 forbids.
  *
  * ## The state machine, and where each edge comes from
  *
@@ -69,9 +67,10 @@
  *  - **No `DELETE /:id`.** A subscription is the school's billing history. `Cancelled` and
  *    `Expired` are the source's terminal states, `subscription_items` and (from §13) `invoices`
  *    point at the row, and §12 names no removal operation.
- *  - **No payment.** Activation is an administrative act here because §13 does not exist yet. When
- *    it does, the payment approval path calls `transition(…, 'activate', …)` — the transition table
- *    is the seam, which is why it is data rather than six functions.
+ *  - **No payment here.** Activation is also an administrative act, but the usual path is §13's: an
+ *    approved payment calls `transition(…, 'activate' | 'reactivate', …)` or `settleArrears()`
+ *    (`payments.service`) — the transition table is the seam, which is why it is data rather than six
+ *    functions.
  *  - **No second usable subscription per school.** `entitlementService.findGoverningSubscription()`
  *    picks *one*: a usable row if there is one, else the most recent. Letting a school hold two
  *    open subscriptions would make entitlement depend on insert order, so `create()` refuses it.
@@ -84,6 +83,7 @@ const ApiError = require('../../utils/ApiError');
 const logger = require('../../config/logger');
 const entitlementService = require('../../services/entitlementService');
 const tenantService = require('../../services/tenantService');
+const usageService = require('../../services/usageService');
 /* For the prorated invoice an immediate plan change owes — see `changePlan()`. No require cycle: invoices reads subscriptions through the models only. */
 const invoicesService = require('../invoices/invoices.service');
 const money = require('../../utils/money');
@@ -109,6 +109,8 @@ const {
   LIMIT_LABELS,
   USAGE_LIMIT_KEYS,
   PRICE_OVERRIDE_TARGETS,
+  INVOICE_STATUS,
+  LIMITS,
 } = require('../../config/constants');
 
 const SORTABLE = Object.freeze([
@@ -500,6 +502,33 @@ function computeCycleAmount(price, quantity = 1) {
  * @param {number} quantity
  * @returns {object}
  */
+/**
+ * The two §10.4 models that bill the school's students — the owner's decision D26.
+ *
+ * The source names Per-Student and Student-Based pricing and defines neither, and all three per-unit
+ * models used to bill whatever quantity an operator typed. D26 decided the two student models bill the
+ * school's **live** active-student count — the count `student_limit` measures — taken when the
+ * subscription is created or changes plan, and re-counted at every renewal; Seat-Based keeps the typed
+ * quantity, a seat being whatever the school buys.
+ */
+const COUNTED_MODELS = Object.freeze([PRICING_MODELS.PER_STUDENT, PRICING_MODELS.STUDENT_BASED]);
+
+/**
+ * The quantity a price bills: the school's active students for a counted model, else the typed one.
+ *
+ * @param {object} price
+ * @param {number} schoolId
+ * @param {number} [typed]
+ * @param {object} [transaction]
+ * @returns {Promise<number>}
+ */
+async function billedQuantity(price, schoolId, typed, transaction) {
+  if (price && COUNTED_MODELS.includes(price.pricing_model)) {
+    return usageService.countHeadcount(schoolId, LIMITS.STUDENT_LIMIT, transaction);
+  }
+  return typed || 1;
+}
+
 function pricingColumns(price, quantity) {
   return {
     plan_price_id: price.id,
@@ -714,7 +743,8 @@ async function create(req, payload) {
   const price = await selectPrice(plan.id, payload);
 
   const startsAt = payload.starts_at ? new Date(payload.starts_at) : new Date();
-  const quantity = payload.quantity || 1;
+  /* D26 — a student-counted price bills the school's active students, whatever was typed. */
+  const quantity = await billedQuantity(price, school.id, payload.quantity);
 
   const trialDays = payload.trial_days !== undefined ? payload.trial_days : plan.trial_days;
   const graceDays =
@@ -879,6 +909,16 @@ async function update(req, id, payload) {
   if (payload.metadata !== undefined) columns.metadata = payload.metadata;
 
   if (payload.quantity !== undefined && payload.quantity !== subscription.quantity) {
+    /*
+     * D26 — a student-counted price has no typed quantity to change: it bills the school's active
+     * students, counted at every renewal, and an edit here would be overwritten by the next count.
+     */
+    if (COUNTED_MODELS.includes(subscription.pricing_model)) {
+      throw ApiError.conflict(
+        'This subscription is priced per student: its quantity is the school\'s active-student count, taken again at every renewal.',
+        { code: 'SUBSCRIPTION_QUANTITY_COUNTED', details: { pricingModel: subscription.pricing_model } }
+      );
+    }
     columns.quantity = payload.quantity;
 
     if (subscription.plan_price_id) {
@@ -908,6 +948,22 @@ async function update(req, id, payload) {
 
   await db.sequelize.transaction(async (transaction) => {
     await subscription.update(columns, { transaction });
+
+    /*
+     * The plan line follows the quantity — it is §13's invoice source, as `changePlan()` says of the same
+     * write. Recalculating `cycle_amount` alone left every invoice, manual or the automatic D6 run,
+     * billing the old quantity: a school moved from 100 to 200 students on a per-unit price went on
+     * being billed for 100 while the screen said the amount had been re-evaluated.
+     */
+    if (columns.quantity !== undefined) {
+      await db.SubscriptionItem.update(
+        {
+          quantity: columns.quantity,
+          ...(columns.cycle_amount !== undefined ? { amount: columns.cycle_amount } : {}),
+        },
+        { where: { subscription_id: subscription.id, item_type: 'plan' }, transaction }
+      );
+    }
   });
 
   await recordAudit(req, {
@@ -1174,11 +1230,33 @@ async function transition(req, id, action, reason, options = {}) {
 
   const at = new Date();
   const previousState = subscription.state;
+  const previousPeriodStart = subscription.current_period_start;
   const before = snapshot(subscription);
   let schoolState;
 
   await db.sequelize.transaction(async (transaction) => {
     await subscription.update(spec.columns(subscription, at, reason), { transaction });
+
+    /*
+     * A pending subscription is invoiced by the D6 job for the period it was created with, and
+     * activating it — usually because that invoice was just paid — re-bases the period to now. The job
+     * then found a period start with no invoice and billed the first cycle again, setup fee and all.
+     * The period's invoice moves with the period instead: it is still the first period's invoice,
+     * wherever that period now starts.
+     */
+    if (action === 'activate' && previousState === STATES.PENDING && previousPeriodStart) {
+      await db.Invoice.update(
+        { billing_period_start: subscription.current_period_start, billing_period_end: subscription.current_period_end },
+        {
+          where: {
+            subscription_id: subscription.id,
+            billing_period_start: previousPeriodStart,
+            status: { [Op.in]: invoicesService.LIVE_STATUSES },
+          },
+          transaction,
+        }
+      );
+    }
 
     await recordHistory(
       {
@@ -1503,7 +1581,8 @@ async function changePlan(req, id, payload, direction) {
     );
   }
 
-  const quantity = payload.quantity || subscription.quantity;
+  /* D26 — moving onto a student-counted price counts the school's students now. */
+  const quantity = await billedQuantity(price, subscription.school_id, payload.quantity || subscription.quantity);
   const newCycleAmount = computeCycleAmount(price, quantity);
 
   const at = new Date();
@@ -1572,8 +1651,25 @@ async function changePlan(req, id, payload, direction) {
     };
   }
 
-  /* ── The immediate form: §12.3's arithmetic, then the switch. ── */
-  const proration = prorate(subscription, newCycleAmount, at, price);
+  /*
+   * ── The immediate form: §12.3's arithmetic, then the switch. ──
+   *
+   * Not during a trial. §12.3's remaining credit is credit *from the prior plan*, and a trial has paid
+   * for nothing: prorating one turned the unbilled trial into wallet credit a school could create for
+   * itself with an immediate downgrade, and billed an upgrade twice — once as proration, once again in
+   * full when the trial ended. The switch still applies; the first invoice, when the trial ends (D23),
+   * bills the new plan.
+   */
+  const proration = subscription.state === STATES.TRIAL
+    ? {
+      ...prorate(subscription, newCycleAmount, at, price),
+      unusedCredit: 0,
+      prorationDue: 0,
+      creditApplied: 0,
+      amountDue: 0,
+      creditBalance: money.round(subscription.credit_balance),
+    }
+    : prorate(subscription, newCycleAmount, at, price);
   let schoolState;
   let prorationInvoice = null;
 
@@ -1785,8 +1881,63 @@ async function renew(req, id, options = {}) {
     );
   }
 
+  /*
+   * One cycle ahead, never two. An early renewal moves the current period to the next one before it
+   * starts; a second renewal then moved it again, and the period in between was never current on any
+   * day the `invoice-issue` job ran — so it was never billed. A period that has not started yet is
+   * already the next cycle; renewing it again has nothing to renew.
+   */
+  if (subscription.current_period_start && new Date(subscription.current_period_start) > at) {
+    throw ApiError.conflict(
+      `This subscription is already renewed — its next period starts ${dates.toDateOnly(subscription.current_period_start)}.`,
+      {
+        code: 'SUBSCRIPTION_ALREADY_RENEWED',
+        details: {
+          subscriptionId: subscription.id,
+          current_period_start: subscription.current_period_start,
+          current_period_end: subscription.current_period_end,
+        },
+      }
+    );
+  }
+
   const before = snapshot(subscription);
   const previousState = subscription.state;
+
+  /*
+   * D23 — a renewal starts the next period; it does not settle what is owed. Only paying every overdue
+   * invoice returns a subscription to Active (`settleArrears()`), and a renewal used to set Active
+   * whatever was outstanding — so a school in Past Due or Grace renewed itself back to full use without
+   * paying, and the overdue invoice, already flagged, never sent it back. With an invoice still overdue
+   * the period advances and the state stays in arrears, without gaining access or losing grace:
+   *
+   *  - **Past Due or Grace** keeps its state and its grace end. Clearing the end let the sweep's pass 4
+   *    expire the subscription an hour later, a grace period taken away by renewing.
+   *  - **Active or Expiring** (an invoice overdue that `invoice-overdue` has not flagged yet) takes the
+   *    edge `pastDueForOverdueInvoices()` takes: Grace for the configured days, or Past Due when none.
+   *  - **Expired** is refused. Its access has stopped, and Past Due is a usable state, so a renewal would
+   *    hand it back unpaid until the next sweep re-expired it. An expired subscription in arrears is
+   *    reactivated by paying (`payments.service` `REACTIVATE_FROM`), not by renewing.
+   */
+  const inArrears = (await overdueInvoiceCount(subscription.id, at)) > 0;
+  let renewedState = STATES.ACTIVE;
+  let graceEndsAt = null;
+  if (inArrears) {
+    if (previousState === STATES.EXPIRED) {
+      throw ApiError.conflict('This subscription has expired with an invoice overdue — paying it reactivates the subscription; renewing cannot.', {
+        code: 'SUBSCRIPTION_IN_ARREARS',
+        details: { subscriptionId: subscription.id, state: previousState },
+      });
+    }
+    if ([STATES.PAST_DUE, STATES.GRACE_PERIOD].includes(previousState)) {
+      renewedState = previousState;
+      graceEndsAt = subscription.grace_period_ends_at;
+    } else {
+      const graceDays = Number(subscription.grace_period_days);
+      renewedState = graceDays > 0 ? STATES.GRACE_PERIOD : STATES.PAST_DUE;
+      graceEndsAt = graceDays > 0 ? dates.addDays(at, graceDays) : null;
+    }
+  }
 
   /* A scheduled change is due when its date has arrived — or when it is the period we are leaving. */
   const scheduledDue =
@@ -1825,18 +1976,33 @@ async function renew(req, id, options = {}) {
   const cycleDays = price ? price.cycle_days : subscription.cycle_days;
   const periodEnd = dates.addBillingCycle(periodStart, cycle, cycleDays);
 
+  /*
+   * D26 — a student-counted price is re-counted at every renewal, so the new period bills the school's
+   * active students as they are now. Renewal used to carry the old amount forward whatever the school
+   * had grown or shrunk to.
+   */
+  const billingPrice = price || (subscription.plan_price_id ? await db.PlanPrice.findByPk(subscription.plan_price_id) : null);
+  const counted = Boolean(billingPrice && COUNTED_MODELS.includes(billingPrice.pricing_model));
+  const quantity = counted
+    ? await billedQuantity(billingPrice, subscription.school_id)
+    : Number(subscription.quantity);
+  if (counted) newCycleAmount = computeCycleAmount(billingPrice, quantity);
+
   let schoolState;
 
   await db.sequelize.transaction(async (transaction) => {
     const columns = {
-      state: STATES.ACTIVE,
+      state: renewedState,
       current_period_start: periodStart,
       current_period_end: periodEnd,
       next_renewal_at: periodEnd,
       last_renewed_at: at,
       renewal_count: Number(subscription.renewal_count) + 1,
-      /* The reasons the previous period ended no longer apply to the new one. */
-      grace_period_ends_at: null,
+      /*
+       * The reasons the previous period ended no longer apply to the new one — except arrears, which a
+       * renewal does not clear: see `graceEndsAt` above.
+       */
+      grace_period_ends_at: graceEndsAt,
       expiry_notified_at: null,
       expired_at: null,
       ends_at: null,
@@ -1851,11 +2017,15 @@ async function renew(req, id, options = {}) {
       columns.scheduled_change_at = null;
 
       if (price) {
-        Object.assign(columns, pricingColumns(price, subscription.quantity));
+        Object.assign(columns, pricingColumns(price, quantity));
         /* `pricingColumns` re-derives the period length, so the boundaries are re-stated after it. */
         columns.current_period_end = periodEnd;
         columns.next_renewal_at = periodEnd;
       }
+    }
+    if (counted) {
+      columns.quantity = quantity;
+      columns.cycle_amount = newCycleAmount;
     }
 
     await subscription.update(columns, { transaction });
@@ -1865,6 +2035,7 @@ async function renew(req, id, options = {}) {
         {
           plan_id: targetPlan.id,
           description: `${targetPlan.name} — ${cycle}`.slice(0, 255),
+          quantity,
           amount: newCycleAmount,
           period_start: periodStart,
           period_end: periodEnd,
@@ -1878,7 +2049,7 @@ async function renew(req, id, options = {}) {
           school_id: subscription.school_id,
           event: EVENTS.DOWNGRADED,
           from_state: previousState,
-          to_state: STATES.ACTIVE,
+          to_state: renewedState,
           from_plan_id: before.plan_id,
           to_plan_id: targetPlan.id,
           new_amount: newCycleAmount,
@@ -1889,9 +2060,16 @@ async function renew(req, id, options = {}) {
         transaction
       );
     } else {
-      /* The plan line's period follows the subscription's even when the plan did not change. */
+      /*
+       * The plan line's period follows the subscription's even when the plan did not change — and
+       * so do its quantity and amount on a student-counted price (D26).
+       */
       await db.SubscriptionItem.update(
-        { period_start: periodStart, period_end: periodEnd },
+        {
+          period_start: periodStart,
+          period_end: periodEnd,
+          ...(counted ? { quantity, amount: newCycleAmount } : {}),
+        },
         { where: { subscription_id: subscription.id, item_type: 'plan' }, transaction }
       );
     }
@@ -1902,7 +2080,7 @@ async function renew(req, id, options = {}) {
         school_id: subscription.school_id,
         event: EVENTS.RENEWED,
         from_state: previousState,
-        to_state: STATES.ACTIVE,
+        to_state: renewedState,
         from_plan_id: before.plan_id,
         to_plan_id: subscription.plan_id,
         new_amount: money.round(subscription.cycle_amount),
@@ -2087,6 +2265,7 @@ async function purchaseAddon(req, id, payload) {
 
   let purchase;
   let existingItem;
+  let addonInvoice = null;
 
   await db.sequelize.transaction(async (transaction) => {
     purchase = await db.SubscriptionAddon.create(
@@ -2155,6 +2334,69 @@ async function purchaseAddon(req, id, payload) {
       },
       transaction
     );
+
+    /*
+     * The owner's decision D24 — an add-on bought after its period was invoiced is charged at purchase.
+     *
+     * A period's invoice is issued when the period starts, so an add-on bought mid-period used to be
+     * free until the next period's invoice, and one bought as a one-off (`is_recurring: false`) after
+     * the first invoice was never billed at all: only the first cycle bills non-recurring lines. So
+     * when the current period already has its invoice, the purchase gets one of its own, as an
+     * immediate upgrade does: a recurring add-on prorated for the rest of the period (its full line
+     * follows on every later invoice), a one-off at its full amount (and never again). A period not
+     * yet invoiced — a trial, a pending subscription — needs nothing here: its invoice, when it comes,
+     * carries the line.
+     */
+    const lineAmount = money.multiply(unitAmount, quantity);
+    const periodInvoiced = subscription.current_period_start && await db.Invoice.count({
+      where: {
+        subscription_id: subscription.id,
+        billing_period_start: subscription.current_period_start,
+        status: { [Op.in]: invoicesService.LIVE_STATUSES },
+      },
+      transaction,
+    });
+    if (periodInvoiced && money.toMinor(lineAmount) > 0) {
+      const at = purchase.starts_at || new Date();
+      const remaining = purchase.is_recurring ? prorate(subscription, lineAmount, at) : null;
+      const charge = purchase.is_recurring ? remaining.prorationDue : lineAmount;
+      if (money.toMinor(charge) > 0) {
+        const plan = await db.SubscriptionPlan.findByPk(subscription.plan_id, { attributes: ['id', 'name'], transaction });
+        addonInvoice = await invoicesService.issue(
+          req,
+          {
+            schoolId: subscription.school_id,
+            organizationId: subscription.organization_id,
+            subscriptionId: subscription.id,
+            planId: subscription.plan_id,
+            planName: plan ? plan.name : null,
+            billingPeriodStart: at,
+            billingPeriodEnd: subscription.current_period_end,
+            billingCycle: subscription.billing_cycle,
+            currency,
+            lines: [
+              {
+                item_type: 'addon',
+                description: (purchase.is_recurring
+                  ? `${addon.name} × ${quantity} — prorated for ${remaining.remainingDays} day(s)`
+                  : `${addon.name} × ${quantity} — one-off`).slice(0, 255),
+                quantity: 1,
+                unit_amount: charge,
+                amount: charge,
+                period_start: at,
+                period_end: subscription.current_period_end,
+                metadata: { subscription_addon_id: purchase.id, prorated: Boolean(purchase.is_recurring) },
+              },
+            ],
+            creditAvailable: 0,
+            issueDate: at,
+            dueDays: subscription.grace_period_days,
+            reason: payload.reason || `${addon.name} bought mid-period (owner decision D24)`,
+          },
+          { transaction }
+        );
+      }
+    }
   });
 
   await recordAudit(req, {
@@ -2182,6 +2424,8 @@ async function purchaseAddon(req, id, payload) {
       currency,
       itemId: existingItem.id,
     },
+    /* D24 — the invoice issued at purchase when the period was already billed, or null. */
+    invoice: addonInvoice ? { id: addonInvoice.id, invoice_number: addonInvoice.invoice_number, total: addonInvoice.total } : null,
   };
 }
 
@@ -2454,10 +2698,9 @@ async function revokeOverride(req, id, overrideId, reason) {
 /**
  * Move every subscription the calendar has moved — the "System" half of FR-SUB-010's actor line.
  *
- * **Has no route, by design.** See the file header: the trigger is the Phase 5 cron
- * (`package.json` already declares `"cron": "node src/jobs/cron.js"`), `src/jobs/` does not exist
- * yet, and inventing a `POST /run-renewals` to make it reachable would be inventing a requirement.
- * The behaviour is complete and `scripts/verify-subscriptions.js` drives it directly.
+ * **Has no route, by design.** See the file header: the trigger is the `subscription-lifecycle` job,
+ * and a `POST /run-renewals` as well would be inventing a requirement. `scripts/verify-subscriptions.js`
+ * drives it directly.
  *
  * ## The five passes, in the order they must run
  *
@@ -2494,6 +2737,175 @@ async function revokeOverride(req, id, overrideId, reason) {
  * @param {number} [options.limit]  rows per pass, so one run cannot take unbounded time
  * @returns {Promise<object>} a per-pass report
  */
+/**
+ * Apply a billing-driven state change with the same history / cache discipline the request paths use.
+ *
+ * Not `transition()`, because these edges are not in `TRANSITIONS` — that table is the six
+ * *administrative* actions, and mixing the billing ones into it would let a route reach them. The
+ * bookkeeping is shared; the edge list is not. Used by the lifecycle sweep and by the two edges the
+ * owner's decision D23 added — an overdue invoice, and arrears settled.
+ *
+ * @param {object} subscription
+ * @param {{state: string, columns: object, event: string, notes?: string, at: Date,
+ *          performedBy?: number|null, metadata?: object}} spec
+ */
+async function applyBillingState(subscription, { state, columns, event, notes, at, performedBy = null, metadata = null }) {
+  const previousState = subscription.state;
+  const before = snapshot(subscription);
+  let schoolState;
+
+  await db.sequelize.transaction(async (transaction) => {
+    await subscription.update({ state, ...columns }, { transaction });
+
+    await recordHistory(
+      {
+        subscription_id: subscription.id,
+        school_id: subscription.school_id,
+        event,
+        from_state: previousState,
+        to_state: state,
+        from_plan_id: subscription.plan_id,
+        to_plan_id: subscription.plan_id,
+        new_amount: money.round(subscription.cycle_amount),
+        effective_at: at,
+        notes: notes || null,
+        /* The sweep has no request and no user: the system acting. A settlement names its approver. */
+        performed_by: performedBy,
+        metadata: metadata || { sweep: true, evaluatedAt: at.toISOString() },
+      },
+      transaction
+    );
+
+    schoolState = await syncSchoolState(subscription.school_id, transaction);
+  });
+
+  await recordAudit(null, {
+    tableName: 'subscriptions',
+    recordId: subscription.id,
+    event: 'update',
+    before,
+    after: snapshot(subscription),
+    reason: notes || null,
+    /* No request to take the tenant from; the row still belongs to this school. */
+    schoolId: subscription.school_id,
+    organizationId: subscription.organization_id,
+  });
+
+  await afterWrite(subscription.school_id, { tenant: schoolState.changed });
+}
+
+/**
+ * An overdue invoice makes its subscription Past Due — the owner's decision D23.
+ *
+ * Billing events used to change no state: an invoice sat overdue while the subscription stayed Active
+ * and, on automatic renewal, went on renewing. Called by the `invoice-overdue` job with the
+ * subscriptions whose invoices it just flagged. The edge is the one the sweep takes when a period
+ * lapses — Past Due, then FR-SUB-012's grace period when one is configured — so the sweep's later
+ * passes carry it on to Expired if nothing is paid. Only an Active or Expiring subscription moves: one
+ * already Past Due, in Grace or stopped has nothing to become.
+ *
+ * @param {number[]} subscriptionIds
+ * @param {{at?: Date}} [options]
+ * @returns {Promise<{pastDue: number, graceStarted: number, failed: object[]}>}
+ */
+async function pastDueForOverdueInvoices(subscriptionIds, options = {}) {
+  const at = options.at || new Date();
+  const report = { pastDue: 0, graceStarted: 0, failed: [] };
+  if (!subscriptionIds || !subscriptionIds.length) return report;
+
+  const rows = await db.Subscription.findAll({
+    where: { id: { [Op.in]: subscriptionIds }, state: { [Op.in]: [STATES.ACTIVE, STATES.EXPIRING] } },
+    order: [['id', 'ASC']],
+  });
+  for (const subscription of rows) {
+    try {
+      const graceDays = Number(subscription.grace_period_days);
+      // eslint-disable-next-line no-await-in-loop
+      await applyBillingState(subscription, {
+        at,
+        state: STATES.PAST_DUE,
+        columns: { grace_period_ends_at: graceDays > 0 ? dates.addDays(at, graceDays) : null },
+        event: EVENTS.PAST_DUE,
+        notes: 'An invoice went overdue (owner decision D23)',
+      });
+      report.pastDue += 1;
+      if (graceDays > 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await applyBillingState(subscription, {
+          at,
+          state: STATES.GRACE_PERIOD,
+          columns: {},
+          event: EVENTS.GRACE_PERIOD_STARTED,
+          notes: `${graceDays}-day grace period after an overdue invoice (SRS §12.2)`,
+        });
+        report.graceStarted += 1;
+      }
+    } catch (err) {
+      report.failed.push({ subscriptionId: Number(subscription.id), error: err.message });
+      logger.error('Could not move a subscription to past due', { subscriptionId: Number(subscription.id), error: err.message });
+    }
+  }
+  return report;
+}
+
+/**
+ * How many of a subscription's invoices are overdue at `at`: flagged `overdue`, or unpaid past their due
+ * date and not yet swept. One definition, read by `settleArrears()` and `renew()` — D23's two questions,
+ * "is anything still owed" and "does a renewal leave arrears behind", must not be able to disagree.
+ *
+ * @param {number} subscriptionId
+ * @param {Date} at
+ * @returns {Promise<number>}
+ */
+async function overdueInvoiceCount(subscriptionId, at) {
+  return db.Invoice.count({
+    where: {
+      subscription_id: subscriptionId,
+      [Op.or]: [
+        { status: INVOICE_STATUS.OVERDUE },
+        {
+          status: { [Op.in]: [INVOICE_STATUS.UNPAID, INVOICE_STATUS.PARTIALLY_PAID] },
+          due_date: { [Op.lt]: dates.toDateOnly(at) },
+        },
+      ],
+    },
+  });
+}
+
+/**
+ * Settling every overdue invoice returns a Past Due or Grace subscription to Active — D23.
+ *
+ * Called by `payments.service` after an approved payment settles an invoice. Two conditions, both
+ * required. Nothing still overdue: an invoice flagged `overdue`, or unpaid past its due date and not yet
+ * swept. And the period still running: a subscription that lapsed because its period ended is waiting
+ * on a renewal, which paying an older invoice does not perform — returning it to Active with a period
+ * in the past would only hand it back to the sweep.
+ *
+ * @param {import('express').Request|null} req  the approval, for `performed_by`
+ * @param {number} subscriptionId
+ * @param {{at?: Date}} [options]
+ * @returns {Promise<'settled'|null>}
+ */
+async function settleArrears(req, subscriptionId, options = {}) {
+  const at = options.at || new Date();
+  const subscription = await db.Subscription.findByPk(subscriptionId);
+  if (!subscription || ![STATES.PAST_DUE, STATES.GRACE_PERIOD].includes(subscription.state)) return null;
+  if (!subscription.current_period_end || new Date(subscription.current_period_end) <= at) return null;
+
+  if (await overdueInvoiceCount(subscription.id, at)) return null;
+
+  await applyBillingState(subscription, {
+    at,
+    state: STATES.ACTIVE,
+    columns: { grace_period_ends_at: null },
+    event: EVENTS.STATE_CHANGED,
+    notes: 'Overdue invoices settled (owner decision D23)',
+    performedBy: performerOf(req),
+    metadata: { settledAt: at.toISOString() },
+  });
+  return 'settled';
+}
+
 async function runLifecycleSweep(options = {}) {
   const at = options.at || new Date();
   const windowDays =
@@ -2514,57 +2926,7 @@ async function runLifecycleSweep(options = {}) {
     failed: [],
   };
 
-  /**
-   * Apply a state change with the same history / cache discipline the request paths use.
-   *
-   * A local helper rather than `transition()`, because these edges are not in `TRANSITIONS` — that
-   * table is the six *administrative* actions, and mixing the billing ones into it would let a
-   * route reach them. The bookkeeping is shared; the edge list is not.
-   */
-  async function applyState(subscription, { state, columns, event, notes }) {
-    const previousState = subscription.state;
-    const before = snapshot(subscription);
-    let schoolState;
-
-    await db.sequelize.transaction(async (transaction) => {
-      await subscription.update({ state, ...columns }, { transaction });
-
-      await recordHistory(
-        {
-          subscription_id: subscription.id,
-          school_id: subscription.school_id,
-          event,
-          from_state: previousState,
-          to_state: state,
-          from_plan_id: subscription.plan_id,
-          to_plan_id: subscription.plan_id,
-          new_amount: money.round(subscription.cycle_amount),
-          effective_at: at,
-          notes: notes || null,
-          /* No request and no user: this is the system acting. */
-          performed_by: null,
-          metadata: { sweep: true, evaluatedAt: at.toISOString() },
-        },
-        transaction
-      );
-
-      schoolState = await syncSchoolState(subscription.school_id, transaction);
-    });
-
-    await recordAudit(null, {
-      tableName: 'subscriptions',
-      recordId: subscription.id,
-      event: 'update',
-      before,
-      after: snapshot(subscription),
-      reason: notes || null,
-      /* No request to take the tenant from; the row still belongs to this school. */
-      schoolId: subscription.school_id,
-      organizationId: subscription.organization_id,
-    });
-
-    await afterWrite(subscription.school_id, { tenant: schoolState.changed });
-  }
+  const applyState = (subscription, spec) => applyBillingState(subscription, { ...spec, at });
 
   /** Run one pass, isolating a failure to the row that caused it. */
   async function pass(name, rows, handler) {
@@ -2596,10 +2958,23 @@ async function runLifecycleSweep(options = {}) {
   await pass('trialEnded', endedTrials, async (subscription) => {
     const graceDays = Number(subscription.grace_period_days);
 
+    /*
+     * The first paid period starts when the trial ends — the owner's decision D23, "trial days are not
+     * billed". The period used to stay where creation put it, at the trial's start, so the first
+     * invoice the D6 job issued billed the school for the trial it had already had free. Re-based here,
+     * the job invoices the period that begins now; paying it returns the subscription to Active
+     * (`settleArrears`).
+     */
+    const firstPeriodStart = subscription.trial_ends_at;
+    const firstPeriodEnd = dates.addBillingCycle(firstPeriodStart, subscription.billing_cycle, subscription.cycle_days);
+
     await applyState(subscription, {
       state: STATES.PAST_DUE,
       columns: {
         grace_period_ends_at: graceDays > 0 ? dates.addDays(at, graceDays) : null,
+        current_period_start: firstPeriodStart,
+        current_period_end: firstPeriodEnd,
+        next_renewal_at: firstPeriodEnd,
       },
       event: EVENTS.TRIAL_ENDED,
       notes: 'Trial ended without activation (SRS §12.1)',
@@ -2864,6 +3239,8 @@ module.exports = {
 
   /* the system half of FR-SUB-010 / FR-SUB-015 — no route, see the header */
   runLifecycleSweep,
+  pastDueForOverdueInvoices,
+  settleArrears,
   governingStateFor,
   syncSchoolState,
 

@@ -224,7 +224,7 @@ function assertSubscriptionUsable(req, snapshot) {
  * @returns {import('express').RequestHandler}
  */
 function requireActiveSubscription() {
-  return asyncHandler(async (req, res, next) => {
+  const documented = asyncHandler(async (req, res, next) => {
     assertTenantResolved(req, 'requireActiveSubscription');
     if (req.tenant.isPlatform) return next();
 
@@ -232,6 +232,9 @@ function requireActiveSubscription() {
     assertSubscriptionUsable(req, snapshot);
     return next();
   });
+
+  /* No arguments, but a refusal (402) the document must list. See utils/routeMeta.js. */
+  return annotate(documented, { subscription: true });
 }
 
 /**
@@ -322,7 +325,7 @@ function requireFeature(...keys) {
 
   entitlementService.assertValidFeatureKeys(required, 'requireFeature');
 
-  return asyncHandler(async (req, res, next) => {
+  const documented = asyncHandler(async (req, res, next) => {
     assertTenantResolved(req, 'requireFeature');
     if (req.tenant.isPlatform) return next();
 
@@ -343,6 +346,9 @@ function requireFeature(...keys) {
 
     return next();
   });
+
+  /* The feature keys this guard was built from. See utils/routeMeta.js. */
+  return annotate(documented, { features: required });
 }
 
 /**

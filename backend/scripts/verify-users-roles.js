@@ -105,6 +105,7 @@ const {
   LIMIT_TYPES,
   STAFF_CATEGORIES,
   SUBSCRIPTION_STATES,
+  MODULES,
 } = require('../src/config/constants');
 const entitlementService = require('../src/services/entitlementService');
 const { DEFAULT_ROLE_PERMISSIONS, PERMISSION_KEYS } = require('../src/config/permissions');
@@ -1775,6 +1776,19 @@ async function verifyHttp() {
     await db.PlanLimit.create({
       plan_id: plan.id, limit_key: LIMITS.ADMIN_LIMIT, limit_type: LIMIT_TYPES.FIXED, limit_value: 2,
     });
+    /*
+     * The three people modules, and room for a teacher and a staff member on their limits, so D19's
+     * deactivations and reactivations below reach the code under test rather than a module or limit
+     * refusal (an unconfigured limit allows nothing).
+     */
+    for (const moduleKey of [MODULES.TEACHERS, MODULES.STAFF, MODULES.STUDENTS]) {
+      // eslint-disable-next-line no-await-in-loop
+      await db.PlanModule.create({ plan_id: plan.id, module_key: moduleKey, is_enabled: true });
+    }
+    for (const limitKey of [LIMITS.TEACHER_LIMIT, LIMITS.STAFF_LIMIT]) {
+      // eslint-disable-next-line no-await-in-loop
+      await db.PlanLimit.create({ plan_id: plan.id, limit_key: limitKey, limit_type: LIMIT_TYPES.FIXED, limit_value: 5 });
+    }
     const now = new Date();
     await db.Subscription.create({
       school_id: schoolA.id, organization_id: schoolA.organization_id, plan_id: plan.id,
@@ -1872,6 +1886,132 @@ async function verifyHttp() {
       firstAdmin.status, 201);
     check('  and the next is refused by the limit, not by anything else',
       [secondAdmin.status, codeOf(secondAdmin)], [403, 'PLAN_LIMIT_EXCEEDED']);
+
+    /*
+     * And the limit holds on re-activation. It counts ACTIVE accounts and was checked only on
+     * creation, so suspending one School Admin, creating a replacement and setting the first back to
+     * active through `PATCH /users/:id` left the school at limit + 1 — the hole teachers and staff had
+     * already closed on their own re-activation path.
+     */
+    const firstAdminId = dataOf(firstAdmin).user.id;
+    const suspended = await call(`/users/${firstAdminId}`, {
+      method: 'PATCH', token: cPrincipal, body: { status: USER_STATUS.SUSPENDED },
+    });
+    const replacement = track(await loginFor({
+      role: ROLES.SCHOOL_ADMIN, name: 'Replacement Admin', email: `adm3@${DOMAIN}`, username: 'vur_adm3',
+    }));
+    check('D2 — suspending a School Admin frees the place, and a replacement fits',
+      [suspended.status, replacement.status], [200, 201]);
+    const reactivated = await call(`/users/${firstAdminId}`, {
+      method: 'PATCH', token: cPrincipal, body: { status: USER_STATUS.ACTIVE },
+    });
+    check('  but setting the first back to active is refused by the limit, not waved through',
+      [reactivated.status, codeOf(reactivated), (await db.User.findByPk(firstAdminId)).status],
+      [403, 'PLAN_LIMIT_EXCEEDED', USER_STATUS.SUSPENDED]);
+
+    /*
+     * D19 — the login moves with the profile. Only the parents module did this; a deactivated teacher,
+     * staff member or departed student kept signing in.
+     */
+    const loginStatus = async (id) => (await db.User.findByPk(id)).status;
+    const offTeacher = await call(`/teachers/${teacherRecord.id}`, {
+      method: 'PATCH', token: cPrincipal, body: { is_active: false, left_at: '2026-06-30' },
+    });
+    check('D19 — deactivating a teacher takes their login inactive with the profile',
+      [offTeacher.status, await loginStatus(teacherUser.id)], [200, USER_STATUS.INACTIVE]);
+    const onTeacher = await call(`/teachers/${teacherRecord.id}`, {
+      method: 'PATCH', token: cPrincipal, body: { is_active: true, left_at: null },
+    });
+    check('  and reactivating the teacher restores it',
+      [onTeacher.status, await loginStatus(teacherUser.id)], [200, USER_STATUS.ACTIVE]);
+
+    /* An administrator's suspension is a decision about the account, and a profile change does not undo it. */
+    const librarianUserId = dataOf(librarianLogin).user.id;
+    await call(`/users/${librarianUserId}`, { method: 'PATCH', token: cPrincipal, body: { status: USER_STATUS.SUSPENDED } });
+    const offStaff = await call(`/staff/${librarianRecord.id}`, {
+      method: 'PATCH', token: cPrincipal, body: { is_active: false, left_at: '2026-06-30' },
+    });
+    const onStaff = await call(`/staff/${librarianRecord.id}`, {
+      method: 'PATCH', token: cPrincipal, body: { is_active: true, left_at: null },
+    });
+    check('  a staff member\'s login an administrator suspended stays suspended through a deactivation and back',
+      [offStaff.status, onStaff.status, await loginStatus(librarianUserId)], [200, 200, USER_STATUS.SUSPENDED]);
+
+    const studentUserId = dataOf(studentLogin).user.id;
+    const left = await call(`/students/${studentRecord.id}/leave`, {
+      method: 'POST', token: cPrincipal, body: { leaving_reason: 'Moved city' },
+    });
+    check('  and a student who leaves takes their login with them',
+      [left.status, await loginStatus(studentUserId)], [200, USER_STATUS.INACTIVE]);
+    /*
+     * D19 moves only a login of the profile's kind. A profile's `user_id` can name another account of
+     * the school, and a School Admin linked to a teacher row used to go down — or come back past the
+     * Admin Limit — with it.
+     */
+    const replacementId = dataOf(replacement).user.id;
+    await teacherRecord.update({ user_id: replacementId });
+    await call(`/teachers/${teacherRecord.id}`, { method: 'PATCH', token: cPrincipal, body: { is_active: false, left_at: '2026-07-31' } });
+    check('  a School Admin\'s login linked to a teacher row does not move with it — only a Teacher login does',
+      await loginStatus(replacementId), USER_STATUS.ACTIVE);
+    await teacherRecord.update({ user_id: teacherUser.id, is_active: true, left_at: null });
+
+    /* A login created for a profile that is already inactive starts inactive, as D19 would leave it. */
+    const leftTeacher = await db.Teacher.create({
+      ...onRecord, employee_id: 'VUR-T2', first_name: 'Former', joining_date: '2024-01-06', is_active: false, left_at: '2026-01-31',
+    });
+    const lateLogin = track(await loginFor({
+      role: ROLES.TEACHER, profile_id: leftTeacher.id, email: `former@${DOMAIN}`, username: 'vur_former',
+    }));
+    check('  and a login created for a deactivated teacher starts inactive, not able to sign in',
+      [lateLogin.status, lateLogin.status === 201 ? dataOf(lateLogin).user.status : null], [201, USER_STATUS.INACTIVE]);
+
+    /*
+     * D18 — the Super Admin creates Organization Admins, and nobody else does. SRS:97's role was seeded
+     * with nothing able to create an account for it.
+     */
+    const orgAdminBody = {
+      role: ROLES.ORGANIZATION_ADMIN, organization_id: orgC.id, name: 'Gamma Org Admin',
+      email: `gamma-oa@${DOMAIN}`, username: 'vur_gamma_oa',
+    };
+    const byPrincipal = await loginFor(orgAdminBody);
+    check('D18 — a Principal cannot create an Organization Admin — it would widen the school\'s own scope',
+      [byPrincipal.status, codeOf(byPrincipal)], [403, 'PLATFORM_SCOPE_REQUIRED']);
+    const withSchool = await loginFor({ ...orgAdminBody, school_id: schoolA.id }, tokens.platform);
+    check('  nor is one tied to a school', withSchool.status, 422);
+    const orgAdminCreated = track(await loginFor(orgAdminBody, tokens.platform));
+    const orgAdminUser = orgAdminCreated.status === 201 ? dataOf(orgAdminCreated).user : {};
+    check('  while the Super Admin creates one, belonging to the organization and to no school',
+      [orgAdminCreated.status, orgAdminUser.role && orgAdminUser.role.slug, orgAdminUser.school_id,
+        Number(orgAdminUser.organization_id), orgAdminUser.must_change_password],
+      [201, ROLES.ORGANIZATION_ADMIN, null, Number(orgC.id), true]);
+
+    /*
+     * §26 — "Errors and activity are auditable via logs" (SRS:1344). `logs.view` was granted and no
+     * route used it. The trails are read on it, confined to the caller's tenant.
+     */
+    const ownAudit = await call(`/logs/audit?table_name=users&limit=100`, { token: cPrincipal });
+    const ownActivity = await call('/logs/activity?limit=100', { token: cPrincipal });
+    check('§26 — a Principal reads their school\'s audit and activity trails, and only their school\'s',
+      [ownAudit.status, (dataOf(ownAudit) || []).length > 0,
+        (dataOf(ownAudit) || []).every((row) => Number(row.school_id) === Number(schoolA.id)),
+        (dataOf(ownAudit) || []).some((row) => Number(row.record_id) === Number(studentUserId)),
+        ownActivity.status, (dataOf(ownActivity) || []).every((row) => Number(row.school_id) === Number(schoolA.id))],
+      [200, true, true, true, 200, true]);
+    check('  while a Teacher, who does not hold logs.view, is refused, and another school cannot be named',
+      [(await call('/logs/audit', { token: tokens.teacher })).status,
+        (await call(`/logs/audit?school_id=${schoolA.id}`, { token: tokens.principal })).status],
+      [403, 403]);
+    /* "Everything up to a date" — `to` without `from` was a 422 from an unresolvable Joi reference. */
+    check('  a window with only an end is accepted, and one given backwards is still refused',
+      [(await call('/logs/activity?to=2099-12-31', { token: cPrincipal })).status,
+        (await call('/logs/audit?from=2026-02-01&to=2026-01-01', { token: cPrincipal })).status],
+      [200, 422]);
+
+    check('  each move written to the audit trail as its own users row',
+      await db.AuditLog.count({
+        where: { table_name: 'users', record_id: [teacherUser.id, studentUserId], id: { [db.Op.gt]: baseline.auditLog } },
+      }) >= 3,
+      true);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

@@ -68,10 +68,11 @@
  * marking it, calculating and publishing — never cancelling one. The status is left unwritten for the
  * same reason `student_fees.waived` is, and inventing a cancel edge would be inventing a requirement.
  *
- * ## `results.self.view` **is** mounted here, unlike §16 and §17
+ * ## `results.self.view` is mounted here
  *
- * Those sections describe no self-service view, so their `.self.view` permissions were left unmounted
- * and the absence recorded. §19.3 names "Student Result" outright and FR-EXAM-005's actor list is
+ * The first of the four self-view keys to be mounted — §16 and §17's followed with the owner's decision
+ * D17 (`GET /attendance/mine`, `GET /fees/mine`, `GET /students/mine`). §19.3 names "Student Result"
+ * outright and FR-EXAM-005's actor list is
  * *"Principal / School Admin / Teacher / Parent / Student"* — the source asks for it, so `GET
  * /my-results` exists and serves only **published** results, confined to the caller's own record or
  * their own children.
@@ -85,7 +86,8 @@ const {
   requirePermission,
   requireModule,
 } = require('../../middlewares');
-const { MODULES } = require('../../config/constants');
+const { MODULES, REPORT_FORMATS } = require('../../config/constants');
+const { respondsWithFile } = require('../../utils/routeMeta');
 
 const controller = require('./exams.controller');
 const { schemas } = require('./exams.validation');
@@ -166,7 +168,10 @@ router.get(
   '/results/:id',
   requirePermission('results.view'),
   validate({ params: schemas.idParam, query: schemas.resultQuery }),
-  asyncHandler(controller.showResult)
+  respondsWithFile(asyncHandler(controller.showResult), {
+    types: [controller.PDF_MIME],
+    when: `format=${REPORT_FORMATS.PDF}`,
+  })
 );
 
 /* ── §19.1 the examination ── */
@@ -227,8 +232,11 @@ router.patch(
 router.get(
   '/:id/results',
   requirePermission('results.view'),
-  validate({ params: schemas.idParam, query: schemas.listResults }),
-  asyncHandler(controller.classResult)
+  validate({ params: schemas.idParam, query: schemas.classResultQuery }),
+  respondsWithFile(asyncHandler(controller.classResult), {
+    types: [controller.PDF_MIME],
+    when: `format=${REPORT_FORMATS.PDF}`,
+  })
 );
 
 router.post(

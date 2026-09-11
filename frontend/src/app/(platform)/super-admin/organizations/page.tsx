@@ -36,6 +36,14 @@
  * wiring them would mean inventing one here — the kind of divergence that leaves thirty screens each
  * sorting differently. The server's fallback of `created_at DESC` (`getSort`) puts the newest
  * organization at the top, which is what an administrator who just created one is looking for.
+ *
+ * ## Adding an Organization Admin — the owner's decision D18
+ *
+ * Each row offers "Add admin", which creates an `organization_admin` login for that organization
+ * through `POST /users` — `./adminDialog.tsx` says why it starts from the row. It is offered on both of
+ * the route's conditions: `users.manage`, which the router checks, and a platform scope, which
+ * `createOrganizationAdmin()` checks and `can()` cannot see. An Organization Admin reading this list
+ * holds neither, and sees only their own organization.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -60,6 +68,9 @@ import {
   RefusalNotice,
   StatusBadge,
 } from '@/components/table';
+
+import { OrganizationAdminDialog } from './adminDialog';
+import type { AdminOrganization } from './adminDialog';
 
 /** An organization row, as `organizations` columns define it — see the header on why that is the shape. */
 interface Organization {
@@ -109,7 +120,12 @@ function formatDate(value: string): string | null {
 }
 
 export default function OrganizationsPage() {
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
+
+  /* D18 — both of `POST /users`'s conditions for this role; see the header. */
+  const canAddAdmin = profile?.tenant.isPlatform === true && can('users.manage');
+  const canEdit = can('organizations.manage');
+  const [adminFor, setAdminFor] = useState<AdminOrganization | null>(null);
 
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState('');
@@ -199,35 +215,49 @@ export default function OrganizationsPage() {
           );
         },
       },
-      ...(can('organizations.manage')
+      ...(canEdit || canAddAdmin
         ? [
             {
               key: 'actions',
               header: 'Actions',
               cell: (row: Organization) => (
-                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setEditing(row)}>
-                  Edit
-                </button>
+                <div className="flex flex-wrap gap-1">
+                  {canEdit ? (
+                    <button type="button" className="btn btn-sm btn-secondary" onClick={() => setEditing(row)}>
+                      Edit
+                    </button>
+                  ) : null}
+                  {canAddAdmin ? (
+                    <button type="button" className="btn btn-sm btn-ghost" onClick={() => setAdminFor(row)}>
+                      Add admin
+                    </button>
+                  ) : null}
+                </div>
               ),
             } as Column<Organization>,
           ]
         : []),
     ],
-    [can]
+    [canEdit, canAddAdmin]
   );
 
   return (
     <div>
       <PageHeader
         title="Organizations"
-        description="The top of the tenant hierarchy — every school on the platform belongs to one of these."
+        description={
+          /* An Organization Admin sees one row here: `scopeFor()` confines them to their own. */
+          profile?.tenant.isPlatform === false
+            ? 'Your organization — the tenant every one of your schools belongs to.'
+            : 'The top of the tenant hierarchy — every school on the platform belongs to one of these.'
+        }
         action={
           /*
            * Hidden without the permission, which is a courtesy and not a control: `requirePermission`
            * re-reads `organizations.manage` from the database on the request, and `requirePlatformScope`
            * guards the write a second time, so forcing this button into existence gets a 403 either way.
            */
-          can('organizations.manage') ? (
+          canEdit ? (
             <a
               href="/super-admin/organizations/new"
               className="btn btn-primary"
@@ -353,7 +383,12 @@ export default function OrganizationsPage() {
             kind: 'select',
             required: true,
             options: STATUSES.map((value) => ({ value, label: value })),
-            hint: 'Suspending an organization does not suspend its schools; each school carries its own status.',
+            /*
+             * This used to say suspending an organization "does not suspend its schools". Their status
+             * column is left alone, but `resolveTenant` refuses every request from a school whose
+             * organization is suspended or archived — so in effect it does, and the hint says that.
+             */
+            hint: 'Suspending or archiving an organization shuts out everyone in it: its admins and the users of every one of its schools are refused on every request. Each school’s own status is left as it is, and applies again once the organization is active.',
           },
           {
             name: 'notes',
@@ -364,6 +399,16 @@ export default function OrganizationsPage() {
             hint: 'Up to 5,000 characters. Clearing the box removes the notes.',
           },
         ]}
+      />
+
+      {/*
+        * Keyed on the organization, so each opening is a fresh mount and nothing — the last account's
+        * temporary password least of all — carries from one organization's dialog to the next.
+        */}
+      <OrganizationAdminDialog
+        key={adminFor?.id ?? 'closed'}
+        organization={adminFor}
+        onClose={() => setAdminFor(null)}
       />
     </div>
   );

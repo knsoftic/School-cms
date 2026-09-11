@@ -707,6 +707,35 @@ async function verifyHttp() {
     });
     check('PATCH of a closed session is 409', patchClosed.status, 409);
 
+    /*
+     * D20 — and the closed year takes nothing new. A session's status used to change nothing outside
+     * this module: a closed session still took new classes, admissions, exams and fee structures.
+     * Checked on the class here, and on the other three creates, which call the same guard.
+     */
+    const classInClosed = await call('/classes', {
+      method: 'POST', token: principalA, body: { academic_session_id: sessionB.id, name: 'Closed-year Grade 1' },
+    });
+    check('D20 — a new class cannot be added to a closed session',
+      [classInClosed.status, codeOf(classInClosed), await db.Class.count({ where: { name: 'Closed-year Grade 1' } })],
+      [409, 'SESSION_CLOSED', 0]);
+    const classInOpen = await call('/classes', {
+      method: 'POST', token: principalA, body: { academic_session_id: sessionA.id, name: 'Open-year Grade 9' },
+    });
+    check('  while the open session beside it still takes one', classInOpen.status, 201);
+    if (classInOpen.status === 201) {
+      /* Nor by the other door: made in the open year, then patched into the closed one. */
+      const patchedIn = await call(`/classes/${dataOf(classInOpen).class.id}`, {
+        method: 'PATCH', token: principalA, body: { academic_session_id: sessionB.id },
+      });
+      check('  and a class cannot be moved into a closed session by PATCH either',
+        [patchedIn.status, codeOf(patchedIn)], [409, 'SESSION_CLOSED']);
+      const renamed = await call(`/classes/${dataOf(classInOpen).class.id}`, {
+        method: 'PATCH', token: principalA, body: { name: 'Open-year Grade 9 renamed', academic_session_id: sessionA.id },
+      });
+      check('  while a PATCH that leaves it in its own session still applies', renamed.status, 200);
+      await db.Class.destroy({ where: { id: dataOf(classInOpen).class.id } });
+    }
+
     const upcomingRes = await expectOk(
       '/sessions',
       {
@@ -925,6 +954,26 @@ async function verifyHttp() {
       dataOf(classAssignments).assignments[0].section,
       null
     );
+
+    /*
+     * A class's curriculum in one read (D30's pickers): Mathematics for the whole class, Art for one
+     * section only, and Music on no curriculum at all.
+     */
+    const art = dataOf(await expectOk('/subjects', { method: 'POST', token: principalA, body: { name: 'Art', code: 'ART' } }, 201)).subject;
+    await expectOk('/subjects', { method: 'POST', token: principalA, body: { name: 'Music', code: 'MUSIC' } }, 201);
+    const artAssignment = dataOf(await expectOk(`/subjects/${art.id}/classes`, {
+      method: 'POST', token: principalA, body: { class_id: klass.id, section_id: section.id },
+    }, 201)).assignment;
+    const curriculumNames = async (qs) =>
+      dataOf(await expectOk(`/subjects?${qs}&limit=100`, { token: teacher }, 200)).map((s) => s.code).sort();
+    check('GET /subjects?class_id= reads the class\'s curriculum — the whole-class subjects only',
+      await curriculumNames(`class_id=${klass.id}`), ['MATH']);
+    check('  and with a section, that section\'s subjects beside them — never a subject on no curriculum',
+      await curriculumNames(`class_id=${klass.id}&section_id=${section.id}`), ['ART', 'MATH']);
+    check('  a section named without its class is refused',
+      (await call(`/subjects?section_id=${section.id}`, { token: teacher })).status, 422);
+    /* Removed again: the section is deleted further down, and a curriculum row would hold it. */
+    await expectOk(`/subjects/${art.id}/classes/${artAssignment.id}`, { method: 'DELETE', token: principalA }, 204);
 
     const subjectPatch = await expectOk(
       `/subjects/${subject.id}`,

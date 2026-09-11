@@ -43,9 +43,12 @@
  * **8 admitted and the counter at 8**; after, one admitted, seven refused `PLAN_LIMIT_EXCEEDED`, and the
  * counter at exactly 1. The refund is asserted separately, by making the provider fail.
  *
- * The other four §11.2 keys cannot race: `admin_limit` has no guard mounted, `storage_limit` is never
- * incremented, `api_limit` has no writer, and `file_upload_limit` is per-request and reads no shared
- * state.
+ * `storage_limit` races too, and is charged by the same `reserveUsage()` — but in the upload chain, so
+ * its race is measured over real multipart HTTP in `verify-middlewares.js`, where that chain is built:
+ * eight parallel uploads against 1 MB, one admitted. Of the rest, `admin_limit` is taken by the same
+ * `reserveHeadcount()` measured above, inside `users.service`'s create and reactivation transactions
+ * (not re-measured here); `api_limit` has no writer; and `file_upload_limit` is per-request and reads no
+ * shared state.
  *
  * ## The fixture, and why it must be its own school
  *

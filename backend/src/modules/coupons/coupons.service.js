@@ -59,8 +59,8 @@
  * `COUPON_STATUS` has `active`, `inactive` and `expired`. The first two are an operator's switch; the
  * third is a fact about `expires_at` and the clock, so `coupons.validation.js` refuses it on `PATCH`
  * and `expireLapsed()` writes it. That function has **no route** for the same reason
- * `subscriptions.runLifecycleSweep()` has none — its actor is a scheduler, `package.json` declares
- * `"cron": "node src/jobs/cron.js"`, and `src/jobs/` is Phase 5 work. `validateForOrder()` does not
+ * `subscriptions.runLifecycleSweep()` has none — its actor is a scheduler, the daily `coupon-expiry`
+ * job in `src/jobs/`. `validateForOrder()` does not
  * depend on the sweep having run: it checks `expires_at` against the clock directly, so a lapsed
  * coupon is refused whether or not its `status` column has caught up.
  */

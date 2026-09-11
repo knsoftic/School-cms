@@ -130,8 +130,16 @@ function daysOverdue(dueDate, at = new Date()) {
  * loan is overdue when today is past its due date; a closed one never is, however late it came back,
  * because the fine already records that.
  */
-function presentTransaction(row) {
+/**
+ * What a borrowing student is not shown of their own loan: the librarian's remarks and which staff
+ * accounts issued and received the book. Written by staff for staff — the rule `students.service`
+ * `SELF_ATTRIBUTES` and `fees.service` `mine()` apply.
+ */
+const STAFF_ONLY_LOAN_FIELDS = Object.freeze(['remarks', 'issued_by', 'received_by']);
+
+function presentTransaction(row, { self = false } = {}) {
   const json = typeof row.toJSON === 'function' ? row.toJSON() : { ...row };
+  if (self) for (const field of STAFF_ONLY_LOAN_FIELDS) delete json[field];
   const open = row.status === LIBRARY_TRANSACTION_STATUS.ISSUED;
   const overdue = open ? daysOverdue(row.due_date) : 0;
   const outstanding = row.fine_waived
@@ -394,7 +402,13 @@ async function listTransactions(req, query, pagination) {
     },
     pagination
   );
-  return { rows: result.rows.map(presentTransaction), count: result.count };
+  return { rows: result.rows.map((row) => presentTransaction(row, { self: Boolean(student) })), count: result.count };
+}
+
+/** `GET /transactions/:id` — the loan as this caller may see it. */
+async function viewTransaction(req, id) {
+  const row = await findTransactionById(req, id);
+  return presentTransaction(row, { self: Boolean(await selfScopeStudent(req)) });
 }
 
 /** The borrower named by `borrower_type` must exist in the same school. */
@@ -619,6 +633,7 @@ module.exports = {
   updateBook,
   listTransactions,
   findTransactionById,
+  viewTransaction,
   issue,
   returnLoan,
   settleFine,

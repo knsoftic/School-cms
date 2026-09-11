@@ -43,6 +43,7 @@ const ApiError = require('../../utils/ApiError');
 const logger = require('../../config/logger');
 const { hashPassword } = require('../../utils/tokens');
 const { resolveSchool } = require('../../utils/schoolScope');
+const { canManage, withoutFields } = require('../../utils/recordView');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const authService = require('../auth/auth.service');
@@ -194,8 +195,22 @@ async function findById(req, id, namedSchoolId = undefined) {
   return row;
 }
 
+/**
+ * What a caller without `parents.manage` is not shown of a parent: identity documents and where they
+ * live. A Teacher holds `parents.view` to reach a child's family, and read every parent's national ID
+ * and address through it — and could search the school by national ID. See `utils/recordView.js`.
+ */
+const REGISTRY_ONLY = Object.freeze(['national_id', 'address', 'occupation']);
+
+/** `GET /:id` — the parent as this caller may see them. */
+async function findForView(req, id) {
+  const row = await findById(req, id);
+  return (await canManage(req, 'parents.manage')) ? row : withoutFields(row, REGISTRY_ONLY);
+}
+
 async function list(req, query, pagination) {
   const where = tenantWhere(req.tenant, {});
+  const full = await canManage(req, 'parents.manage');
   if (query.school_id) {
     const school = await resolveSchool(req, query.school_id);
     where.school_id = school.id;
@@ -205,7 +220,8 @@ async function list(req, query, pagination) {
     where[Op.or] = [
       { name: { [Op.like]: `%${query.q}%` } },
       { phone: { [Op.like]: `%${query.q}%` } },
-      { national_id: { [Op.like]: `%${query.q}%` } },
+      /* Searchable by national ID only by those who may see it. */
+      ...(full ? [{ national_id: { [Op.like]: `%${query.q}%` } }] : []),
     ];
   }
 
@@ -213,7 +229,11 @@ async function list(req, query, pagination) {
    * `?student_id=` — "who are this child's parents". A join rather than a second round trip, and
    * scoped by the same `school_id` the outer where already carries.
    */
-  const options = { where, order: getSort({ query }, SORTABLE, ['name', 'ASC']) };
+  const options = {
+    where,
+    ...(full ? {} : { attributes: { exclude: [...REGISTRY_ONLY] } }),
+    order: getSort({ query }, SORTABLE, ['name', 'ASC']),
+  };
   if (query.student_id) {
     options.include = [
       {
@@ -514,6 +534,15 @@ async function dashboard(req) {
         model: db.Student,
         as: 'student',
         attributes: ['id', 'student_id', 'roll_number', 'first_name', 'last_name', 'class_id', 'section_id', 'status'],
+        /*
+         * The class and section by name. A parent holds no `classes.view`, so the two ids alone left the
+         * dashboard unable to say which class a child is in — SRS:842, "relevant information for their
+         * children".
+         */
+        include: [
+          { model: db.Class, as: 'class', attributes: ['id', 'name'] },
+          { model: db.Section, as: 'section', attributes: ['id', 'name'] },
+        ],
       },
     ],
     order: [['id', 'ASC']],
@@ -534,6 +563,8 @@ async function dashboard(req) {
 module.exports = {
   list,
   findById,
+  findForView,
+  REGISTRY_ONLY,
   create,
   update,
   listChildren,

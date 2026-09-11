@@ -23,9 +23,10 @@
  *                "used / allowed" without counting four tables per page load.
  *
  *   cumulative   storage_limit · sms_limit
- *                A running total that does not reset. Deleting a file returns storage; a sent SMS is
- *                spent for good. Tracked against the subscription's own start date so there is one
- *                row per school per limit for the life of the subscription.
+ *                A running total that does not reset. Storage is charged per upload by
+ *                `upload.verifyStorage()` and refunded only when that upload fails — nothing deletes a
+ *                stored file; a sent SMS is spent for good. Tracked against the subscription's own
+ *                start date so there is one row per school per limit for the life of the subscription.
  *
  *   periodic     ai_limit · api_limit
  *                Resets at the start of each billing period — SRS §21's "Plan: 1000 AI Requests /

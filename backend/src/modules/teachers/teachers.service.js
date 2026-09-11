@@ -41,9 +41,11 @@ const { tenantWhere } = require('../../models');
 const ApiError = require('../../utils/ApiError');
 const dates = require('../../utils/dates');
 const { resolveSchool } = require('../../utils/schoolScope');
+const { canManage, withoutFields } = require('../../utils/recordView');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const usageService = require('../../services/usageService');
+const usersService = require('../users/users.service');
 const { LIMITS } = require('../../config/constants');
 
 const SORTABLE = Object.freeze([
@@ -192,8 +194,22 @@ async function findById(req, id, namedSchoolId = undefined) {
   return row;
 }
 
+/**
+ * What a caller without `teachers.manage` is not shown: the HR record behind the directory entry. The
+ * Librarian holds `teachers.view` to lend to teachers, and read every teacher's salary through it.
+ * See `utils/recordView.js`.
+ */
+const HR_ONLY = Object.freeze(['salary', 'date_of_birth', 'address', 'notes', 'metadata']);
+
+/** `GET /:id` — the teacher as this caller may see them. */
+async function findForView(req, id) {
+  const row = await findById(req, id);
+  return (await canManage(req, 'teachers.manage')) ? row : withoutFields(row, HR_ONLY);
+}
+
 async function list(req, query, pagination) {
   const where = tenantWhere(req.tenant, {});
+  const full = await canManage(req, 'teachers.manage');
   if (query.school_id) {
     const school = await resolveSchool(req, query.school_id);
     where.school_id = school.id;
@@ -210,7 +226,17 @@ async function list(req, query, pagination) {
 
   return paginateQuery(
     db.Teacher,
-    { where, order: getSort({ query }, SORTABLE, ['first_name', 'ASC']) },
+    {
+      where,
+      ...(full ? {} : { attributes: { exclude: [...HR_ONLY] } }),
+      /*
+       * The linked login's status, so the list can say whether the teacher can actually sign in — a
+       * login that exists may be suspended or inactive (D19 takes it down with the profile). Only the
+       * id and status: the account's own details stay behind `users.view`.
+       */
+      include: [{ model: db.User, as: 'user', attributes: ['id', 'status'] }],
+      order: getSort({ query }, SORTABLE, ['first_name', 'ASC']),
+    },
     pagination
   );
 }
@@ -308,9 +334,23 @@ async function update(req, id, payload) {
     await usageService.assertWithinLimit(row.school_id, LIMITS.TEACHER_LIMIT, 1);
   }
 
-  row.set(next);
+  /*
+   * D19 — the login moves with the profile, in the same transaction (`usersService.followProfile`): the
+   * login the profile will be linked to after this write, and a newly linked login of a profile that is
+   * inactive goes down with it, as a login created for one does.
+   */
+  const linkedUserId = Object.prototype.hasOwnProperty.call(next, 'user_id') ? next.user_id : row.user_id;
+  const newlyLinked = Boolean(linkedUserId) && Number(linkedUserId) !== Number(row.user_id);
+  const activeAfter = Object.prototype.hasOwnProperty.call(next, 'is_active') ? Boolean(next.is_active) : Boolean(row.is_active);
+  let moved = null;
   try {
-    await row.save();
+    await db.sequelize.transaction(async (transaction) => {
+      if (activeChanged || (newlyLinked && !activeAfter)) {
+        moved = await usersService.followProfile(linkedUserId, activeAfter, transaction, 'Teacher');
+      }
+      row.set(next);
+      await row.save({ transaction });
+    });
   } catch (err) {
     rethrow(err, payload);
   }
@@ -323,6 +363,7 @@ async function update(req, id, payload) {
     after: snapshot(row),
     reason: payload.reason || null,
   });
+  await usersService.auditFollowed(req, moved, `Teacher ${activeAfter ? 'reactivated' : 'deactivated'}`);
 
   /* Only when the flag the headcount counts actually moved — a name edit is not a usage event. */
   if (activeChanged) await syncTeacherHeadcount(row.school_id);
@@ -426,7 +467,12 @@ async function dashboard(req) {
   ];
 
   return {
-    teacher,
+    /*
+     * Their own record, less what the office writes about them for itself — `notes` and `metadata`, the
+     * two columns `students.service` keeps out of a student's view of their own record for the same
+     * reason. Their salary and personal details are their own to see.
+     */
+    teacher: withoutFields(teacher, ['notes', 'metadata']),
     counts: {
       subjects: subjectIds.length,
       classes: classIds.length,
@@ -442,6 +488,8 @@ async function dashboard(req) {
 module.exports = {
   list,
   findById,
+  findForView,
+  HR_ONLY,
   create,
   update,
   assignments,

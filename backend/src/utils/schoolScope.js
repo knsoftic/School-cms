@@ -14,6 +14,7 @@
 
 const db = require('../models');
 const ApiError = require('./ApiError');
+const { ACADEMIC_SESSION_STATUS } = require('../config/constants');
 
 /**
  * @param {import('express').Request} req
@@ -126,7 +127,87 @@ async function loadSessionInSchool(sessionId, schoolId, field = 'academic_sessio
   return session;
 }
 
+/**
+ * Refuse a new record in a closed academic session — the owner's decision D20.
+ *
+ * SRS:753 has the school "operate within a defined, correctly-stated academic session", and a session's
+ * status used to change nothing outside the sessions module: a closed year still took new classes,
+ * admissions, exams and fee structures. Those four creates call this, and so do the moves that would
+ * put a class or a student into a closed session by another door — a class's session changed, a
+ * student's class or session changed, a promotion. Editing what a closed session already holds without
+ * moving it, and reading it, are unaffected.
+ *
+ * @param {object|null} session  an `AcademicSession` row, or null when none was named
+ * @param {string} what          the thing being added, for the message
+ */
+function assertSessionOpen(session, what) {
+  if (session && session.status === ACADEMIC_SESSION_STATUS.CLOSED) {
+    throw ApiError.conflict(`The ${session.name} session is closed — a new ${what} cannot be added to it`, {
+      code: 'SESSION_CLOSED',
+      details: { academic_session_id: session.id, status: session.status },
+    });
+  }
+}
+
+/**
+ * D20 for a create that names a session, a class, or both: each must be in an open session.
+ *
+ * The session named in the body is not the only one a record lands in — a class belongs to a session
+ * of its own, and `academic_session_id` is optional on an exam or a fee structure. Checking only the
+ * named one let an exam or a fee structure be added to a closed year's class by naming no session, and
+ * an admission into a closed year's class by naming an open one.
+ *
+ * @param {{sessionId?: number|null, classId?: number|null}} placement
+ * @param {string} what  the thing being added, for the message
+ */
+async function assertOpenForNew({ sessionId, classId }, what) {
+  const ids = new Set();
+  if (sessionId) ids.add(Number(sessionId));
+  if (classId) {
+    const klass = await db.Class.findByPk(classId, { attributes: ['id', 'academic_session_id'] });
+    if (klass && klass.academic_session_id) ids.add(Number(klass.academic_session_id));
+  }
+  for (const id of ids) {
+    // eslint-disable-next-line no-await-in-loop
+    assertSessionOpen(await db.AcademicSession.findByPk(id), what);
+  }
+}
+
+/**
+ * The school as its own screens and documents name it — the owner's decision D35.
+ *
+ * FR-SCHOOL-001 stores a display name, a logo and a currency in `school_settings`, and nothing applied
+ * them: every screen and document used the platform's `schools.name`, and every amount entered without
+ * a currency was USD. D35 has the name, logo and currency appear — and not theme or timezone, which
+ * stay stored. The display name falls back to `schools.name`, since the setting is optional; logo and
+ * currency are null when the school has set none, and the caller decides what that means.
+ *
+ * `logo_path` is returned as stored — an absolute URL a browser can load (`school-settings`
+ * validates it as one). It is never fetched by the server: a document renderer that fetched a URL a
+ * school typed would be a request to anywhere, made from inside the platform.
+ *
+ * @param {number|null} schoolId
+ * @returns {Promise<{id: number, name: string, logo_path: string|null, currency: string|null}|null>}
+ */
+async function schoolBrand(schoolId) {
+  if (!schoolId) return null;
+  const [school, settings] = await Promise.all([
+    db.School.findByPk(schoolId, { attributes: ['id', 'name'] }),
+    db.SchoolSetting.findOne({ where: { school_id: schoolId }, attributes: ['name', 'logo_path', 'currency'] }),
+  ]);
+  if (!school) return null;
+  return {
+    id: school.id,
+    name: (settings && settings.name) || school.name,
+    logo_path: (settings && settings.logo_path) || null,
+    currency: (settings && settings.currency) || null,
+  };
+}
+
 module.exports = {
+  schoolBrand,
+  assertSessionOpen,
+  assertOpenForNew,
   resolveSchool,
   loadTeacherInSchool,
   loadClassInSchool,

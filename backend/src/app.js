@@ -155,6 +155,7 @@ const reportRoutes = require('./modules/reports/reports.routes');
 // by `notificationsService.runNotificationSweep()`, which has **no route** for the same reason
 // `runLifecycleSweep()` has none. Core rather than subscribable — there is no `MODULES.NOTIFICATIONS`.
 const notificationRoutes = require('./modules/notifications/notifications.routes');
+const logRoutes = require('./modules/logs/logs.routes');
 
 /*
  * SRS §25's queue handlers. `config/queue.js` has had `registerHandler()` and no caller since
@@ -467,7 +468,7 @@ function buildApiRouter() {
    *
    * FR-SUB-015's Automatic Renewal and the date-driven half of FR-SUB-010 are implemented as
    * `subscriptionsService.runLifecycleSweep()` and have **no route**: their actor is the system, and
-   * the scheduler `package.json` already declares (`"cron": "node src/jobs/cron.js"`) is Phase 5.
+   * the scheduler runs it — the hourly `subscription-lifecycle` job in `src/jobs/`.
    */
   api.use('/subscriptions', subscriptionRoutes);
 
@@ -540,6 +541,12 @@ function buildApiRouter() {
    * cron. Dispatch is `runNotificationSweep()` and has no route; this mount is the inbox.
    */
   api.use('/notifications', notificationRoutes);
+
+  /*
+   * SRS §26 — "Errors and activity are auditable via logs". The activity and audit trails, read on
+   * `logs.view`, which the catalogue granted and nothing mounted. Reads only, tenant-confined.
+   */
+  api.use('/logs', logRoutes);
 
   return api;
 }

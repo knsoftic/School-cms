@@ -25,6 +25,18 @@
  * Reactivation can be refused: `staff_limit` and `teacher_limit` both count `is_active: true`
  * (`usageService.HEADCOUNT_SOURCES`), so restoring somebody into a full allowance is a
  * `PLAN_LIMIT_EXCEEDED`. The copy says so before the button is pressed.
+ *
+ * ## The login moves with the record
+ *
+ * The owner's decision D19: the same PATCH moves the person's login, in the same transaction
+ * (`usersService.followProfile()`). Deactivating takes an `active` login to `inactive`, so they can no
+ * longer sign in; reactivating restores a login that is `inactive`. One an administrator **suspended**
+ * stays suspended either way — reactivating a person is not a decision about that account. Only a login
+ * of the person's own kind moves (a Teacher login for a teacher, one of the four staff roles for staff),
+ * so an account of another role linked to the record by hand is left alone. Both dialogs say what
+ * happens to the login, because it is the half of the action with an effect outside the school office.
+ *
+ * Both are used on a list and on the person's own record, so neither names where to undo it from.
  */
 
 import { useEffect, useState } from 'react';
@@ -76,7 +88,7 @@ export function DeactivateDialog({
       open={open}
       onClose={onCancel}
       title={`Deactivate ${person ?? `this ${noun}`}?`}
-      description={`They will stop counting towards your ${allowance} and will no longer show as active. Nothing is deleted — the record stays, and you can reactivate them from the same list.`}
+      description={`They will stop counting towards your ${allowance} and will no longer show as active, and their login, if they have one, is switched off with them — set to inactive, so they cannot sign in. Nothing is deleted: reactivating them later switches it back on, unless an administrator has suspended it.`}
       size="sm"
       busy={busy}
       footer={
@@ -145,7 +157,7 @@ export function ReactivateDialog({
       open={open}
       onClose={onCancel}
       title={`Reactivate ${person ?? `this ${noun}`}?`}
-      description={`They will count towards your ${allowance} again, and their leaving date will be cleared. If the allowance is already full, this will be refused.`}
+      description={`They will count towards your ${allowance} again, and their leaving date will be cleared. A login switched off when they were deactivated is switched back on; one an administrator suspended stays suspended. If the allowance is already full, this will be refused.`}
       size="sm"
       busy={busy}
       footer={

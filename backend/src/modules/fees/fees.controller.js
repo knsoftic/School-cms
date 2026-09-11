@@ -91,6 +91,12 @@ async function listPayments(req, res) {
   return ApiResponse.paginated(res, result, pagination);
 }
 
+/** GET /mine — D17: the caller's own fees, or each linked child's, with their receipts. */
+async function mine(req, res) {
+  const students = await service.mine(req, req.query);
+  return ApiResponse.ok(res, { students });
+}
+
 module.exports = {
   listStructures,
   showStructure,
@@ -98,6 +104,7 @@ module.exports = {
   updateStructure,
   assign,
   listLedger,
+  mine,
   pay,
   listPayments,
 };

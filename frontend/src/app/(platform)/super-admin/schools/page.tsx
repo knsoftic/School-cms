@@ -51,7 +51,7 @@ interface School {
 }
 
 export default function SchoolsPage() {
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
 
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
@@ -113,7 +113,12 @@ export default function SchoolsPage() {
     <div>
       <PageHeader
         title="Schools"
-        description="Every school on the platform, across all organizations."
+        description={
+          /* An Organization Admin reads this list too, confined to their organization by `scopeFor()`. */
+          profile?.tenant.isPlatform === false
+            ? 'Every school in your organization.'
+            : 'Every school on the platform, across all organizations.'
+        }
         action={
           /*
            * The button is hidden without the permission — a courtesy, not a control. `schools.manage`

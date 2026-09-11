@@ -77,22 +77,37 @@ const {
 
 const controller = require('./reports.controller');
 const { schemas } = require('./reports.validation');
+const { annotate, respondsWithFile } = require('../../utils/routeMeta');
 
 const router = createRouter();
+
+/** When the two export guards below apply — any `format` but the on-screen JSON. */
+const WHEN_EXPORTING = `format is not ${REPORT_FORMATS.JSON}`;
+
+/** What an export is sent as, read off the controller's own table, and the query that selects it. */
+const EXPORT_FILE = {
+  types: Object.values(controller.EXPORTS).map((spec) => spec.mime),
+  when: Object.keys(controller.EXPORTS).map((format) => `format=${format}`).join(' or '),
+};
 
 /**
  * `reports.export`, but only when something is actually being exported.
  *
  * Wraps the real permission middleware rather than reimplementing the check, so a change to how
- * permissions are resolved reaches this route like any other.
+ * permissions are resolved reaches this route like any other. Annotated as conditional, because the
+ * wrapper — not the guard inside it — is what the route mounts, and the document must neither drop the
+ * requirement nor state it for the on-screen read. See utils/routeMeta.js.
  */
 const exportGuard = (() => {
   const guard = requirePermission('reports.export');
-  return function requireExportPermission(req, res, next) {
-    const format = req.query && req.query.format;
-    if (!format || format === REPORT_FORMATS.JSON) return next();
-    return guard(req, res, next);
-  };
+  return annotate(
+    function requireExportPermission(req, res, next) {
+      const format = req.query && req.query.format;
+      if (!format || format === REPORT_FORMATS.JSON) return next();
+      return guard(req, res, next);
+    },
+    { conditional: { when: WHEN_EXPORTING, permissions: ['reports.export'] } }
+  );
 })();
 
 /*
@@ -113,11 +128,14 @@ const PREMIUM_REPORTS_FEATURE = ADDON_EFFECTS[ADDONS.PREMIUM_REPORTS].target;
 
 const schoolExportGuard = (() => {
   const premium = requireFeature(PREMIUM_REPORTS_FEATURE);
-  return function requirePremiumForExport(req, res, next) {
-    const format = req.query && req.query.format;
-    if (!format || format === REPORT_FORMATS.JSON) return next();
-    return premium(req, res, next);
-  };
+  return annotate(
+    function requirePremiumForExport(req, res, next) {
+      const format = req.query && req.query.format;
+      if (!format || format === REPORT_FORMATS.JSON) return next();
+      return premium(req, res, next);
+    },
+    { conditional: { when: WHEN_EXPORTING, features: [PREMIUM_REPORTS_FEATURE] } }
+  );
 })();
 
 /** The six school-side reports differ only in their second permission, module and schema. */
@@ -140,7 +158,7 @@ for (const report of SCHOOL_REPORTS) {
     exportGuard,
     schoolExportGuard,
     logActivity({ action: 'export', entityType: 'reports', onlyOnSuccess: true }),
-    asyncHandler(controller.handlerFor(report.type))
+    respondsWithFile(asyncHandler(controller.handlerFor(report.type)), EXPORT_FILE)
   );
 }
 
@@ -155,7 +173,7 @@ router.get(
   validate({ query: schemas.subscriptions }),
   exportGuard,
   logActivity({ action: 'export', entityType: 'reports', onlyOnSuccess: true }),
-  asyncHandler(controller.handlerFor(REPORT_TYPES.SUBSCRIPTION))
+  respondsWithFile(asyncHandler(controller.handlerFor(REPORT_TYPES.SUBSCRIPTION)), EXPORT_FILE)
 );
 
 module.exports = router;

@@ -1,8 +1,8 @@
 # Frontend audit — confirmed findings
 
-Produced in session 26 by a 24-agent sweep over the 59 screens that existed then — there are **79**
-now, and the twenty added since had a sweep of their own in session 28, recorded at the end of this
-file. The first sweep's method: twelve agents read a group of five
+Produced in session 26 by a 24-agent sweep over the 59 screens that existed then — there were **79** at
+the end of session 28, and the twenty added by then had a sweep of their own, recorded at the end of this
+file with the three reviews of the screens session 29 added. The first sweep's method: twelve agents read a group of five
 against the backend module each `api.*` call reaches, and twelve more tried to **refute** what the
 first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
@@ -23,7 +23,7 @@ first twelve found. **204 findings judged, 174 confirmed, 30 refuted.**
 
 **174 closed, 0 open**, re-counted from the status lines on 2026-09-10. Later in session 28 the last 80 were closed — 43 **Poor** and 37 **Minor** — in one pass: 56 fixed, 18 found already fixed in the tree with only the status line left behind, and 6 half-fixed and finished. Those 80 were checked a different way from the 94 before them, and the status line of each says how: every change was reviewed against the backend it calls by a second, read-only reviewer whose findings were re-checked by hand before acting, the whole frontend type-checks and lints clean, and `verify-frontend.js` passes — but **none was reproduced in a browser**, because signing in needs a password this session does not enter. (Earlier in session 28 this header read *"94 closed, 80 open"*, and before that *"84 closed, 90 open"*, when ten findings closed in sessions 27 and 28 had been marked closed on the finding and nowhere else.)
 
-**The twenty screens added since this sweep have now had one of their own** — see *Session 28: the screens this sweep never saw* at the end of this file.
+**The twenty screens added since this sweep have now had one of their own** — see *Session 28: the screens this sweep never saw* at the end of this file. **So have the screens session 29 added** — the student and parent portals, the logs, school billing's Renew and Cancel, the brand — in *Session 29: the round-2 screens, reviewed*, after it.
 
 ## Broken — a user meets an error, a dead end, or a wrong answer
 
@@ -1843,3 +1843,68 @@ the platform converts currency and a one-time subscription is never renewed. Tha
 judgement about arithmetic the SRS never describes, not a requirement — the owner may prefer to allow
 a currency change with some rule for the credit, and is asked. `verify-subscriptions.js` asserts the
 daily rate, the unchanged same-cycle figure and both refusals.
+
+## Session 29: the round-2 screens, reviewed
+
+Five agents built the screens the second round of owner decisions called for (D17 portals, D18, D26,
+D27 school billing, D34, D35, and the fixes the round-1 reviewers had left). Two read-only reviewers
+then went through the finished platform and portal screens, and a third through the screens and fixes
+that followed — every finding checked against the code before it was acted on. The agents' own reports are recorded first, because each named a backend
+defect none of the backend suites had seen.
+
+### Found by the building agents — all backend, all fixed with a check that fails on the old code
+
+| # | Finding | Outcome |
+|---|---|---|
+| B-1 | `GET /timetable/teacher/:id` returned the whole `teachers` row — salary, address, date of birth — to every holder of `timetable.view`, Students and Parents included | Heading only: id, employee id, name (`verify-timetable.js`) |
+| B-2 | `GET /fees/mine` sent staff-only columns: collector, receipt path, ledger entry, reminder stamp, notes, waiver reason | Named columns (`verify-parents.js`) |
+| B-3 | The reviewer's internal `review_note` reached every school reading its payments or invoices | Platform only; gateway declines copied into `rejection_reason` (`verify-billing.js`) |
+| B-4 | Invoice reads joined the whole coupon row — other schools it is restricted to, plan restrictions, use counts | Projected for schools (`verify-billing.js`) |
+| B-5 | A payment's currency was stored as sent and summed against an invoice in another | Refused, `PAYMENT_CURRENCY_MISMATCH` (`verify-billing.js`) |
+| B-6 | Brand, currency and current session were readable only by leadership (`/school-settings`, `/sessions/current`) | On `/auth/me` for every school role (`verify-fees.js`) |
+| B-7 | A class's curriculum could be read only per subject | `GET /subjects?class_id=&section_id=` (`verify-school-setup.js`) |
+| B-8 | A closed session could be entered by patching a class, a student, or by promotion | Refused (`verify-school-setup.js`, `verify-students.js`) |
+| B-9 | Results list sorted unranked first, the PDF last | Unranked last in both (`verify-exams.js`) |
+| B-10 | The teacher picker could not find "John Smith" | Whole-name match (`verify-documents.js`) |
+| B-11 | A second early renewal skipped a billing period — the one between was never current on a day the invoice job ran | Refused, `SUBSCRIPTION_ALREADY_RENEWED`; neither Renew button offers it (`verify-subscriptions.js`) |
+| B-12 | A renewal set Active with an invoice still overdue, so a school renewed itself out of Past Due without paying | The period advances and the state stays in arrears (D23, `verify-subscriptions.js`) |
+| B-13 | An Accountant pays invoices but no link led to the Billing screen | The Billing entry and shortcut also answer to `invoices.self.view` (`verify-frontend.js`) |
+
+### Portal review — student, parent and teacher screens (1 MEDIUM, 6 LOW)
+
+| # | Finding | Outcome |
+|---|---|---|
+| P-1 | `SELF_PROFILE_MISSING` was an explained code with no explanation, so it read as a permission refusal | Explained in `RefusalNotice` |
+| P-2 | Timetable nav entries checked only `timetable.view`, not what each page reads first | A `requires` prerequisite on each — the self view's key and module (`verify-frontend.js`) |
+| P-3 | Both copies of the views said `/fees/mine` sends rows unmapped and that `receipt_path` was merely unread | Corrected for the projection |
+| P-4 | "Late by" shown on any status; the comment said `late_minutes` is null otherwise | Shown only on a `late` day; comment corrected |
+| P-5 | Two comments misstated the self-scope rules | Corrected |
+| P-6 | Heading outline out of order; a lone child picker announced as a search | Levels follow context; the picker is not a search landmark |
+| P-7 | The teacher timetable reads the whole dashboard for an id | Left: one extra query, no requirement to add a field to `/auth/me` for it |
+| — | The student and parent views were identical 700-line copies | One component, `components/selfRecords.tsx` |
+
+### Platform review — invoices, pricing, subscriptions, organizations, reports (1 MEDIUM, 10 LOW)
+
+| # | Finding | Outcome |
+|---|---|---|
+| L-1 | Applying a coupon that took a total below the credit drawn destroyed the difference — 10.5 of 1,050 measured | Backend: returned to the subscription (`verify-billing.js`, proved against the old recompute) |
+| L-2 | Finalise said a coupon can change "until something is paid" — also refused once overdue | Says both |
+| L-3 | A comment claimed `api.delete` cannot send a body, so Remove coupon dropped its reason | The reason is sent and audited, as the route accepts |
+| L-4 | The Cancel reason's hint left out that it replaces the invoice's notes | Stated |
+| L-5 | The coupon preview called the net amount "before tax", wrong for an inclusive tax | Worded from `tax_is_inclusive` |
+| L-6 | "Check what it is worth" gated on `invoices.manage`, but the preview route needs `coupons.redeem` | Gated on the route's key |
+| L-7 | A new coupon code kept the previous check's error on screen | Cleared on edit |
+| L-8 | A typed quantity on a scheduled downgrade was never stored | The box is replaced by what the renewal will bill |
+| L-9 | Detail-screen actions stayed clickable while the invoice re-read | Disabled while loading |
+| L-10 | The Organization Admin dialog kept the last temporary password in state after closing | Cleared on close, and the dialog is keyed per organization |
+| L-11 | The Organization Admin was sent to `/school` and never landed on the platform screens | Landing route keyed on having a school in scope, not on platform scope |
+
+### Review of the follow-up screens — logs, Renew and Cancel, the brand, the curriculum picker (1 HIGH, 2 MEDIUM, 2 LOW)
+
+| # | Finding | Outcome |
+|---|---|---|
+| R-1 | **HIGH, in my own renewal fix:** renewing an Expired subscription with an invoice overdue moved it to Past Due — a usable state — so access came back unpaid until the next hourly sweep; and a renewal from Past Due cleared the grace end, which the sweep expires on | Backend: Expired in arrears is refused (`SUBSCRIPTION_IN_ARREARS`); Past Due and Grace keep their state and grace end; Active takes D23's grace edge (`verify-subscriptions.js`, each rule proved by mutation) |
+| R-2 | The logs screen's "To" alone was a 422 — `to` referenced an absent `from` | Backend: compared only when `from` is given, as `commonSchemas.dateRange` does (`verify-users-roles.js`) |
+| R-3 | The Renew dialog promised Past Due for a Grace subscription, and the toast said "renewed" when an invoice left it in arrears | Worded by state; the toast reads the returned state |
+| R-4 | An audit row's JSON column showed as a blob | Parsed and shown as fields |
+| R-5 | The logo's alt text repeated the name beside it | Decorative when the name is shown |

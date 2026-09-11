@@ -36,17 +36,23 @@
  * `teachers.view` can open — a payroll figure is a `GET /teachers/:id` question, not something to
  * scan a hundred of.
  *
- * ## The service `include`s nothing, so there is no association to render
+ * ## The one association the list carries is the login's status
  *
- * `teachers.service.list()` is a plain `paginateQuery(db.Teacher, { where, order })` — no `include`.
- * The row's one foreign key to a thing with a name, `user_id`, therefore arrives as a bare integer,
- * and a column reading "User 41" tells an administrator nothing. It is never rendered as a number —
- * only as whether the teacher can sign in, which is what decides if "Create login" is offered (the
- * owner's decision D1).
+ * `teachers.service.list()` `include`s the linked account as `user`, with two attributes: its `id` and
+ * its FR-AUTH-007 `status` — enough to say whether the teacher can actually sign in, and nothing of the
+ * account's own details, which stay behind `users.view`. A login that exists may still be refused: an
+ * administrator may have suspended it, and the owner's decision D19 takes it `inactive` with the
+ * teacher. So the Login column says "Can sign in" only for an `active` account, names the status of
+ * any other, and says "No login" where there is none — which is also what decides whether "Create
+ * login" is offered (D1). `user_id` itself is never rendered as a number: "User 41" tells an
+ * administrator nothing. The record screen reads the account in full.
+ *
  * Subjects and classes are a real answer to "what does this teacher do", but they live behind
- * `GET /teachers/:id/assignments` and cost a request per row; they belong on the detail screen.
+ * `GET /teachers/:id/assignments` and cost a request per row, so they are on the record screen —
+ * `teachers/[id]`, which every name in the table links to.
  */
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
 import { api } from '@/lib/apiClient';
@@ -103,9 +109,15 @@ interface TeacherRow {
   is_active: boolean;
   /*
    * Read as a yes/no and never rendered as a number — the header's point about "User 41" stands. It is
-   * what decides whether "Create login" is offered (the owner's decision D1).
+   * what decides whether "Create login" is offered (the owner's decision D1), and it says a login is
+   * linked, not that it can sign in; `user.status` says that.
    */
   user_id: number | null;
+  /**
+   * The linked account, as `list()` includes it — `id` and `status` only. Null with no login, and
+   * optional so a row without the include still reads as "has a login" rather than as a crash.
+   */
+  user?: { id: number; status: string } | null;
 }
 
 /**
@@ -230,7 +242,19 @@ export default function TeachersPage() {
       {
         key: 'name',
         header: 'Name',
-        cell: (row) => <span className="font-medium">{fullName(row)}</span>,
+        /*
+         * The way into the record — the profile form, the subjects and classes, and the login. A link
+         * for everyone who can see this list, because the record is behind the same `teachers.view`
+         * this list is; somebody without `teachers.manage` gets it read-only rather than refused.
+         */
+        cell: (row) => (
+          <Link
+            href={`/school/teachers/${row.id}`}
+            className="font-medium text-brand-text underline-offset-4 hover:underline"
+          >
+            {fullName(row)}
+          </Link>
+        ),
       },
       {
         key: 'employee_id',
@@ -286,18 +310,40 @@ export default function TeachersPage() {
       {
         key: 'login',
         header: 'Login',
+        /*
+         * Whether the teacher can sign in — which `user_id` alone cannot say.
+         *
+         * `user_id` says an account is linked; whether it may sign in is that account's FR-AUTH-007
+         * `status`, and `LOGIN_ALLOWED_STATUSES` is `active` alone. A suspended login is still a linked
+         * one, and since D19 so is the `inactive` login of a deactivated teacher — so "Can sign in" is
+         * said only for `active`, and any other status is named with what it means. `user` is `null`
+         * when the linked account no longer exists (users are soft-deleted, and the include skips a
+         * deleted row); it is absent only from a payload without the include, which says no more than
+         * that a login is linked.
+         */
         cell: (row) =>
-          row.user_id ? <span>Can sign in</span> : <span className="text-muted-soft">No login</span>,
+          !row.user_id ? (
+            <span className="text-muted-soft">No login</span>
+          ) : row.user === undefined ? (
+            <span>Has a login</span>
+          ) : row.user?.status === 'active' ? (
+            <span>Can sign in</span>
+          ) : (
+            <span className="text-muted">
+              {row.user ? `Login ${row.user.status}` : 'Login not found'} — cannot sign in
+            </span>
+          ),
       },
     ];
 
     /*
-     * The one lifecycle control this record has, and the login a teacher needs to sign in at all.
+     * The one lifecycle control this record has on the list, and the login a teacher needs to sign in
+     * at all. The record screen offers both again, beside the rest of the profile.
      *
-     * There is no teacher detail route and §15.3 asks for none. Until now the status column was
-     * display-only and `PATCH /teachers/:id` had no caller anywhere in the frontend, so a departing
-     * teacher's record stayed active — and `teacher_limit` counts `is_active: true`, so the school
-     * could not hire a replacement without buying capacity it was not using.
+     * Until these existed the status column was display-only and `PATCH /teachers/:id` had no caller
+     * anywhere in the frontend, so a departing teacher's record stayed active — and `teacher_limit`
+     * counts `is_active: true`, so the school could not hire a replacement without buying capacity it
+     * was not using.
      */
     if (!canManage && !canCreateLogin) return base;
 
@@ -354,14 +400,15 @@ export default function TeachersPage() {
            * fetching the usage snapshot on a screen that has not been asked for it, and then being
            * wrong about it the moment another administrator adds someone. The refusal belongs on the
            * create form, where there is a request to attach it to.
+           *
+           * `Link`, not a raw `<a>` — the Staff list gives the reason: a plain anchor is a document
+           * navigation, which throws away the in-memory access token and re-runs the whole session
+           * bootstrap before the form appears.
            */
           can('teachers.manage') ? (
-            <a
-              href="/school/teachers/new"
-              className="btn btn-primary"
-            >
+            <Link href="/school/teachers/new" className="btn btn-primary">
               Add teacher
-            </a>
+            </Link>
           ) : null
         }
       />

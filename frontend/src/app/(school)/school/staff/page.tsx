@@ -10,10 +10,11 @@
  * ## This module has no `present()`, so the whole row arrives
  *
  * Every other list screen reads a controller's `present()` to learn what a row carries.
- * `staff.controller.js` has none, and `staff.service.list()` is a bare
- * `paginateQuery(db.Staff, { where, order })` — no `attributes`, no `include`, and
- * `softDeleteOptions` adds no attribute-excluding scope. So the client receives **every column of
- * the `staff` model**, `salary` and `photo_path` included.
+ * `staff.controller.js` has none, and `staff.service.list()` is a
+ * `paginateQuery(db.Staff, { where, include, order })` with no `attributes`, and `softDeleteOptions`
+ * adds no attribute-excluding scope. So the client receives **every column of the `staff` model**,
+ * `salary` and `photo_path` included. The one `include` is the linked login as `user`, narrowed to its
+ * `id` and `status` — what the Login column reads, and nothing of the account's own details.
  *
  * The service's own docblock explains why nobody added a `present()`: SRS §15.4 names no photo, so
  * `photo_path` has no writer and is permanently null, and there was judged to be no stored path to
@@ -28,7 +29,7 @@
  * **Librarian** (:366), a role that holds it to look colleagues up and that is granted no finance
  * permission whatsoever. The Accountant is not even among the holders. A salary column would
  * therefore show every wage in the school to the librarian, so the field is absent from the
- * interface; it belongs on a single-record screen behind a narrower permission, if anywhere.
+ * interface. It is on the single-record screen, `staff/[id]`, and only behind `staff.manage` there.
  *
  * ## There is no `status` column on this table
  *
@@ -80,12 +81,12 @@ import {
 } from '@/components/table';
 
 /**
- * One row of `GET /staff` — the seven fields this screen displays, plus the key.
+ * One row of `GET /staff` — the seven fields this screen displays, the key, and the login.
  *
  * Deliberately narrower than the payload. See the file header: the response is an unfiltered
  * `staff` model instance, so `salary`, `photo_path`, `address`, `notes`, `metadata`,
- * `date_of_birth`, `gender`, `qualification`, `user_id` and `left_at` all arrive and are all
- * omitted here on purpose.
+ * `date_of_birth`, `gender`, `qualification` and `left_at` all arrive and are all omitted here on
+ * purpose. `user_id` and the included `user` are declared for the Login column alone.
  *
  * The nullability is the model's, not a guess: `employee_id`, `category` and `first_name` are
  * `allowNull: false`; `last_name`, `designation`, `email` and `phone` are not.
@@ -100,8 +101,13 @@ interface StaffRow {
   email: string | null;
   phone: string | null;
   is_active: boolean;
-  /* Read only as "can they sign in" — it decides whether "Create login" is offered (owner decision D1). */
+  /* Read only as "is a login linked" — it decides whether "Create login" is offered (owner decision D1). */
   user_id: number | null;
+  /**
+   * The linked account, as `list()` includes it — `id` and `status` only — and what says whether they
+   * can sign in. Null with no login; optional so a row without the include still reads as "has a login".
+   */
+  user?: { id: number; status: string } | null;
 }
 
 /**
@@ -237,9 +243,17 @@ export default function StaffPage() {
          * The default sort is `first_name ASC` (`staff.service.js` `getSort` fallback), which is why
          * the given name leads rather than the surname — a column ordered by a value it does not
          * show first would look unsorted.
+         *
+         * A link into the record, for everyone who can see this list: `GET /staff/:id` is behind the
+         * same `staff.view`, and a reader without `staff.manage` gets the record read-only.
          */
         cell: (row) => (
-          <span className="font-medium">{[row.first_name, row.last_name].filter(Boolean).join(' ')}</span>
+          <Link
+            href={`/school/staff/${row.id}`}
+            className="font-medium text-brand-text underline-offset-4 hover:underline"
+          >
+            {[row.first_name, row.last_name].filter(Boolean).join(' ')}
+          </Link>
         ),
       },
       {
@@ -281,7 +295,23 @@ export default function StaffPage() {
       {
         key: 'login',
         header: 'Login',
-        cell: (row) => (row.user_id ? <span>Can sign in</span> : <Blank />),
+        /*
+         * Whether they can sign in: "Can sign in" only for an `active` account, since a suspended one —
+         * and, under D19, the `inactive` login of a deactivated staff member — is still linked. The
+         * Teachers list gives the reasoning, and the wording, at more length.
+         */
+        cell: (row) =>
+          !row.user_id ? (
+            <Blank />
+          ) : row.user === undefined ? (
+            <span>Has a login</span>
+          ) : row.user?.status === 'active' ? (
+            <span>Can sign in</span>
+          ) : (
+            <span className="text-muted">
+              {row.user ? `Login ${row.user.status}` : 'Login not found'} — cannot sign in
+            </span>
+          ),
       },
     ];
 

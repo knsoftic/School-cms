@@ -357,9 +357,13 @@ async function restoreSeededCatalogue(db) {
   }
   try {
     await db.sequelize.query("DELETE FROM permissions WHERE `key` = 'zz.orphan.test'");
+    /*
+     * The roles `verify-seed.js` damages. `principal` joined them with D27's case 5b, which leaves it
+     * customised while it runs — and a customised role is one the seeder deliberately never repairs.
+     */
     await db.sequelize.query(
       'DELETE rp FROM role_permissions rp JOIN roles r ON r.id = rp.role_id ' +
-        "WHERE r.slug IN ('teacher', 'librarian')"
+        "WHERE r.slug IN ('teacher', 'librarian', 'principal')"
     );
     await seed.run(db.sequelize);
   } finally {

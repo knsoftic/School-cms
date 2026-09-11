@@ -70,6 +70,7 @@ import {
   useWholeList,
   teacherName,
   dayLabel,
+  sessionNames,
   OPTION_LIMIT,
 } from '@/lib/useTimetablePickers';
 import type { Picker } from '@/lib/useTimetablePickers';
@@ -293,6 +294,8 @@ export default function EditTimetableEntryPage() {
   const subjects = useWholeList('/subjects', pickers.subjects);
   const teachers = useWholeList('/teachers', pickers.teachers);
   const sessions = useWholeList('/sessions', pickers.sessions);
+  /* Each class option names its session — "Grade 5" exists once a year. See `sessionNames`. */
+  const classSessions = sessionNames(sessions);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -584,19 +587,28 @@ export default function EditTimetableEntryPage() {
               onChange={onClassChange}
               error={fieldErrors.class_id}
               disabled={classes.state === 'loading'}
-              hint={`In promotion order.${shortfall(classes)}`}
+              hint={`In promotion order.${
+                classSessions.size > 0 ? ' Each names its session.' : ''
+              }${shortfall(classes)}`}
             >
               <option value="">
                 {classes.state === 'loading' ? 'Loading…' : 'Choose a class'}
               </option>
               {classes.state === 'ready'
-                ? classes.rows.map((row) => (
-                    <option key={row.id} value={row.id}>
-                      {row.name}
-                      {row.code ? ` (${row.code})` : ''}
-                      {row.is_active ? '' : ' — inactive'}
-                    </option>
-                  ))
+                ? classes.rows.map((row) => {
+                    const session =
+                      row.academic_session_id === null
+                        ? undefined
+                        : classSessions.get(row.academic_session_id);
+                    return (
+                      <option key={row.id} value={row.id}>
+                        {row.name}
+                        {row.code ? ` (${row.code})` : ''}
+                        {session ? ` — ${session}` : ''}
+                        {row.is_active ? '' : ' — inactive'}
+                      </option>
+                    );
+                  })
                 : null}
               {storedOption(classes, stored?.class_id, storedNames.class, 'The class it has now')}
             </SelectField>

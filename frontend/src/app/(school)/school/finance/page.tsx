@@ -29,7 +29,8 @@
  * The rule the old sentence was reaching for still holds, and is the important part: **nothing here
  * accumulates money.** A total across pages would be a total of *the page*, which is worse than no
  * total at all. `/finance/report` sums the whole ledger, and that is where the three figures above
- * the tabs come from.
+ * the tabs come from — and, since FR-FIN-003 was given its controls, the per-category split beneath
+ * them and the window they cover.
  *
  * `attachment_path` exists on both tables and is **never rendered** — it is a server storage path,
  * and this screen has no route to serve those bytes.
@@ -41,6 +42,9 @@ import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { formatAmountWithCode } from '@/lib/money';
 import { localDay } from '@/lib/instants';
+import { splitApiErrors } from '@/lib/formErrors';
+import { OPTION_LIMIT, teacherName, useWholeList } from '@/lib/useTimetablePickers';
+import type { Picker, TeacherOption } from '@/lib/useTimetablePickers';
 import { EditDialog } from '@/components/editDialog';
 import { EXPLAINED_CODES, useCollection } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
@@ -64,6 +68,7 @@ import {
   focusFirstInvalidField,
   SearchField,
   FilterBar,
+  FilterDate,
   FilterSelect,
   SubmitButton,
 } from '@/components/form';
@@ -107,6 +112,70 @@ const TABS: TabDef[] = [
   { key: 'incomes', label: 'Income' },
   { key: 'expenses', label: 'Expenses' },
 ];
+
+/** A category's label from the list above, or the stored word spelled out for one it does not know. */
+function categoryLabel(kind: 'incomes' | 'expenses', value: string): string {
+  return CATEGORIES[kind].find((option) => option.value === value)?.label ?? value.replace(/_/g, ' ');
+}
+
+/** A staff member as `GET /staff` returns one. `last_name` and `designation` are nullable. */
+interface StaffOption {
+  id: number;
+  employee_id: string;
+  first_name: string;
+  last_name: string | null;
+  designation: string | null;
+  is_active: boolean;
+}
+
+/**
+ * One recipient list, read to its end.
+ *
+ * The first page is fetched here and the rest by `useWholeList`, the timetable screens' reader, so a
+ * school with more than a hundred teachers can still name the one it paid. `enabled` is false until
+ * a salary is actually being recorded by someone who holds the list's own view key, so no request is
+ * spent on a list nobody will see. The list is unfiltered on purpose: a salary can be owed to someone
+ * who has since left, and `useWholeList` reads later pages without filters, so a filtered first page
+ * would be a different list from the rest of it.
+ */
+function useRecipientList<T extends { id: number }>(path: string, enabled: boolean): Picker<T> {
+  const [first, setFirst] = useState<Picker<T>>({ state: 'loading' });
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const page = await api.page<T[]>(path, { query: { limit: OPTION_LIMIT } });
+        if (!cancelled) {
+          setFirst({ state: 'ready', rows: page.data ?? [], total: page.meta?.total ?? page.data.length });
+        }
+      } catch {
+        /* Which refusal it was does not change the remedy: the name can still be typed. */
+        if (!cancelled) setFirst({ state: 'failed' });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [path, enabled]);
+
+  return useWholeList(path, first);
+}
+
+/**
+ * Joi's refusal of a window whose end is before its start, said as what it means.
+ *
+ * `orderedWindow()` makes `to` a `date.min` against `from`, and with `wrap.label` off Joi writes
+ * `to must be greater than or equal to ref:from` — a reference name, shown to a person. Only that one
+ * refusal is rewritten; anything else is passed on as the server wrote it.
+ */
+function windowRefusal(caught: ApiError): string | null {
+  const reversed = caught.details.find((detail) => detail.field === 'to' && detail.type === 'date.min');
+  return reversed ? '“To” is before “From”, so the window holds no days. Move one of them.' : null;
+}
 
 function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRecorded: () => void }) {
   const { can } = useAuth();
@@ -384,15 +453,44 @@ function LedgerPanel({ kind, onRecorded }: { kind: 'incomes' | 'expenses'; onRec
 /**
  * Record one income or expense — FR-FIN-001's "Accountant records income / records an expense".
  *
- * ## Only the fields the schema requires, plus the two that are usually wanted
+ * ## Only the fields the schema requires, plus the ones a salary cannot be recorded without
  *
  * `createIncome` / `createExpense` require `title`, `amount` and the date; everything else is
- * optional. So this asks for those three, plus category and a description, and stops. `currency`,
- * `academic_session_id`, `student_id` and the salary recipient fields are all accepted by the
- * endpoint and are deliberately **not** here: the first three default at the column or the service,
- * and a salary payment naming its recipient is a different form than "record a cost" — the model's
- * own `salaryNeedsRecipient` validator refuses it, and this dialog surfaces that 422 rather than
- * pretending to satisfy it.
+ * optional. So this asks for those three, plus category, currency and a description.
+ * `academic_session_id` and `student_id` are accepted by the endpoint and are deliberately **not**
+ * here: they default at the column or the service.
+ *
+ * ## The currency starts on the school's — the owner's decision D35
+ *
+ * This dialog used to send no currency, so every entry took the column's `USD` whatever the school
+ * had set. D35 makes the school's currency the default: `finance.service.js` now gives an entry sent
+ * without one the school's, and the field is shown and starts on it, read from the profile
+ * (`school.currency` on `/auth/me`) — which every school role receives, so the seeded Accountant, who
+ * cannot read the settings themselves, sees the currency the entry will be in. Only a school that has
+ * never saved its settings has none; the field then starts blank, a blank stores `USD`, and the hint
+ * says so rather than leaving the currency to be discovered on the ledger.
+ *
+ * ## A salary names who was paid
+ *
+ * SRS:951 is "User records Expense entries, including Salaries and Other Expenses", and this dialog
+ * offered Salaries while sending nothing that could satisfy the model's `salaryNeedsRecipient`
+ * validator — a `salaries` row must name a teacher, a staff member or a `paid_to`. So choosing
+ * Salaries was a guaranteed 422, and the dialog described itself as not collecting what the refusal
+ * asked for. One of the three was therefore offered as the only way to finish.
+ *
+ * The recipient controls appear only for Salaries, and are sent only then. `paid_to` is always
+ * there, because anyone can type a name. The teacher and staff lists are offered only to a caller
+ * holding `teachers.view` / `staff.view` — the seeded Accountant, the actor FR-FIN-001 names first,
+ * holds neither, so for them the name is the whole of it. None of the three is marked required,
+ * because none of them is: any one satisfies the rule, and the server says so if all are blank.
+ *
+ * The service reports that refusal against `paid_to` — Sequelize names a model-level validator's
+ * error after the validator, and `finance.service.js rethrow()` maps it to the one field a person
+ * can type into — so it lands beside the Paid to box. Anything a 422 names that this form has no
+ * input for (the `body` of a foreign-key race, `school_id` from `resolveSchool()`) goes to the banner
+ * through `splitApiErrors`, rather than being filed under a field nothing draws. Before, every field
+ * error was taken as renderable, so such a message was set, drawn nowhere, and suppressed the banner
+ * too: a rejected submit that looked like nothing happened.
  *
  * ## The date defaults to today and is not pre-filled by a client clock beyond that
  *
@@ -416,30 +514,77 @@ function RecordEntryDialog({
 }) {
   const isIncome = kind === 'incomes';
   const { success } = useToast();
+  const { can, profile } = useAuth();
+  /* D35's default, from the profile — see the header. */
+  const schoolCurrency = profile?.school?.currency?.trim() || null;
 
   /* The viewer's today: `income_date` / `expense_date` are calendar days, and the UTC one is not theirs. */
   const today = useMemo(() => localDay(new Date()) ?? '', []);
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
+  const [currency, setCurrency] = useState('');
   const [date, setDate] = useState(today);
   const [entryCategory, setEntryCategory] = useState(isIncome ? 'other_income' : 'other_expenses');
   const [description, setDescription] = useState('');
+  /* The salary recipient — see the header. Held for any category, sent only for Salaries. */
+  const [paidTo, setPaidTo] = useState('');
+  const [teacherId, setTeacherId] = useState('');
+  const [staffId, setStaffId] = useState('');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const isSalary = !isIncome && entryCategory === 'salaries';
+  /* The keys `GET /teachers` and `GET /staff` are mounted behind; without one, its picker is not offered. */
+  const canPickTeacher = can('teachers.view');
+  const canPickStaff = can('staff.view');
+
+  const teachers = useRecipientList<TeacherOption>('/teachers', open && isSalary && canPickTeacher);
+  const staff = useRecipientList<StaffOption>('/staff', open && isSalary && canPickStaff);
 
   /* Reopening must not show the last entry's values, or the previous attempt's errors. */
   useEffect(() => {
     if (!open) return;
     setTitle('');
     setAmount('');
+    setCurrency('');
     setDate(today);
     setEntryCategory(isIncome ? 'other_income' : 'other_expenses');
     setDescription('');
+    setPaidTo('');
+    setTeacherId('');
+    setStaffId('');
     setBusy(false);
     setFailure(null);
     setFieldErrors({});
   }, [open, today, isIncome]);
+
+  /*
+   * D35's default, after the reset above and apart from it: the profile can be re-read while the
+   * dialog is open, and folding it into the reset would wipe what had been typed. Only into an empty
+   * field.
+   */
+  useEffect(() => {
+    if (!open || !schoolCurrency) return;
+    setCurrency((prev) => prev || schoolCurrency);
+  }, [open, schoolCurrency]);
+
+  /**
+   * The fields this form has an input for, as it stands. The recipient trio only while Salaries is
+   * chosen, and each picker only while it is drawn — a message keyed to a control that is not on
+   * screen has to reach the banner, not a key nothing renders.
+   */
+  const rendered = new Set<string>([
+    'title',
+    'amount',
+    'currency',
+    isIncome ? 'income_date' : 'expense_date',
+    'category',
+    'description',
+    ...(isSalary ? ['paid_to'] : []),
+    ...(isSalary && canPickTeacher && teachers.state !== 'failed' ? ['teacher_id'] : []),
+    ...(isSalary && canPickStaff && staff.state !== 'failed' ? ['staff_id'] : []),
+  ]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -454,13 +599,24 @@ function RecordEntryDialog({
        * `/finance/${kind}` left both §18 create routes reporting as uncalled while this form was
        * creating rows with them.
        */
-      const body = {
+      const body: Record<string, unknown> = {
         title: title.trim(),
         amount,
+        /* Blank is left off, so the column's default applies — see the header on D35. */
+        currency: currency.trim() || undefined,
         [isIncome ? 'income_date' : 'expense_date']: date,
         category: entryCategory,
         description: description.trim() || undefined,
       };
+      /*
+       * Only for a salary. A recipient left over from before the category was changed would record a
+       * teacher against "Other expenses" without anyone having meant it.
+       */
+      if (isSalary) {
+        body.paid_to = paidTo.trim() || undefined;
+        body.teacher_id = teacherId ? Number(teacherId) : undefined;
+        body.staff_id = staffId ? Number(staffId) : undefined;
+      }
       if (isIncome) {
         await api.post('/finance/incomes', body);
       } else {
@@ -469,19 +625,23 @@ function RecordEntryDialog({
       success(isIncome ? 'Income recorded' : 'Expense recorded');
       onRecorded();
     } catch (caught) {
-      if (!(caught instanceof ApiError)) throw caught;
-      /*
-       * Field errors go to the fields. `ApiError.fieldErrors()` normalises the two shapes the API
-       * sends under `details`; anything that is not per-field falls back to the banner, which is
-       * where a 422 with only a top-level message belongs.
-       */
-      const perField = caught.fieldErrors();
-      if (Object.keys(perField).length > 0) {
-        setFieldErrors(perField);
-        focusFirstInvalidField();
-      } else {
-        setFailure(caught.message);
+      if (!(caught instanceof ApiError)) {
+        /*
+         * A failed `fetch` is a TypeError, not an ApiError. This used to rethrow it, which from a
+         * submit handler is an unhandled rejection: the button stopped spinning and nothing said
+         * whether the entry had been recorded.
+         */
+        setFailure('Could not reach the server. Check your connection and try again.');
+        return;
       }
+      /*
+       * Field errors go to the fields this form draws, and everything else to the banner — see the
+       * header on what used to happen to a message naming a field with no input.
+       */
+      const { perField, banner } = splitApiErrors(caught, rendered);
+      setFieldErrors(perField);
+      setFailure(banner);
+      if (Object.keys(perField).length > 0) focusFirstInvalidField();
     } finally {
       setBusy(false);
     }
@@ -496,7 +656,7 @@ function RecordEntryDialog({
       description={
         isIncome
           ? 'Money received. This is the only path by which a fees income row is created.'
-          : 'Money paid out. Salaries must name a recipient, which this form does not collect.'
+          : 'Money paid out. A salary names who was paid — a teacher, a staff member, or a name.'
       }
       footer={
         <>
@@ -553,19 +713,130 @@ function RecordEntryDialog({
           />
         </div>
 
-        <SelectField
-          id="entry-category"
-          label="Category"
-          value={entryCategory}
-          error={fieldErrors.category}
-          onChange={(event) => setEntryCategory(event.target.value)}
-        >
-          {CATEGORIES[kind].map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </SelectField>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <SelectField
+            id="entry-category"
+            label="Category"
+            value={entryCategory}
+            error={fieldErrors.category}
+            onChange={(event) => setEntryCategory(event.target.value)}
+          >
+            {CATEGORIES[kind].map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </SelectField>
+          <Field
+            id="currency"
+            label="Currency"
+            maxLength={10}
+            autoComplete="off"
+            value={currency}
+            error={fieldErrors.currency}
+            onChange={(event) => setCurrency(event.target.value)}
+            hint={
+              schoolCurrency
+                ? `Starts on ${schoolCurrency}, this school’s currency, which a blank also takes.`
+                : 'A code such as USD, stored in upper case. Blank takes the school’s currency, or USD while the school has not saved one in its settings.'
+            }
+          />
+        </div>
+
+        {isSalary ? (
+          /*
+           * A group, because the three answer one question together — "who was paid" — and any one
+           * of them answers it. `<fieldset>` and `<legend>` say that to a screen reader; the sentence
+           * under the legend says it to everyone else, since no single box here is required.
+           */
+          <fieldset className="space-y-4 rounded-md border border-border p-4">
+            <legend className="field-label px-1">Who was paid</legend>
+            <p className="-mt-2 text-sm leading-relaxed text-muted">
+              A salary must name its recipient. Any one of these is enough.
+            </p>
+
+            {canPickTeacher ? (
+              teachers.state === 'failed' ? (
+                <p className="field-hint">
+                  The teacher list could not be loaded, so a teacher cannot be chosen here. Type the
+                  name under Paid to instead.
+                </p>
+              ) : (
+                <SelectField
+                  id="teacher_id"
+                  label="Teacher"
+                  value={teacherId}
+                  error={fieldErrors.teacher_id}
+                  disabled={teachers.state === 'loading'}
+                  onChange={(event) => setTeacherId(event.target.value)}
+                  hint={
+                    teachers.state === 'ready' && teachers.total > teachers.rows.length
+                      ? `Showing ${teachers.rows.length} of ${teachers.total} teachers.`
+                      : undefined
+                  }
+                >
+                  <option value="">{teachers.state === 'loading' ? 'Loading…' : 'Not a teacher'}</option>
+                  {teachers.state === 'ready'
+                    ? teachers.rows.map((row) => (
+                        <option key={row.id} value={row.id}>
+                          {teacherName(row)} ({row.employee_id})
+                          {row.is_active ? '' : ' — inactive'}
+                        </option>
+                      ))
+                    : null}
+                </SelectField>
+              )
+            ) : null}
+
+            {canPickStaff ? (
+              staff.state === 'failed' ? (
+                <p className="field-hint">
+                  The staff list could not be loaded, so a staff member cannot be chosen here. Type the
+                  name under Paid to instead.
+                </p>
+              ) : (
+                <SelectField
+                  id="staff_id"
+                  label="Staff member"
+                  value={staffId}
+                  error={fieldErrors.staff_id}
+                  disabled={staff.state === 'loading'}
+                  onChange={(event) => setStaffId(event.target.value)}
+                  hint={
+                    staff.state === 'ready' && staff.total > staff.rows.length
+                      ? `Showing ${staff.rows.length} of ${staff.total} staff members.`
+                      : undefined
+                  }
+                >
+                  <option value="">{staff.state === 'loading' ? 'Loading…' : 'Not a staff member'}</option>
+                  {staff.state === 'ready'
+                    ? staff.rows.map((row) => (
+                        <option key={row.id} value={row.id}>
+                          {[row.first_name, row.last_name].filter(Boolean).join(' ')} ({row.employee_id})
+                          {row.designation ? ` — ${row.designation}` : ''}
+                          {row.is_active ? '' : ' — inactive'}
+                        </option>
+                      ))
+                    : null}
+                </SelectField>
+              )
+            ) : null}
+
+            <Field
+              id="paid_to"
+              label="Paid to"
+              maxLength={180}
+              value={paidTo}
+              error={fieldErrors.paid_to}
+              onChange={(event) => setPaidTo(event.target.value)}
+              hint={
+                canPickTeacher || canPickStaff
+                  ? 'The name, for someone not in the lists above. It is also what the ledger’s Paid to column shows.'
+                  : 'The name of the person paid. It is what the ledger’s Paid to column shows.'
+              }
+            />
+          </fieldset>
+        ) : null}
 
         <TextAreaField
           id="description"
@@ -581,25 +852,87 @@ function RecordEntryDialog({
   );
 }
 
+/** One ledger's half of the report: its total, and that total split by §18's categories. */
+interface LedgerTotals {
+  total: number;
+  /*
+   * Zero-filled from the category list by `foldBuckets()`, so a category with no rows still reads
+   * `0` rather than vanishing, and the buckets sum to `total` by construction.
+   */
+  by_category: Record<string, number>;
+}
+
 interface FinanceReport {
+  /* The window the server applied, echoed as `YYYY-MM-DD`, or null for an open end. */
+  from: string | null;
+  to: string | null;
   currency: string | null;
-  income: { total: number };
-  expense: { total: number };
+  income: LedgerTotals;
+  expense: LedgerTotals;
   net_balance: number;
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 /**
- * FR-FIN-002's Expected Outcome, rendered.
+ * A `YYYY-MM-DD` as `5 Sep 2026`, by slicing rather than through `Date`, which reads a bare date as
+ * UTC midnight and moves it a day west of Greenwich — the reason the attendance screen gives.
+ */
+function formatDay(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  const month = match ? MONTHS[Number(match[2]) - 1] : undefined;
+  return match && month ? `${Number(match[3])} ${month} ${match[1]}` : value;
+}
+
+/** One ledger's categories and their amounts, beneath that ledger's total. */
+function CategorySplit({
+  kind,
+  totals,
+  currency,
+}: {
+  kind: 'incomes' | 'expenses';
+  totals: LedgerTotals;
+  currency: string | null;
+}) {
+  return (
+    <dl className="space-y-1 text-sm">
+      {Object.entries(totals.by_category ?? {}).map(([category, amount]) => (
+        <div key={category} className="flex items-baseline justify-between gap-3">
+          <dt className="text-muted">{categoryLabel(kind, category)}</dt>
+          <dd className="whitespace-nowrap tabular-nums">{formatAmountWithCode(amount, currency)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/**
+ * FR-FIN-002's Expected Outcome and FR-FIN-003's report, rendered.
  *
  * The three figures come from `/finance/report`, which sums across the whole ledger rather than the
  * page in view — the distinction the ledger tabs deliberately refuse to blur by totalling a page.
  *
  * A deficit is shown as a negative and is never clamped, because `finance.service.js:502` does not
  * clamp it either: *"a deficit is real"*. Colouring it is the whole point of showing it.
+ *
+ * ## The window and the categories, which the report always had
+ *
+ * FR-FIN-003 is "System generates Financial Reports based on recorded Income and Expenses"
+ * (SRS:965-966), and `/finance/report` has accepted an ordered `from`/`to` and answered a
+ * `by_category` split of both ledgers since it was built. This panel read only the three totals and
+ * sent only `currency`, so the report existed and could not be asked for a quarter, nor show where a
+ * total came from. The two dates are the window the service takes — §18 names no period taxonomy, so
+ * none is invented here — and blank is every entry ever recorded, which is FR-FIN-002's dashboard
+ * figure exactly as it was. The categories are listed under the total they sum to.
  */
-function NetBalance({ version }: { version: number }) {
+function FinancialReport({ version }: { version: number }) {
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [report, setReport] = useState<FinanceReport | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /* A 422 about the window itself, said beside the dates rather than behind a retry button. */
+  const [invalid, setInvalid] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   /* Bumped by the retry button; the effect keys on it. */
   const [attempt, setAttempt] = useState(0);
@@ -623,7 +956,9 @@ function NetBalance({ version }: { version: number }) {
 
   useEffect(() => {
     const controller = new AbortController();
+    setLoading(true);
     setError(null);
+    setInvalid(null);
     setRefusal(null);
     (async () => {
       try {
@@ -633,10 +968,18 @@ function NetBalance({ version }: { version: number }) {
          * `report.income.total` below — and before it threw, `Number(report.net_balance) < 0` was
          * `NaN < 0`, i.e. false, so a school in deficit would have been painted in the success
          * colour. Same envelope mistake as the Super Admin dashboard's thirteen NaN cards.
+         *
+         * `from` and `to` are sent as the date boxes hold them, `YYYY-MM-DD` — a calendar day, which
+         * is what `expense_date` / `income_date` store — and left off when blank, so an open end is
+         * really open rather than bounded at some default.
          */
         const result = await api.get<{ report: FinanceReport }>('/finance/report', {
           signal: controller.signal,
-          query: { currency: chosenCurrency || undefined },
+          query: {
+            currency: chosenCurrency || undefined,
+            from: from || undefined,
+            to: to || undefined,
+          },
         });
         if (controller.signal.aborted) return;
         setReport(result.report ?? null);
@@ -646,7 +989,12 @@ function NetBalance({ version }: { version: number }) {
           setRefusal({ code: caught.code, message: caught.message });
         } else if (caught instanceof ApiError) {
           const named = caught.fieldErrors().currency;
-          if (named) {
+          const reversed = windowRefusal(caught);
+          if (reversed) {
+            /* The window, not the ledger, is what is wrong — so the figures step aside for the sentence. */
+            setInvalid(reversed);
+            setReport(null);
+          } else if (named) {
             /*
              * Tolerant on purpose: the codes are read out of the server's own sentence, and if that
              * sentence ever changes shape the list comes back empty and the message is shown as
@@ -656,12 +1004,18 @@ function NetBalance({ version }: { version: number }) {
             setChoices(offered);
             setError(offered.length > 0 ? null : caught.message);
             setReport(null);
+          } else if (caught.status === 422) {
+            const [first] = [...caught.formErrors(), ...Object.values(caught.fieldErrors())];
+            setInvalid(first ?? caught.message);
+            setReport(null);
           } else {
             setError(caught.message);
           }
         } else if ((caught as Error)?.name !== 'AbortError') {
           setError('Could not reach the server. Check your connection and try again.');
         }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
       }
     })();
     return () => controller.abort();
@@ -671,70 +1025,139 @@ function NetBalance({ version }: { version: number }) {
      * 0.00 beside a ledger row showing the entry, which reads as the total being wrong rather than
      * stale. The report sums the whole ledger, so it has to be re-asked, not adjusted locally.
      */
-  }, [attempt, version, chosenCurrency]);
+  }, [attempt, version, chosenCurrency, from, to]);
 
   if (refusal) return <RefusalNotice refusal={refusal} />;
-  if (error) return <ErrorNotice message={error} onRetry={() => setAttempt((n) => n + 1)} />;
 
-  /* Two currencies in the window: pick one, because a single net balance across both is undefined. */
-  if (choices.length > 0 && !report) {
-    return (
-      <div className="surface mb-6 p-5">
-        <p className="text-sm font-semibold text-ink">Which currency?</p>
-        <p className="mt-1 max-w-xl text-sm leading-relaxed text-muted">
-          This school has recorded money in more than one currency, and there is no conversion rate
-          here — so Income, Expense and Net Balance have to be read one currency at a time.
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {choices.map((code) => (
-            <button
-              key={code}
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => setChosenCurrency(code)}
-            >
-              {code}
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (!report) return null;
+  /*
+   * What the figures cover, read from the window the server echoed rather than from the boxes — while
+   * a new window is loading, the figures on screen are still the old one's, and so is this sentence.
+   */
+  const shownFrom = report?.from ?? null;
+  const shownTo = report?.to ?? null;
+  const coverage =
+    shownFrom && shownTo
+      ? `Entries dated ${formatDay(shownFrom)} to ${formatDay(shownTo)}.`
+      : shownFrom
+        ? `Entries dated ${formatDay(shownFrom)} onwards.`
+        : shownTo
+          ? `Entries dated up to ${formatDay(shownTo)}.`
+          : 'Every entry recorded — the net balance of the whole ledger.';
 
   /*
    * `report.currency` is null only when both ledgers are empty — `report()` answers
    * `currency || currencies[0] || null` — and `formatAmountWithCode` then prints the bare `0.00`
    * rather than the figure, a space and an empty label.
    */
-  const deficit = Number(report.net_balance) < 0;
+  const deficit = report ? Number(report.net_balance) < 0 : false;
 
   return (
-    <dl className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <div className="rounded-md border border-border px-4 py-3">
-        <dt className="text-xs uppercase tracking-wide text-muted-soft">Income</dt>
-        <dd className="mt-1 text-lg font-semibold tabular-nums">
-          {formatAmountWithCode(report.income.total, report.currency)}
-        </dd>
+    <section aria-labelledby="finance-report-heading" className="mb-6">
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h2 id="finance-report-heading" className="text-base font-semibold tracking-tight text-ink">
+          Financial report
+        </h2>
+        {report ? <p className="text-sm text-muted">{coverage}</p> : null}
       </div>
-      <div className="rounded-md border border-border px-4 py-3">
-        <dt className="text-xs uppercase tracking-wide text-muted-soft">Expense</dt>
-        <dd className="mt-1 text-lg font-semibold tabular-nums">
-          {formatAmountWithCode(report.expense.total, report.currency)}
-        </dd>
-      </div>
-      <div className="rounded-md border border-border px-4 py-3">
-        <dt className="text-xs uppercase tracking-wide text-muted-soft">Net balance</dt>
-        <dd
-          className={`mt-1 text-lg font-semibold tabular-nums ${
-            deficit ? 'text-danger' : 'text-success'
+
+      <FilterBar
+        activeCount={[from, to].filter(Boolean).length}
+        onClear={() => {
+          setFrom('');
+          setTo('');
+        }}
+      >
+        <FilterDate id="finance-report-from" label="From" value={from} onChange={setFrom} />
+        <FilterDate id="finance-report-to" label="To" value={to} onChange={setTo} />
+        {/*
+          * Once a currency has been chosen, it stays changeable. The choice used to be a one-way
+          * door: the buttons below vanished with the refusal, so a school that picked USD could not
+          * get back to EUR short of reloading — and with a window to move, the two are read side by
+          * side more often than once.
+          */}
+        {choices.length > 1 && chosenCurrency ? (
+          <FilterSelect
+            id="finance-report-currency"
+            label="Currency"
+            labelVisible
+            value={chosenCurrency}
+            onChange={setChosenCurrency}
+          >
+            {choices.map((code) => (
+              <option key={code} value={code}>
+                {code}
+              </option>
+            ))}
+          </FilterSelect>
+        ) : null}
+      </FilterBar>
+
+      {error ? (
+        <ErrorNotice message={error} onRetry={() => setAttempt((n) => n + 1)} />
+      ) : invalid ? (
+        <Notice tone="error">{invalid}</Notice>
+      ) : choices.length > 0 && !report ? (
+        /* Two currencies in the window: pick one, because a single net balance across both is undefined. */
+        <div className="surface p-5">
+          <p className="text-sm font-semibold text-ink">Which currency?</p>
+          <p className="mt-1 max-w-xl text-sm leading-relaxed text-muted">
+            This school has recorded money in more than one currency, and there is no conversion rate
+            here — so Income, Expense and Net Balance have to be read one currency at a time.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {choices.map((code) => (
+              <button
+                key={code}
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => setChosenCurrency(code)}
+              >
+                {code}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : !report ? null : (
+        <dl
+          aria-busy={loading || undefined}
+          className={`grid grid-cols-1 gap-3 transition-opacity duration-200 sm:grid-cols-3 ${
+            loading ? 'opacity-60' : ''
           }`}
         >
-          {formatAmountWithCode(report.net_balance, report.currency)}
-        </dd>
-      </div>
-    </dl>
+          <div className="rounded-md border border-border px-4 py-3">
+            <dt className="text-xs uppercase tracking-wide text-muted-soft">Income</dt>
+            <dd className="mt-1 text-lg font-semibold tabular-nums">
+              {formatAmountWithCode(report.income.total, report.currency)}
+            </dd>
+            <dd className="mt-2 border-t border-border-soft pt-2">
+              <CategorySplit kind="incomes" totals={report.income} currency={report.currency} />
+            </dd>
+          </div>
+          <div className="rounded-md border border-border px-4 py-3">
+            <dt className="text-xs uppercase tracking-wide text-muted-soft">Expense</dt>
+            <dd className="mt-1 text-lg font-semibold tabular-nums">
+              {formatAmountWithCode(report.expense.total, report.currency)}
+            </dd>
+            <dd className="mt-2 border-t border-border-soft pt-2">
+              <CategorySplit kind="expenses" totals={report.expense} currency={report.currency} />
+            </dd>
+          </div>
+          <div className="rounded-md border border-border px-4 py-3">
+            <dt className="text-xs uppercase tracking-wide text-muted-soft">Net balance</dt>
+            <dd
+              className={`mt-1 text-lg font-semibold tabular-nums ${
+                deficit ? 'text-danger' : 'text-success'
+              }`}
+            >
+              {formatAmountWithCode(report.net_balance, report.currency)}
+            </dd>
+            <dd className="mt-2 border-t border-border-soft pt-2 text-sm text-muted">
+              Income minus expense, over the same entries.
+            </dd>
+          </div>
+        </dl>
+      )}
+    </section>
   );
 }
 
@@ -749,7 +1172,7 @@ function FinanceScreen() {
         title="Finance"
         description="Money in and money out. Totals come from the finance report, not from a page of rows."
       />
-      <NetBalance version={ledgerVersion} />
+      <FinancialReport version={ledgerVersion} />
       <Tabs tabs={TABS} active={active} onChange={setActive} label="Finance sections" />
       <TabPanel tabKey={active}>
         {/*

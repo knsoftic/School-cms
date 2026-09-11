@@ -57,7 +57,8 @@ const {
   requireModule,
   uploadSingle,
 } = require('../../middlewares');
-const { MODULES, UPLOAD_PROFILES } = require('../../config/constants');
+const { MODULES, UPLOAD_PROFILES, UPLOAD_RULES } = require('../../config/constants');
+const { respondsWithFile } = require('../../utils/routeMeta');
 
 const controller = require('./homework.controller');
 const { schemas } = require('./homework.validation');
@@ -92,7 +93,9 @@ router.get(
   requirePermission('homework.view'),
   validate({ params: schemas.idParam }),
   logActivity({ action: 'view', entityType: 'homework', onlyOnSuccess: true }),
-  asyncHandler(controller.attachment)
+  respondsWithFile(asyncHandler(controller.attachment), {
+    types: UPLOAD_RULES[UPLOAD_PROFILES.HOMEWORK].mimeTypes,
+  })
 );
 
 router.get(

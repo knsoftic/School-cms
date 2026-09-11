@@ -79,20 +79,43 @@
  * ## Two session fields, and they are not the same session
  *
  * `students` carries two foreign keys into `academic_sessions`, and the difference only shows a year
- * later. `academic_session_id` is the session the student is *in*, and `applyTransition()` moves it on
- * every promotion. `admission_session_id` is the session they were *admitted* in, and none of the
- * three FR-STUDENT-002 routes touches it — which is what makes it the intake cohort, though a profile
- * edit may still correct it. Both are checked against the school — the second only since the fix
+ * later. `academic_session_id` is the session the student is *in*, and it follows the class
+ * (`resolvePlacement()`): an admission that names no session takes the chosen class's, and so does a
+ * promotion or a `PATCH` that changes the class without naming one; a request that names a session
+ * keeps the one it named. So on this form a blank Current session is not "no session" — it is the
+ * class's. The select defaults to the school's current session (the owner's decision D20) and moves to
+ * the chosen class's session when a class is chosen, which is what the server would have given it; it
+ * can still be changed after that. Where the class's session is not one the select can show, it
+ * moves to blank instead — "the chosen class's session", which is the same answer said in words.
+ *
+ * `admission_session_id` is the session they were *admitted* in, and none of the three FR-STUDENT-002
+ * routes touches it — which is what makes it the intake cohort, though a profile edit may still
+ * correct it. It defaults to the current session too (D20's "forms default to the current session"),
+ * and does not follow the class. Both are checked against the school — the second only since the fix
  * noted in `resolvePlacement()`, which had been letting a body pin a student to another tenant's
  * admission session.
  *
- * ## Nothing here is narrowed, and each omission is the service's decision showing through
+ * The current session comes from the profile (`school.current_session` on `/auth/me`), not from
+ * `GET /sessions/current`, which needs the list's own `sessions.view`. So a caller who cannot read the
+ * list still gets the default, and both selects offer the current session alone.
+ *
+ * ## A closed session takes no admission — D20
+ *
+ * `create()` refuses with 409 `SESSION_CLOSED` when the student's session is closed, whether it was
+ * named or came with the class, and when the chosen class belongs to a closed session
+ * (`assertOpenForNew()`). So the Current session select does not offer a closed session, and a class of
+ * a closed session is listed but cannot be chosen — where the session list can be read to know which
+ * those are. Where it cannot, the refusal is placed on the select it is about: the class, when the
+ * closed session is the class's own, and otherwise the session. The admission session is not checked
+ * by the guard and keeps every status: a student joining the current class may well have been admitted
+ * in a year now closed.
+ *
+ * ## Beyond D20, nothing here is narrowed, and each omission is the service's decision showing through
  *
  *   * Inactive classes and sections are annotated, never withheld: `loadClassInSchool()` and
  *     `loadSectionOfClass()` test the school and the parent class, and nothing else.
- *   * Sessions of every status are offered, closed ones included. `loadSessionInSchool()` checks only
- *     the school, and a student admitted into a past session is exactly how a school enters a record
- *     it is catching up on.
+ *   * Upcoming and active sessions are both offered for the Current session, and every status for the
+ *     admission session — see the section above for the closed ones.
  *   * The account list is not filtered by role. `loadUserInSchool()` checks two things and neither is
  *     the role: the account must belong to this school, and no other student may already hold it.
  *
@@ -186,10 +209,13 @@ interface ClassOption {
 interface SessionOption {
   id: number;
   name: string;
-  /** `ACADEMIC_SESSION_STATUS` — shown as context, never acted on. */
+  /** `ACADEMIC_SESSION_STATUS`. Shown as context; `closed` is also acted on — see the header on D20. */
   status: string;
   is_current: boolean;
 }
+
+/** `ACADEMIC_SESSION_STATUS.CLOSED` — the one status D20 refuses an admission into. */
+const CLOSED = 'closed';
 
 /**
  * A row of `GET /users`, as `users.service.present()` builds it.
@@ -265,10 +291,24 @@ function humanise(value: string): string {
 
 export default function NewStudentPage() {
   const router = useRouter();
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
   const { success } = useToast();
 
+  /* D20's default for both session fields, from the profile — see the header. */
+  const current = profile?.school?.current_session ?? null;
+  const currentId = current && current.status !== CLOSED ? String(current.id) : '';
+
   const [values, setValues] = useState(EMPTY_VALUES);
+
+  /* Only into a blank field, and only when the current session itself changes. */
+  useEffect(() => {
+    if (!currentId) return;
+    setValues((prev) => ({
+      ...prev,
+      admission_session_id: prev.admission_session_id || currentId,
+      academic_session_id: prev.academic_session_id || currentId,
+    }));
+  }, [currentId]);
 
   const [classes, setClasses] = useState<Loaded<ClassOption>>(NOT_LOADED);
   const [sessions, setSessions] = useState<Loaded<SessionOption>>(NOT_LOADED);
@@ -291,8 +331,9 @@ export default function NewStudentPage() {
    * `allSettled`, not `all`. `GET /classes` needs `classes.view` and `GET /sessions` needs
    * `sessions.view`, and neither is the `students.manage` that opened this screen — grants are
    * editable at runtime (`PUT /roles/:id/permissions`), so a receptionist may well hold one and not
-   * the other. An `all` would let either failure empty both dropdowns, and every field they feed is
-   * optional: a student can be admitted unplaced and given a class afterwards.
+   * the other. An `all` would let either failure empty both dropdowns, and only the class list is
+   * fatal to the form — every admission names a class (D4), while both session fields can be left to
+   * the server.
    *
    * Neither call sends `school_id`; `tenantWhere(req.tenant, …)` has already pinned both queries to
    * the caller's school.
@@ -369,20 +410,55 @@ export default function NewStudentPage() {
     };
   }, [can, userQuery]);
 
+  /*
+   * The sessions both selects offer: the list, with the current session added when it fell past the
+   * first page — it is the default, so it has to be an option — or the current session alone for a
+   * caller who cannot read the list. See the header.
+   */
+  const sessionOptions = useMemo<SessionOption[]>(() => {
+    const own = current ? { ...current, is_current: true } : null;
+    if (sessions.failed) return own ? [own] : [];
+    return own && !sessions.rows.some((row) => row.id === own.id) ? [own, ...sessions.rows] : sessions.rows;
+  }, [sessions, current]);
+
   /** Session names by id, for the label that tells two same-named classes apart. */
   const sessionNames = useMemo(() => {
     const byId = new Map<number, string>();
-    for (const session of sessions.rows) byId.set(session.id, session.name);
+    for (const session of sessionOptions) byId.set(session.id, session.name);
     return byId;
-  }, [sessions.rows]);
+  }, [sessionOptions]);
+
+  /* D20 — the sessions an admission cannot land in, and so the classes it cannot land in either. */
+  const closedSessions = useMemo(
+    () => new Set(sessionOptions.filter((session) => session.status === CLOSED).map((session) => session.id)),
+    [sessionOptions]
+  );
 
   const sections = useMemo(() => {
     const chosen = classes.rows.find((row) => String(row.id) === values.class_id);
     return chosen?.sections ?? [];
   }, [classes.rows, values.class_id]);
 
+  /*
+   * The section is cleared and the current session follows the class — see the header. To the class's
+   * session where the select offers it, and otherwise to blank, which asks the server for the class's
+   * session anyway: a value the select cannot show would read as a different session from the one sent.
+   */
   function onClassChange(event: { target: { value: string } }) {
-    setValues((prev) => ({ ...prev, class_id: event.target.value, section_id: '' }));
+    const next = event.target.value;
+    const destination = classes.rows.find((row) => String(row.id) === next);
+    const sessionId = destination?.academic_session_id ?? null;
+    setValues((prev) => ({
+      ...prev,
+      class_id: next,
+      section_id: '',
+      academic_session_id:
+        sessionId === null
+          ? prev.academic_session_id
+          : sessionOptions.some((session) => session.id === sessionId)
+            ? String(sessionId)
+            : '',
+    }));
   }
 
   function onUserChange(event: { target: { value: string } }) {
@@ -448,6 +524,26 @@ export default function NewStudentPage() {
     } catch (caught) {
       if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
         setRefusal({ code: caught.code, message: caught.message });
+      } else if (caught instanceof ApiError && caught.code === 'SESSION_CLOSED') {
+        /*
+         * D20. A 409 whose `details` is `{ academic_session_id, status }`, so it names no input of its
+         * own. It goes on the class whenever the closed session is the class's own — another session
+         * would not help, the class itself is in a closed year — and on the session select only when
+         * the closed one is a session named apart from the class. See the header.
+         */
+        const closedId = caught.context?.academic_session_id;
+        const classSession = classes.rows.find((row) => String(row.id) === values.class_id)?.academic_session_id;
+        const onSession =
+          closedId !== undefined
+          && String(closedId) === values.academic_session_id
+          && String(closedId) !== String(classSession);
+        setFieldErrors({
+          [onSession ? 'academic_session_id' : 'class_id']: `${caught.message}. Choose ${
+            onSession ? 'a session' : 'a class in a session'
+          } that is still open.`,
+        });
+        setError(null);
+        focusFirstInvalidField();
       } else if (caught instanceof ApiError) {
         const perField: Record<string, string> = {};
         const homeless: string[] = [];
@@ -588,12 +684,14 @@ export default function NewStudentPage() {
             label="Admission session"
             value={values.admission_session_id}
             onChange={set('admission_session_id')}
-            disabled={loadingOptions || sessions.failed}
+            disabled={loadingOptions || (sessions.failed && sessionOptions.length === 0)}
             error={fieldErrors.admission_session_id}
             hint={
               sessions.failed
-                ? 'The session list could not be loaded, so neither session can be chosen here. Viewing academic sessions is a separate permission from admitting students, and the student can be admitted without either.'
-                : `The intake cohort — the session the student joined in. Promotion never moves it, which is what separates it from the current session below.${
+                ? sessionOptions.length > 0
+                  ? 'The session list could not be loaded, so only the school’s current session is offered, here and below. Viewing academic sessions is a separate permission from admitting students.'
+                  : 'The session list could not be loaded, so neither session can be chosen here. Viewing academic sessions is a separate permission from admitting students, and the student can be admitted without either.'
+                : `The intake cohort — the session the student joined in, defaulting to the school’s current session. Promotion never moves it, which is what separates it from the current session below.${
                     sessions.total > sessions.rows.length
                       ? ` The first ${sessions.rows.length} of ${sessions.total}; a page cannot hold more.`
                       : ''
@@ -601,10 +699,10 @@ export default function NewStudentPage() {
             }
           >
             <option value="">{loadingOptions ? 'Loading…' : 'Not recorded'}</option>
-            {sessions.rows.map((session) => (
-              /* Status and "current" are context, never acted on: `loadSessionInSchool()` accepts a
-                 session of any status, and disabling options from those columns would be a rule of
-                 this screen's own. */
+            {sessionOptions.map((session) => (
+              /* Status and "current" are context, never acted on here: `loadSessionInSchool()` accepts
+                 a session of any status, and D20's guard checks the current session and the class,
+                 not this one — so disabling options would be a rule of this screen's own. */
               <option key={session.id} value={session.id}>
                 {session.name} — {session.status}
                 {session.is_current ? ' — current' : ''}
@@ -631,7 +729,7 @@ export default function NewStudentPage() {
                 ? 'The class list could not be loaded, so a student cannot be admitted from here — every admission names a class. Viewing classes is a separate permission from admitting students; ask someone who holds it, or try again.'
                 : !loadingOptions && classes.rows.length === 0
                   ? 'This school has no classes yet. Create one first: every student is admitted into a class, which is where their roll number comes from.'
-                  : `Each option names its own session, so two identically-named classes from consecutive years are tellable apart.${
+                  : `Each option names its own session, so two identically-named classes from consecutive years are tellable apart. A class of a closed session is listed and cannot be chosen: a closed session takes no new admission.${
                       classes.total > classes.rows.length
                         ? ` The first ${classes.rows.length} of ${classes.total}; a page cannot hold more.`
                         : ''
@@ -643,13 +741,16 @@ export default function NewStudentPage() {
               const session = row.academic_session_id
                 ? sessionNames.get(row.academic_session_id)
                 : undefined;
+              /* D20 — refused with `SESSION_CLOSED`, so shown and not choosable. See the header. */
+              const closed = row.academic_session_id !== null && closedSessions.has(row.academic_session_id);
               return (
                 /* Inactive classes are marked, not withheld — `loadClassInSchool()` tests the school
                    and nothing else, so dropping them would be a rule of this screen's own. */
-                <option key={row.id} value={row.id}>
+                <option key={row.id} value={row.id} disabled={closed}>
                   {row.name}
                   {row.code ? ` (${row.code})` : ''}
                   {session ? ` — ${session}` : ''}
+                  {closed ? ' — session closed' : ''}
                   {row.is_active ? '' : ' — inactive'}
                 </option>
               );
@@ -683,30 +784,32 @@ export default function NewStudentPage() {
           </SelectField>
 
           {/*
-            * Disabled by the same `sessions.failed` as the admission session above, so it says why in
-            * the same way. It used to keep the hint that describes a working control, which left the
-            * second of two dead selects looking broken rather than explained.
+            * Disabled by the same test as the admission session above, so it says why in the same
+            * way. It used to keep the hint that describes a working control, which left the second of
+            * two dead selects looking broken rather than explained.
             */}
           <SelectField
             id="academic_session_id"
             label="Current session"
             value={values.academic_session_id}
             onChange={set('academic_session_id')}
-            disabled={loadingOptions || sessions.failed}
+            disabled={loadingOptions || (sessions.failed && sessionOptions.length === 0)}
             error={fieldErrors.academic_session_id}
             hint={
-              sessions.failed
-                ? 'The session list could not be loaded, so this cannot be chosen either — see Admission session above. Someone who can view sessions can set it later on the student’s own record.'
-                : 'The session the student is sitting in now. Promotion moves this one and leaves the admission session alone. Blank ties the record to no session at all — the server does not fall back to the current one, even though it is marked in the list.'
+              sessions.failed && sessionOptions.length === 0
+                ? 'The session list could not be loaded, so this cannot be chosen either — see Admission session above. The student is placed in the chosen class’s session, which is what the server gives an admission that names none.'
+                : 'The session the student is sitting in now — the school’s current session until a class is chosen, then that class’s session, which can still be changed. Blank also means the class’s session. Promotion moves this one and leaves the admission session alone. A closed session is not offered: it takes no new admission.'
             }
           >
-            <option value="">{loadingOptions ? 'Loading…' : 'Not tied to a session'}</option>
-            {sessions.rows.map((session) => (
-              <option key={session.id} value={session.id}>
-                {session.name} — {session.status}
-                {session.is_current ? ' — current' : ''}
-              </option>
-            ))}
+            <option value="">{loadingOptions ? 'Loading…' : 'The chosen class’s session'}</option>
+            {sessionOptions
+              .filter((session) => session.status !== CLOSED)
+              .map((session) => (
+                <option key={session.id} value={session.id}>
+                  {session.name} — {session.status}
+                  {session.is_current ? ' — current' : ''}
+                </option>
+              ))}
           </SelectField>
 
           <Field

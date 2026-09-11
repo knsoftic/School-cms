@@ -46,7 +46,8 @@ const {
   uploadSingle,
   uploadArray,
 } = require('../../middlewares');
-const { MODULES, LIMITS, UPLOAD_PROFILES } = require('../../config/constants');
+const { MODULES, LIMITS, UPLOAD_PROFILES, UPLOAD_RULES } = require('../../config/constants');
+const { respondsWithFile } = require('../../utils/routeMeta');
 
 const controller = require('./students.controller');
 const { schemas } = require('./students.validation');
@@ -60,6 +61,18 @@ router.get(
   requirePermission('students.view'),
   validate({ query: schemas.list }),
   asyncHandler(controller.list)
+);
+
+/*
+ * The owner's decision D17 — a student's own record, or each linked child's for a parent, on
+ * `students.self.view`: the key the catalogue granted both and nothing mounted until now. Declared
+ * above `GET /:id` so the literal segment can never be read as an id.
+ */
+router.get(
+  '/mine',
+  requirePermission('students.self.view'),
+  validate({ query: schemas.mineQuery }),
+  asyncHandler(controller.mine)
 );
 
 router.post(
@@ -115,7 +128,9 @@ router.get(
   '/:id/photo',
   requirePermission('students.view'),
   validate({ params: schemas.idParam, query: schemas.showQuery }),
-  asyncHandler(controller.photo)
+  respondsWithFile(asyncHandler(controller.photo), {
+    types: UPLOAD_RULES[UPLOAD_PROFILES.PERSON_PHOTO].mimeTypes,
+  })
 );
 
 /*
@@ -152,7 +167,9 @@ router.get(
   '/:id/documents/:documentId',
   requirePermission('students.view'),
   validate({ params: schemas.documentParam, query: schemas.showQuery }),
-  asyncHandler(controller.documentFile)
+  respondsWithFile(asyncHandler(controller.documentFile), {
+    types: UPLOAD_RULES[UPLOAD_PROFILES.STUDENT_DOCUMENT].mimeTypes,
+  })
 );
 
 router.post(

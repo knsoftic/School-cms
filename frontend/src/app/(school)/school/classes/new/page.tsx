@@ -36,21 +36,23 @@
  * like it did nothing. Hence `FORM_FIELDS` below: a detail naming a field this form does not have is
  * promoted to the top-level `Notice` alongside the ones that name no field at all.
  *
- * ## Two pickers, and neither is narrowed
+ * ## Two pickers, and one rule between them
  *
  * `academic_session_id` and `class_teacher_id` are foreign keys, so both are selects rather than id
  * boxes — `classes/page.tsx` already argues that a raw `academic_session_id` in front of an
  * administrator names a row nobody can look up.
  *
- * Neither list is filtered, and in both cases that is the service's decision showing through:
- *
- *   * `loadSessionInSchool()` checks only that the session belongs to the school. The service header
- *     says so in as many words — *"Classes may be created on an upcoming session, not only the
- *     current one"* — and it does not exclude a closed one either. Hiding closed sessions here would
- *     be this screen inventing a rule the module does not have, so the status is shown beside the
- *     name as context and the server still decides.
- *   * `loadTeacherInSchool()` checks only that the teacher belongs to the school, so a retired
- *     teacher is marked inactive in the option rather than withheld.
+ *   * **Sessions: a closed one is not offered, and the current one is the default** — the owner's
+ *     decision D20. `classes.service.create()` refuses a class on a closed session with 409
+ *     `SESSION_CLOSED` (`assertSessionOpen()`), so offering one would be offering a refusal. An
+ *     upcoming session stays a valid choice — the service header says so in as many words, *"Classes
+ *     may be created on an upcoming session, not only the current one"* — and the status is shown
+ *     beside each name. The default is the school's current session from the profile
+ *     (`school.current_session` on `/auth/me`), put in only while the field is still blank; a school
+ *     with no current session gets no default. A session closed while the form sat open is still
+ *     refused by the server, and that refusal is put on the session select.
+ *   * **Teachers are not narrowed.** `loadTeacherInSchool()` checks only that the teacher belongs to
+ *     the school, so a retired teacher is marked inactive in the option rather than withheld.
  *
  * Both endpoints need `limit` and nothing this screen cannot supply, and both are capped at
  * `PAGINATION.MAX_LIMIT`; when more rows exist than one page holds, the picker says so rather than
@@ -65,8 +67,9 @@
  *
  * A missing teacher list costs nothing that cannot wait: `class_teacher_id` is optional, so the
  * picker is replaced by a sentence saying the assignment cannot be made here. A missing session list
- * is fatal to the form, because the field is required — that says so plainly rather than offering a
- * number box for a `academic_sessions.id` no principal has ever seen.
+ * leaves the current session, which the profile carries, as the one session offered; with no current
+ * session either the form cannot go on, because the field is required — and it says so plainly
+ * rather than offering a number box for a `academic_sessions.id` no principal has ever seen.
  *
  * ## Numbers go over the wire as the text that was typed
  *
@@ -140,10 +143,13 @@ const FORM_FIELDS = new Set([
 interface SessionOption {
   id: number;
   name: string;
-  /** `ACADEMIC_SESSION_STATUS` — upcoming, active or closed. Shown, never acted on. */
+  /** `ACADEMIC_SESSION_STATUS` — upcoming, active or closed. Shown; a closed one is not offered (D20). */
   status: string;
   is_current: boolean;
 }
+
+/** `ACADEMIC_SESSION_STATUS.CLOSED` — the status D20 refuses a new class on. */
+const CLOSED = 'closed';
 
 /** A teacher as `GET /teachers` returns it. `last_name` is nullable on the model. */
 interface TeacherOption {
@@ -167,8 +173,12 @@ function teacherName(row: TeacherOption): string {
 
 export default function NewClassPage() {
   const router = useRouter();
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
   const { success } = useToast();
+
+  /* D20's default, from the profile — see the header. */
+  const current = profile?.school?.current_session ?? null;
+  const currentId = current && current.status !== CLOSED ? String(current.id) : '';
 
   const [values, setValues] = useState({
     academic_session_id: '',
@@ -234,6 +244,15 @@ export default function NewClassPage() {
     };
   }, [can]);
 
+  /*
+   * D20's default — see the header. Only into a blank field, so a session somebody has already chosen
+   * is never overwritten; a school with no current session has no default.
+   */
+  useEffect(() => {
+    if (!currentId) return;
+    setValues((prev) => (prev.academic_session_id ? prev : { ...prev, academic_session_id: currentId }));
+  }, [currentId]);
+
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
@@ -272,6 +291,14 @@ export default function NewClassPage() {
     } catch (caught) {
       if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
         setRefusal({ code: caught.code, message: caught.message });
+      } else if (caught instanceof ApiError && caught.code === 'SESSION_CLOSED') {
+        /*
+         * D20 — a 409 whose `details` is an object, so it names no input by itself. The session is the
+         * only thing it can be about here: put it there, with the way out. See the header.
+         */
+        setFieldErrors({ academic_session_id: `${caught.message}. Choose a session that is still open.` });
+        setError(null);
+        focusFirstInvalidField();
       } else if (caught instanceof ApiError) {
         const perField = caught.fieldErrors();
 
@@ -321,6 +348,16 @@ export default function NewClassPage() {
     );
   }
 
+  /*
+   * D20 — the sessions a new class may be created on. The list, with the current session added when
+   * it fell past the first page — it is the default, so it has to be an option — or, for a caller who
+   * cannot read the list, the current session alone. See the header.
+   */
+  const listed = sessions.state === 'ready' ? sessions.rows : [];
+  const own = current && sessions.state !== 'loading' ? { ...current, is_current: true } : null;
+  const openSessions = (own && !listed.some((row) => row.id === own.id) ? [own, ...listed] : listed)
+    .filter((session) => session.status !== CLOSED);
+
   return (
     <div className="max-w-2xl">
       <PageHeader
@@ -336,7 +373,7 @@ export default function NewClassPage() {
           title="Session and class"
           description="The academic session this class belongs to, and what it is called."
         >
-          {sessions.state === 'failed' ? (
+          {sessions.state === 'failed' && openSessions.length === 0 ? (
             /*
              * No select and no number box. The id is the only thing a fallback input could take, and
              * `academic_sessions.id` is not a number anyone in a school office has ever been shown.
@@ -347,9 +384,9 @@ export default function NewClassPage() {
             <div>
               <p className="field-label mb-1.5">Academic session</p>
               <p className="field-error">
-                The academic session list could not be loaded, so the session cannot be chosen here —
-                and a class cannot be created without one. Reading it needs the separate
-                &ldquo;View academic sessions&rdquo; permission.
+                The academic session list could not be loaded and the school has no current session,
+                so the session cannot be chosen here — and a class cannot be created without one.
+                Reading the list needs the separate &ldquo;View academic sessions&rdquo; permission.
               </p>
             </div>
           ) : (
@@ -361,34 +398,36 @@ export default function NewClassPage() {
               value={values.academic_session_id}
               onChange={set('academic_session_id')}
               error={fieldErrors.academic_session_id}
-              /* Both fallbacks are the one `hint` rather than paragraphs of their own: `SelectField`
+              /* Every fallback is the one `hint` rather than a paragraph of its own: `SelectField`
                  swaps the 422 in for the hint, so a message and a hint can never stack. */
               hint={
-                sessions.state === 'ready' && sessions.rows.length === 0
-                  ? 'This school has no academic session yet. One has to exist before a class can belong to it — a class is unique per session, so the same name may be reused next year.'
-                  : `An upcoming session is a valid choice: next year’s classes can be prepared before it is activated.${
-                      sessions.state === 'ready' && sessions.total > sessions.rows.length
-                        ? ` Showing the first ${sessions.rows.length} of ${sessions.total}, newest first.`
-                        : ''
-                    }`
+                sessions.state === 'failed'
+                  ? 'The academic session list could not be loaded, so only the school’s current session is offered. Reading the list needs the separate “View academic sessions” permission.'
+                  : sessions.state === 'ready' && sessions.rows.length === 0
+                    ? 'This school has no academic session yet. One has to exist before a class can belong to it — a class is unique per session, so the same name may be reused next year.'
+                    : sessions.state === 'ready' && openSessions.length === 0
+                      ? 'Every academic session of this school is closed, and a closed session takes no new class. Create or activate a session first.'
+                      : `Defaults to the school’s current session. An upcoming session is a valid choice too — next year’s classes can be prepared before it is activated — but a closed one takes no new class and is not offered.${
+                          sessions.state === 'ready' && sessions.total > sessions.rows.length
+                            ? ` Showing the first ${sessions.rows.length} of ${sessions.total}, newest first.`
+                            : ''
+                        }`
               }
             >
               <option value="">
                 {sessions.state === 'loading' ? 'Loading…' : 'Choose a session'}
               </option>
-              {sessions.state === 'ready'
-                ? sessions.rows.map((session) => (
-                    /*
-                     * Status and "current" are shown, never acted on: the service accepts a class
-                     * on any session of the school, and disabling options from these two columns
-                     * would be a rule this screen made up. Context, and the server still decides.
-                     */
-                    <option key={session.id} value={session.id}>
-                      {session.name} · {session.status}
-                      {session.is_current ? ' · current' : ''}
-                    </option>
-                  ))
-                : null}
+              {openSessions.map((session) => (
+                /*
+                 * Status and "current" are shown beside each name. A closed session is left out
+                 * rather than disabled: D20 refuses a class on one, and a form for a new class has
+                 * no use for it. See the header.
+                 */
+                <option key={session.id} value={session.id}>
+                  {session.name} · {session.status}
+                  {session.is_current ? ' · current' : ''}
+                </option>
+              ))}
             </SelectField>
           )}
 

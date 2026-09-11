@@ -131,7 +131,7 @@ function LastSignIn({ value }: { value: string | null }) {
 }
 
 export default function UsersPage() {
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
 
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState('');
@@ -230,14 +230,21 @@ export default function UsersPage() {
     <div>
       <PageHeader
         title="Users"
-        description="Every account on the platform — school staff, organization administrators and platform users."
+        description={
+          /* An Organization Admin reads this list too, confined to their organization by `tenantWhere()`. */
+          profile?.tenant.isPlatform === false
+            ? 'Every account in your organization — its schools’ staff and its administrators.'
+            : 'Every account on the platform — school staff, organization administrators and platform users.'
+        }
         action={
           /*
-           * Not "Add user". `POST /users` exists since owner decision D1, but it creates a login for one
-           * school's own people only — `CREATABLE_ROLES` in `users.validation.js`, school admins,
-           * teachers, staff and the like — and the screens that offer it are that school's people
-           * screens, where the profile the login belongs to is. The one account this platform surface
-           * creates is a Principal, through §9.3's own path.
+           * Not "Add user". `POST /users` exists since owner decision D1, and it creates a login for
+           * someone the product already has a record of — `CREATABLE_ROLES` in `users.validation.js`:
+           * a school's own people, from that school's people screens, where the profile the login
+           * belongs to is; and, since D18, an Organization Admin, from the Organizations list, where the
+           * organization it belongs to is. So this screen creates neither. It creates a Principal,
+           * through §9.3's own path, and points at the Organizations list for the other — an operator
+           * looking at the organization admins here is the one who wants to add one.
            *
            * `POST /principals` is guarded by **`requirePlatformScope()` and then**
            * `requirePermission('users.manage')` (`principals.routes.js:52-56`) — two gates, not one.
@@ -250,9 +257,20 @@ export default function UsersPage() {
            * the request itself, so forcing the link into existence changes nothing.
            */
           can('users.manage') ? (
-            <Link href="/super-admin/principals/new" className="btn btn-primary">
-              Create principal
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              {/*
+                * D18 — the Organizations list's "Add admin". Both of that dialog's conditions:
+                * `createOrganizationAdmin()` refuses a caller without a platform scope.
+                */}
+              {profile?.tenant.isPlatform && can('organizations.view') ? (
+                <Link href="/super-admin/organizations" className="btn btn-secondary">
+                  Add an organization admin
+                </Link>
+              ) : null}
+              <Link href="/super-admin/principals/new" className="btn btn-primary">
+                Create principal
+              </Link>
+            </div>
           ) : null
         }
       />

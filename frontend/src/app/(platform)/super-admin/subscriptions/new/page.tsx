@@ -507,7 +507,7 @@ export default function NewSubscriptionPage() {
             value={values.quantity}
             onChange={set('quantity')}
             error={fieldErrors.quantity}
-            hint="Seats or students, for the SRS §10.4 per-unit pricing models. Blank means 1."
+            hint="Seats, for a Seat-Based price. A Per-Student or Student-Based price ignores it and bills the school’s active-student count, counted now and again at every renewal (owner decision D26). Blank means 1."
           />
 
           {/*

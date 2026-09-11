@@ -100,9 +100,10 @@ function verifyContract() {
    * `a`, because indexOf returns -1 — the defect §5a recorded in session 22 and again in §21. An
    * array literal pins presence and order together and no deletion can satisfy it.
    */
-  check('seven tasks, in the order a --once run uses',
+  /* Eight since the owner's decision D29 added fee-fines, after invoice-overdue. */
+  check('eight tasks, in the order a --once run uses',
     names,
-    ['subscription-lifecycle', 'invoice-issue', 'notification-dispatch', 'invoice-overdue',
+    ['subscription-lifecycle', 'invoice-issue', 'notification-dispatch', 'invoice-overdue', 'fee-fines',
       'coupon-expiry', 'quotation-expiry', 'database-backup']);
   /*
    * Two real dependencies on the lifecycle sweep going first: `notification-dispatch` warns about the
@@ -435,7 +436,7 @@ async function verifyExecution() {
 
     check('every task ran and none failed',
       [report.ran.map((r) => r.task), report.failed, report.skipped],
-      [['subscription-lifecycle', 'invoice-issue', 'notification-dispatch', 'invoice-overdue',
+      [['subscription-lifecycle', 'invoice-issue', 'notification-dispatch', 'invoice-overdue', 'fee-fines',
         'coupon-expiry', 'quotation-expiry', 'database-backup'], [], []]);
     check('  and each carries the summary its own module returns',
       report.ran.every((r) => r.summary && typeof r.summary === 'object'), true);

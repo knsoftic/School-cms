@@ -1,5 +1,5 @@
 /**
- * The school surface — SRS §33's seventeen screens.
+ * The school surface — SRS §33's seventeen screens, and the three `SCHOOL_NAV` names beside them.
  *
  * Every item in `SCHOOL_NAV` that names a module is filtered by the school's entitlement snapshot,
  * so what a principal sees is decided by their plan and never by a plan name in this code (§30 R1).

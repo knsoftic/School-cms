@@ -83,15 +83,20 @@ function scopeFor(tenant) {
   /* Super Admin — FR-SADMIN-001 and -004 are platform-wide by definition. */
   if (tenant.isPlatform) return {};
 
-  /* An organization admin sees the schools in their organization (SRS §5's second level). */
-  if (tenant.organizationId) return { organization_id: tenant.organizationId };
-
   /*
    * A school-scoped caller sees one row: their own. Unreachable today — `DEFAULT_ROLE_PERMISSIONS`
    * gives `SCHOOL_LEADERSHIP` neither `schools.view` nor `schools.manage`, which is why the schools
    * list is a platform and organization surface — but correct if a role is ever granted the key.
+   *
+   * Checked **before** the organization, the order `tenantWhere()` uses. A school caller's tenant
+   * carries its organization too (`resolveTenant` takes it from the school), so asking about the
+   * organization first answered a school user with every school in their organization — the other
+   * principals' names, e-mails and phones included — which §30 Rule 2 forbids.
    */
   if (tenant.schoolId) return { id: tenant.schoolId };
+
+  /* An organization admin sees the schools in their organization (SRS §5's second level). */
+  if (tenant.organizationId) return { organization_id: tenant.organizationId };
 
   throw ApiError.forbidden('This account is not scoped to a school or organization', {
     code: 'TENANT_SCOPE_REQUIRED',

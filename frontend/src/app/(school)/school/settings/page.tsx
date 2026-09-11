@@ -39,13 +39,15 @@
  * therefore settable, and the two are ordinary `type="url"` fields. Both are `.empty('').allow(null)`,
  * so clearing one clears it.
  *
- * ## Nothing else reads these settings yet, and the hints say so
+ * ## Three of these settings are applied, and the hints say which
  *
- * `school_settings` is read by `settings.service.js` and by nothing else in the backend — no
- * document, report, fee or finance entry takes its name, currency or timezone from here, and every
- * money row carries its own `currency` column. FR-SCHOOL-001 expects them to be "applied within the
- * school's tenant scope", which is wiring this screen cannot do. So the hints describe what is true
- * today — the values are stored — rather than promise an effect nothing produces.
+ * The owner's decision D35 applies the name, the logo and the currency, all three through
+ * `schoolScope.schoolBrand()`: the name heads the school's generated documents, result cards and
+ * reports; the name and logo head every school screen, from the profile `/auth/me` returns; and a fee
+ * structure or a ledger entry created without a currency takes this one. Every money row still carries
+ * its own `currency`, so changing it here moves no existing figure. The rest — address, contact
+ * details, favicon, theme, timezone — are stored and read by nothing else, and their hints describe
+ * that rather than promise an effect nothing produces.
  *
  * ## Closing a session is final and activation is exclusive
  *
@@ -161,7 +163,13 @@ function brandingError(message: string | undefined): string | undefined {
 const SESSION_FIELDS = new Set(['name', 'start_date', 'end_date']);
 
 export default function SchoolSettingsPage() {
-  const { can } = useAuth();
+  /*
+   * `reload` re-reads `/auth/me`, whose `school` carries the name, logo and currency the shell shows
+   * and the current session every create form defaults to (D35, D20). It is called after each change
+   * here that moves one of those, so the next screen reads the new value rather than the one the
+   * profile was loaded with.
+   */
+  const { can, reload: reloadProfile } = useAuth();
   const { success } = useToast();
   const [tab, setTab] = useActiveTab(TABS);
 
@@ -268,6 +276,8 @@ export default function SchoolSettingsPage() {
       setSettings(result.settings);
       setValues(seed(result.settings));
       success('Settings saved');
+      /* A failed re-read leaves the old name in the top bar until the next sign-in; the save stands. */
+      void reloadProfile().catch(() => undefined);
     } catch (caught) {
       if (caught instanceof ApiError) {
         const perField = Array.isArray(caught.details) ? caught.fieldErrors() : {};
@@ -366,6 +376,8 @@ export default function SchoolSettingsPage() {
       );
       setPending(null);
       sessions.reload();
+      /* Both move the current session the forms default to — see `reloadProfile` above. */
+      void reloadProfile().catch(() => undefined);
     } catch (caught) {
       setActionError(
         caught instanceof ApiError
@@ -504,7 +516,7 @@ export default function SchoolSettingsPage() {
                   value={values.name ?? ''}
                   error={fieldErrors.name}
                   onChange={(event) => setValue('name', event.target.value)}
-                  hint="The name the school goes by, kept with these settings. No document or report prints it yet, so changing it does not change them."
+                  hint="The name the school goes by. It heads every school screen, and the documents, result cards and reports the school generates."
                 />
                 <TextAreaField
                   id="address"
@@ -593,7 +605,7 @@ export default function SchoolSettingsPage() {
                     value={values.currency ?? ''}
                     error={fieldErrors.currency}
                     onChange={(event) => setValue('currency', event.target.value)}
-                    hint="A code such as PKR, stored in upper case. Fee and finance entries each carry their own currency and do not take it from here."
+                    hint="A code such as PKR, stored in upper case. A fee structure or ledger entry created without a currency takes this one; each keeps its own afterwards, so changing it moves no existing figure."
                   />
                   <Field
                     id="timezone"
@@ -743,7 +755,11 @@ export default function SchoolSettingsPage() {
         description="A session's name and dates. Its status moves through the two actions on the row, not through this form."
         success="Session updated"
         onClose={() => setEditingSession(null)}
-        onSaved={sessions.reload}
+        onSaved={() => {
+          sessions.reload();
+          /* The current session's name and dates ride on the profile too. */
+          void reloadProfile().catch(() => undefined);
+        }}
         save={(row, body) => api.patch(`/sessions/${row.id}`, body)}
         initial={(row) => ({
           name: row.name,

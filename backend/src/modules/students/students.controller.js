@@ -184,8 +184,15 @@ async function documentFile(req, res) {
   });
 }
 
+/** GET /mine — D17: the caller's own record, or each linked child's. */
+async function mine(req, res) {
+  const students = await service.mine(req);
+  return ApiResponse.ok(res, { students });
+}
+
 module.exports = {
   list,
+  mine,
   show,
   create,
   update,

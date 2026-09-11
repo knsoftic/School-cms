@@ -48,14 +48,45 @@
  * the file. It used to show none of it: a teacher was asked for a mark with nothing to mark, although
  * the list response carries all of it and `GET /assignments/submissions/:id/attachment` serves the
  * file.
+ *
+ * The feedback it records is shown on the Submissions tab, to whoever can see the row — the student
+ * whose work it is, above all, which is what the dialog's own hint promised and nothing delivered.
+ * A blank feedback is sent as `null`, the way a blank mark is: the review schema accepts `null`, and
+ * leaving it out when blank kept the old feedback in place — which that column would now show.
+ *
+ * ## The description is read from the row the list already holds
+ *
+ * An assignment's `description` is the work being set, and it was captured at creation and shown
+ * nowhere — a student could hand in against a title. `present()` returns every column but the path,
+ * so it is on each list row already and the Details dialog reads that row. `GET /assignments/:id` is
+ * still not called: `findById()` answers the same row with less on it — no `class` or `subject`
+ * join — so a second request would learn nothing.
+ *
+ * ## Setting work for one section, and for a subject
+ *
+ * `create` accepts `section_id` and `subject_id`, and the form now offers both, as `homework/new`
+ * does. A section confines the assignment to it — `list()` and `findById()` show a sectioned
+ * assignment only to that section's students, and `submit()` refuses anyone else — so the list says
+ * which section. Its name comes from the class list's nested `sections`, because `list()` joins no
+ * `Section`.
+ *
+ * The subject is narrowed to the chosen class's curriculum — the owner's decision D30. `assertReferences()`
+ * runs `homework.service.assertOnCurriculum()`, which refuses with a 422 on `subject_id` a subject that
+ * has no active `class_subjects` row for the class, whole-class or — when a section is named — that
+ * section's. So the picker offers those subjects only — `useCurriculum`, one
+ * `GET /subjects?class_id=&section_id=`, which answers by the same rule — waits for a class, is cleared
+ * when the class changes, and is cleared when a change of section takes the chosen subject off the
+ * curriculum. If the curriculum cannot be read, no subject can be named here and the assignment can
+ * still be set without one.
  */
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api, saveFile } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
+import { useCurriculum } from '@/lib/useTimetablePickers';
 import { EditDialog } from '@/components/editDialog';
 import {
   Field,
@@ -92,7 +123,10 @@ const TABS = [
 interface Assignment {
   id: number;
   title: string;
+  /** The work being set — up to 5000 characters, nullable. See the header. */
+  description: string | null;
   class_id: number;
+  /** Null is the whole class; a section confines the work to it. Named via `ClassOption.sections`. */
   section_id: number | null;
   assigned_date: string | null;
   due_date: string | null;
@@ -142,9 +176,14 @@ interface Submission {
   } | null;
 }
 
+/**
+ * A class as `GET /classes` returns it, with the sections `list()` nests in every row — which is what
+ * feeds the section picker and names a sectioned assignment's section, with no second request.
+ */
 interface ClassOption {
   id: number;
   name: string;
+  sections?: { id: number; name: string; is_active: boolean }[] | null;
 }
 
 const STATUSES = ['draft', 'published', 'closed'];
@@ -202,12 +241,17 @@ export default function AssignmentsPage() {
   const classes = useCollection<ClassOption>('/classes', useMemo(() => ({ limit: 100 }), []));
 
   const [creating, setCreating] = useState(false);
+
   const [editing, setEditing] = useState<Assignment | null>(null);
   const [submitting, setSubmitting] = useState<Assignment | null>(null);
+  /* The row whose Details dialog is open — see the header on why it is not fetched again. */
+  const [viewing, setViewing] = useState<Assignment | null>(null);
 
   /* create */
   const [title, setTitle] = useState('');
   const [classId, setClassId] = useState('');
+  const [sectionId, setSectionId] = useState('');
+  const [subjectId, setSubjectId] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [totalMarks, setTotalMarks] = useState('');
   const [description, setDescription] = useState('');
@@ -269,6 +313,51 @@ export default function AssignmentsPage() {
     return () => controller.abort();
   }, [ownSubmissions, mineAttempt]);
 
+  /* The chosen class's sections, nested in its own row — see `ClassOption`. */
+  const sections = useMemo(
+    () => classes.rows.find((row) => String(row.id) === classId)?.sections ?? [],
+    [classes.rows, classId]
+  );
+
+  /*
+   * D30 — the subjects the create form offers: the chosen class's curriculum, narrowed to the chosen
+   * section, read while the dialog is open. `GET /subjects` needs `subjects.view`, which is not the
+   * `assignments.manage` that opened the form, so it can fail on its own — the field then says so and
+   * the assignment is still settable without one. See the header.
+   */
+  const curriculum = useCurriculum(classId, sectionId, canManage && creating);
+  const offeredSubjects = curriculum.state === 'ready' ? curriculum.rows : [];
+
+  /*
+   * A subject of the whole class stays on the curriculum whichever section is named; one that is on it
+   * only for the section being left does not. The section's curriculum is read afresh, so the test runs
+   * once it arrives: a chosen subject it does not hold is cleared rather than sent to be refused.
+   */
+  useEffect(() => {
+    if (curriculum.state !== 'ready') return;
+    setSubjectId((prev) => (prev && !curriculum.rows.some((row) => String(row.id) === prev) ? '' : prev));
+  }, [curriculum]);
+
+  /*
+   * Every section's name by id, for the Class column and the Details dialog. Empty for a caller who
+   * cannot read the class list — a student or parent holds no `classes.view` — and the cell then says
+   * "one section", never the id.
+   */
+  const sectionNames = useMemo(() => {
+    const byId = new Map<number, string>();
+    for (const klass of classes.rows) {
+      for (const section of klass.sections ?? []) byId.set(section.id, section.name);
+    }
+    return byId;
+  }, [classes.rows]);
+
+  /** "all sections", the section's name, or "one section" where the name cannot be read. */
+  const scopeOf = useCallback(
+    (row: Assignment) =>
+      row.section_id === null ? 'all sections' : sectionNames.get(row.section_id) ?? 'one section',
+    [sectionNames]
+  );
+
   async function create() {
     if (busy) return;
     setBusy(true);
@@ -280,6 +369,9 @@ export default function AssignmentsPage() {
         class_id: classId,
         status: createStatus,
       };
+      /* Both optional and both nullable, so left out when blank: no section is the whole class. */
+      if (sectionId) body.section_id = sectionId;
+      if (subjectId) body.subject_id = subjectId;
       if (dueDate) body.due_date = dueDate;
       if (totalMarks.trim()) body.total_marks = totalMarks.trim();
       if (description.trim()) body.description = description.trim();
@@ -294,6 +386,8 @@ export default function AssignmentsPage() {
       setCreating(false);
       setTitle('');
       setClassId('');
+      setSectionId('');
+      setSubjectId('');
       setDueDate('');
       setTotalMarks('');
       setDescription('');
@@ -304,7 +398,16 @@ export default function AssignmentsPage() {
         setFieldErrors(Array.isArray(caught.details) ? caught.fieldErrors() : {});
         setError(
           Array.isArray(caught.details)
-            ? caught.bannerFor(['title', 'class_id', 'due_date', 'total_marks', 'description', 'status'])
+            ? caught.bannerFor([
+                'title',
+                'class_id',
+                'section_id',
+                'subject_id',
+                'due_date',
+                'total_marks',
+                'description',
+                'status',
+              ])
             : caught.message
         );
       } else {
@@ -354,7 +457,12 @@ export default function AssignmentsPage() {
       const body: Record<string, unknown> = { outcome };
       /* Blank is null — *not marked* — and is a different answer from a mark of zero. */
       body.marks_obtained = marks.trim() === '' ? null : marks.trim();
-      if (feedback.trim()) body.feedback = feedback.trim();
+      /*
+       * Blank is null here too, so clearing the box clears the feedback. It used to be left out when
+       * blank, and `review()` keeps a field it is not sent — so feedback cleared in this dialog
+       * stayed on the submission, where the Submissions tab now shows it to the student.
+       */
+      body.feedback = feedback.trim() === '' ? null : feedback.trim();
 
       await api.patch(`/assignments/submissions/${reviewing.id}/review`, body);
       success(
@@ -410,11 +518,15 @@ export default function AssignmentsPage() {
       {
         key: 'title',
         header: 'Assignment',
+        /* The description's first line under the title; the whole of it is in Details. */
         cell: (row) => (
-          <div>
+          <div className="max-w-sm">
             <span className="font-medium">{row.title}</span>
             {row.subject ? (
               <span className="block text-xs text-muted-soft">{row.subject.name}</span>
+            ) : null}
+            {row.description ? (
+              <span className="mt-0.5 block text-xs text-muted line-clamp-1">{row.description}</span>
             ) : null}
           </div>
         ),
@@ -422,7 +534,13 @@ export default function AssignmentsPage() {
       {
         key: 'class',
         header: 'Class',
-        cell: (row) => row.class?.name ?? <span className="text-muted-soft">—</span>,
+        /* With the section, because naming one confines the work to it — see the header. */
+        cell: (row) => (
+          <span className="whitespace-nowrap">
+            {row.class?.name ?? <span className="text-muted-soft">—</span>}
+            <span className="ml-2 text-xs text-muted-soft">{scopeOf(row)}</span>
+          </span>
+        ),
       },
       {
         key: 'due',
@@ -438,54 +556,58 @@ export default function AssignmentsPage() {
           row.total_marks === null ? <span className="text-muted-soft">unmarked</span> : row.total_marks,
       },
       { key: 'status', header: 'Status', cell: (row) => <StatusBadge status={row.status} /> },
-      ...(canManage || canSubmit
-        ? [
-            {
-              key: 'actions',
-              header: 'Actions',
-              cell: (row: Assignment) => {
-                /* What this student has already done with it — see `mine`. Undefined: nothing yet. */
-                const handed = mine.get(row.id);
-                return (
-                  <div className="flex flex-wrap gap-1">
-                    {canManage ? (
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-secondary"
-                        onClick={() => setEditing(row)}
-                      >
-                        Edit
-                      </button>
-                    ) : null}
-                    {/* Only published work can be handed in; a draft is not visible to a student. */}
-                    {canSubmit && row.status === 'published' ? (
-                      handed !== undefined && handed !== 'returned' ? (
-                        <span className="inline-flex items-center px-2 text-xs text-muted-soft">
-                          {handed === 'reviewed' ? 'Handed in · marked' : 'Handed in'}
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-primary"
-                          onClick={() => {
-                            setSubmitting(row);
-                            setSubmissionText('');
-                            setAttachment(null);
-                            setError(null);
-                          }}
-                        >
-                          {handed === 'returned' ? 'Resubmit' : 'Submit work'}
-                        </button>
-                      )
-                    ) : null}
-                  </div>
-                );
-              },
-            } as Column<Assignment>,
-          ]
-        : []),
+      {
+        /*
+         * Details for everyone who can see the row — the student about to hand in is the one who
+         * most needs the description — then Edit and Submit, each behind its own key.
+         */
+        key: 'actions',
+        header: 'Actions',
+        cell: (row: Assignment) => {
+          /* What this student has already done with it — see `mine`. Undefined: nothing yet. */
+          const handed = mine.get(row.id);
+          return (
+            <div className="flex flex-wrap gap-1">
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setViewing(row)}>
+                Details
+                <span className="sr-only"> of {row.title}</span>
+              </button>
+              {canManage ? (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-secondary"
+                  onClick={() => setEditing(row)}
+                >
+                  Edit
+                </button>
+              ) : null}
+              {/* Only published work can be handed in; a draft is not visible to a student. */}
+              {canSubmit && row.status === 'published' ? (
+                handed !== undefined && handed !== 'returned' ? (
+                  <span className="inline-flex items-center px-2 text-xs text-muted-soft">
+                    {handed === 'reviewed' ? 'Handed in · marked' : 'Handed in'}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={() => {
+                      setSubmitting(row);
+                      setSubmissionText('');
+                      setAttachment(null);
+                      setError(null);
+                    }}
+                  >
+                    {handed === 'returned' ? 'Resubmit' : 'Submit work'}
+                  </button>
+                )
+              ) : null}
+            </div>
+          );
+        },
+      },
     ],
-    [canManage, canSubmit, mine]
+    [canManage, canSubmit, mine, scopeOf]
   );
 
   const submissionColumns = useMemo<Column<Submission>[]>(
@@ -533,6 +655,28 @@ export default function AssignmentsPage() {
             <span className="text-muted-soft">not marked</span>
           ) : (
             row.marks_obtained
+          ),
+      },
+      {
+        /*
+         * The reviewer's feedback, in full — "Shown to the student with the result" is what the review
+         * dialog tells the teacher writing it, and this column is where that becomes true. Wrapped
+         * inside a bounded width rather than cut to a line: feedback is the part of a result a
+         * student is meant to read, and a clipped sentence would hide the end of it.
+         *
+         * `listSubmissions()` returns it on every row (`present()` drops only the path), and narrows
+         * a student to their own rows and a parent to their children's — so nobody reads a
+         * classmate's feedback here.
+         */
+        key: 'feedback',
+        header: 'Feedback',
+        cell: (row) =>
+          row.feedback ? (
+            <p className="max-w-xs whitespace-pre-wrap break-words text-sm text-ink-soft">
+              {row.feedback}
+            </p>
+          ) : (
+            <span className="text-muted-soft">—</span>
           ),
       },
       {
@@ -734,8 +878,21 @@ export default function AssignmentsPage() {
             required
             value={classId}
             error={fieldErrors.class_id}
-            onChange={(event) => setClassId(event.target.value)}
-            hint={classes.loading ? 'Loading classes…' : 'Every student of the class can hand work in.'}
+            onChange={(event) => {
+              /*
+               * The section and the subject go with the class: `assertReferences()` refuses a section
+               * of another class and a subject off this one's curriculum, and a choice carried over
+               * from the previous class is a 422 nobody can see coming.
+               */
+              setClassId(event.target.value);
+              setSectionId('');
+              setSubjectId('');
+            }}
+            hint={
+              classes.loading
+                ? 'Loading classes…'
+                : 'Every student of the class can hand work in — or of one section, if you name it below.'
+            }
           >
             <option value="">Choose a class…</option>
             {classes.rows.map((row) => (
@@ -743,6 +900,72 @@ export default function AssignmentsPage() {
                 {row.name}
               </option>
             ))}
+          </SelectField>
+
+          <SelectField
+            id="section_id"
+            label="Section"
+            value={sectionId}
+            error={fieldErrors.section_id}
+            /* The subject is re-tested against the section's curriculum once it arrives — see above. */
+            onChange={(event) => setSectionId(event.target.value)}
+            disabled={!classId || sections.length === 0}
+            hint="Naming a section confines the assignment to it: only that section’s students see it and can hand work in. Left blank, the whole class owes it."
+          >
+            {/* The empty option carries the reason the select is disabled, and is an answer when it is not. */}
+            <option value="">
+              {!classId
+                ? 'Choose a class first'
+                : sections.length === 0
+                  ? 'This class has no sections'
+                  : 'All sections of this class'}
+            </option>
+            {sections.map((section) => (
+              <option key={section.id} value={section.id}>
+                {section.name}
+                {section.is_active ? '' : ' — inactive'}
+              </option>
+            ))}
+          </SelectField>
+
+          <SelectField
+            id="subject_id"
+            label="Subject"
+            value={subjectId}
+            error={fieldErrors.subject_id}
+            onChange={(event) => setSubjectId(event.target.value)}
+            disabled={!classId || curriculum.state !== 'ready'}
+            /* D30 — see the header. The server refuses a subject the chosen class does not teach. */
+            hint={
+              curriculum.state === 'failed'
+                ? 'The class’s subjects could not be loaded, so a subject cannot be chosen here. Reading them needs the separate “View subjects” permission. The assignment can be set without one.'
+                : classId && curriculum.state === 'ready' && offeredSubjects.length === 0
+                  ? 'No subject is on this class’s curriculum yet, so none can be named. Subjects are added to a class on the subject’s own screen; the assignment can be set without one.'
+                  : `Optional. Only subjects on the chosen class’s curriculum are offered — one added for a single section counts only when that section is named — because the server refuses any other.${
+                      curriculum.state === 'ready' && curriculum.total > curriculum.rows.length
+                        ? ` Showing the first ${curriculum.rows.length} of ${curriculum.total}.`
+                        : ''
+                    }`
+            }
+          >
+            <option value="">
+              {!classId
+                ? 'Choose a class first'
+                : curriculum.state === 'loading'
+                  ? 'Loading the class’s subjects…'
+                  : curriculum.state === 'failed'
+                    ? 'Unavailable'
+                    : 'No subject'}
+            </option>
+            {classId
+              ? offeredSubjects.map((subject) => (
+                  /* Retired subjects are marked, not withheld — the service does not test `is_active`. */
+                  <option key={subject.id} value={subject.id}>
+                    {subject.name} ({subject.code})
+                    {subject.is_active ? '' : ' — inactive'}
+                  </option>
+                ))
+              : null}
           </SelectField>
 
           <Field
@@ -800,12 +1023,22 @@ export default function AssignmentsPage() {
         save={(row, body) => api.patch(`/assignments/${row.id}`, body)}
         initial={(row) => ({
           title: row.title,
+          description: row.description ?? '',
           due_date: row.due_date ?? '',
           total_marks: row.total_marks === null ? '' : String(row.total_marks),
           status: row.status,
         })}
         fields={[
           { name: 'title', label: 'Title', required: true },
+          {
+            /* Nullable: the schema's `.allow(null)` is what lets a description be cleared. */
+            name: 'description',
+            label: 'Description',
+            kind: 'textarea',
+            rows: 6,
+            nullable: true,
+            hint: 'The work itself, up to 5000 characters. The students it is set for see it once it is published.',
+          },
           { name: 'due_date', label: 'Due', kind: 'date', nullable: true },
           {
             name: 'total_marks',
@@ -825,6 +1058,58 @@ export default function AssignmentsPage() {
           },
         ]}
       />
+
+      {/* The Details dialog — the row as the list holds it, with the whole description. See the header. */}
+      <Modal
+        open={viewing !== null}
+        onClose={() => setViewing(null)}
+        title={viewing ? viewing.title : ''}
+        size="lg"
+        footer={
+          <button type="button" className="btn btn-secondary" onClick={() => setViewing(null)}>
+            Close
+          </button>
+        }
+      >
+        {viewing ? (
+          <div className="space-y-4">
+            <dl className="grid grid-cols-[minmax(0,auto)_1fr] gap-x-4 gap-y-1.5 text-sm">
+              <dt className="text-muted">Class</dt>
+              <dd>
+                {viewing.class?.name ?? <span className="text-muted-soft">—</span>}
+                <span className="ml-2 text-xs text-muted-soft">{scopeOf(viewing)}</span>
+              </dd>
+              <dt className="text-muted">Subject</dt>
+              <dd>{viewing.subject?.name ?? <span className="text-muted-soft">—</span>}</dd>
+              <dt className="text-muted">Due</dt>
+              {/* DATEONLY, printed as sent — as in the Due column. */}
+              <dd>{viewing.due_date ?? <span className="text-muted-soft">no date</span>}</dd>
+              <dt className="text-muted">Out of</dt>
+              <dd>
+                {viewing.total_marks === null ? (
+                  <span className="text-muted-soft">not marked out of anything</span>
+                ) : (
+                  viewing.total_marks
+                )}
+              </dd>
+              <dt className="text-muted">Status</dt>
+              <dd>
+                <StatusBadge status={viewing.status} />
+              </dd>
+            </dl>
+
+            <section aria-label="The description" className="rounded-lg border border-border p-3">
+              {viewing.description ? (
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">
+                  {viewing.description}
+                </p>
+              ) : (
+                <p className="text-sm text-muted">No description was written for this assignment.</p>
+              )}
+            </section>
+          </div>
+        ) : null}
+      </Modal>
 
       <Modal
         open={submitting !== null}

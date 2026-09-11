@@ -390,6 +390,7 @@ async function verifyHttp() {
       await db.Section.destroy({ where: { school_id: created.schools }, force: true });
       await db.Class.destroy({ where: { school_id: created.schools }, force: true });
       await db.AcademicSession.destroy({ where: { school_id: created.schools }, force: true });
+      await db.SchoolSetting.destroy({ where: { school_id: created.schools } });
     }
     if (created.subscriptions.length) {
       await db.UsageRecord.destroy({ where: { subscription_id: created.subscriptions } });
@@ -696,6 +697,16 @@ async function verifyHttp() {
     check('  and by class, NAMED rather than left as ids',
       (students.by_class || []).map((c) => [c.class_name, c.count]).sort(),
       [['Grade 1', 3], ['Grade 2', 2]]);
+    check('  each with its session, since every year has a Grade 1 and only a principal can read the list',
+      (students.by_class || []).every((c) => c.academic_session_id && typeof c.session_name === 'string'), true);
+    /* D35 — the report is headed with the name the school uses, which an export prints. */
+    const displayName = await db.SchoolSetting.create({
+      school_id: schoolA.id, organization_id: org.id, name: 'Verify Reports Display Name',
+    });
+    check('D35 — a report is headed with the school\'s display name once it has set one',
+      dataOf(await expectOk('/reports/students', { token: principalA }, 200)).report.school.name,
+      'Verify Reports Display Name');
+    await displayName.destroy();
     check('a status filter narrows it',
       dataOf(await expectOk(`/reports/students?status=${STUDENT_STATUS.ACTIVE}`, { token: principalA }, 200)).report.total,
       3);
@@ -813,6 +824,15 @@ async function verifyHttp() {
       [teachers.total, teachers.active, teachers.inactive], [4, 3, 1]);
     check('  grouped by the only taxonomy §15.3 gives a teacher',
       [teachers.by_designation['Senior Teacher'], teachers.by_designation['Lab Assistant']], [3, 1]);
+    /*
+     * The `is_active` filter is respected by the active count, not overridden by it. "Inactive only"
+     * used to count every active teacher as active and report a negative number inactive.
+     */
+    const inactiveOnly = dataOf(await expectOk('/reports/teachers?is_active=false', { token: principalA }, 200)).report;
+    const activeOnly = dataOf(await expectOk('/reports/teachers?is_active=true', { token: principalA }, 200)).report;
+    check('  and filtered to inactive teachers it counts the one inactive teacher, none active — never a negative',
+      [[inactiveOnly.total, inactiveOnly.active, inactiveOnly.inactive], [activeOnly.total, activeOnly.active, activeOnly.inactive]],
+      [[1, 0, 1], [3, 3, 0]]);
 
     /* ── 7. Subscription Report ── */
 
@@ -848,6 +868,16 @@ async function verifyHttp() {
 
     const teacherSubs = await call('/reports/subscriptions', { token: teacher });
     check('the Subscription Report is refused to a school-side caller', teacherSubs.status, 403);
+    /*
+     * Refused by the permission today — but nothing stops a Super Admin granting a school role the key,
+     * and the query then applied only the organization, so a school read all three schools'
+     * subscriptions. Called on the service with a school tenant, which is the caller that grant makes.
+     */
+    const schoolScoped = await service.subscriptions(
+      { tenant: { isPlatform: false, level: 'school', organizationId: org.id, schoolId: schoolA.id } }, {}
+    );
+    check('  and were a school role ever granted it, a school-scoped caller counts its own school only — §30 Rule 2',
+      schoolScoped.total, 1);
 
     /* ── FR-REPORT-001's first-named actor, on the six school reports ── */
 

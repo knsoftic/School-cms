@@ -445,7 +445,7 @@ async function verifyHttp() {
 
   try {
     const roles = {};
-    for (const slug of [ROLES.SUPER_ADMIN, ROLES.PRINCIPAL, ROLES.TEACHER]) {
+    for (const slug of [ROLES.SUPER_ADMIN, ROLES.PRINCIPAL, ROLES.TEACHER, ROLES.LIBRARIAN]) {
       const role = await db.Role.findOne({ where: { slug } });
       if (!role) throw new Error(`seeded role missing: ${slug}`);
       roles[slug] = role;
@@ -535,6 +535,8 @@ async function verifyHttp() {
       ['principal-d', ROLES.PRINCIPAL, 'Verify T Principal D', 'vte_principal_d', org.id, schoolD.id],
       ['teacher-linked', ROLES.TEACHER, 'Verify T Linked', 'vte_linked', org.id, schoolA.id],
       ['teacher-loose', ROLES.TEACHER, 'Verify T Loose', 'vte_loose', org.id, schoolA.id],
+      /* Holds teachers.view to lend to teachers, and not teachers.manage. */
+      ['librarian', ROLES.LIBRARIAN, 'Verify T Librarian', 'vte_librarian', org.id, schoolA.id],
     ];
     const userId = {};
     for (const [key, slug, name, username, organization_id, school_id] of people) {
@@ -568,6 +570,7 @@ async function verifyHttp() {
     const principalD = await signIn(`principal-d@${DOMAIN}`);
     const linked = await signIn(`teacher-linked@${DOMAIN}`);
     const loose = await signIn(`teacher-loose@${DOMAIN}`);
+    const librarian = await signIn(`librarian@${DOMAIN}`);
     check('all six fixtures sign in', [platform, principalA, principalB, principalC, linked, loose].every(
       (t) => typeof t === 'string'
     ), true);
@@ -627,6 +630,27 @@ async function verifyHttp() {
     check('joining_date is stored as a plain date', teacherOne.joining_date, '2024-01-15');
     check('is_active defaults to true', teacherOne.is_active, true);
     check('the school comes from the tenant, not the body', Number(teacherOne.school_id), schoolA.id);
+
+    /*
+     * The directory, not the HR record, for a reader who cannot manage teachers. The Librarian holds
+     * teachers.view to lend to teachers, and read every teacher's salary, date of birth, address and
+     * the office's notes through the list and the record alike.
+     */
+    await db.Teacher.update(
+      { salary: 50000, date_of_birth: '1985-03-02', address: '12 Hidden Lane', notes: 'Office only', metadata: { hr: 1 } },
+      { where: { id: teacherOne.id } }
+    );
+    const HR_ONLY = ['salary', 'date_of_birth', 'address', 'notes', 'metadata'];
+    const libraryList = dataOf(await expectOk('/teachers?limit=50', { token: librarian }, 200));
+    const libraryRow = libraryList.find((t) => t.id === teacherOne.id) || {};
+    const libraryRecord = dataOf(await expectOk(`/teachers/${teacherOne.id}`, { token: librarian }, 200)).teacher;
+    check('a reader without teachers.manage sees the directory entry — name, employee id, designation',
+      [libraryRow.first_name, libraryRow.employee_id, libraryRecord.designation], ['Asha', 'VTE-T1', 'Senior Teacher']);
+    check('  and none of the HR record, in the list or the record',
+      [HR_ONLY.filter((k) => k in libraryRow), HR_ONLY.filter((k) => k in libraryRecord)], [[], []]);
+    const principalRecord = dataOf(await expectOk(`/teachers/${teacherOne.id}`, { token: principalA }, 200)).teacher;
+    check('  while the Principal, who manages teachers, keeps it',
+      [Number(principalRecord.salary), principalRecord.address], [50000, '12 Hidden Lane']);
 
     const dup = await call('/teachers', {
       method: 'POST',
@@ -888,6 +912,8 @@ async function verifyHttp() {
     check('the linked teacher gets their own dashboard', Number(dataOf(dash).teacher.id), Number(teacherOne.id));
     check('the dashboard is resolved from the token, not a path id', dataOf(dash).teacher.employee_id, 'VTE-T1');
     check('it reports assignment counts', typeof dataOf(dash).counts.subjects, 'number');
+    check('  and shows the teacher their record without the office\'s notes and metadata about them',
+      [['notes', 'metadata'].filter((k) => k in dataOf(dash).teacher), Number(dataOf(dash).teacher.salary)], [[], 50000]);
 
     const looseDash = await call('/teachers/dashboard', { token: loose });
     check('a teacher-role user with no teacher row is 404, not 403', looseDash.status, 404);

@@ -630,10 +630,9 @@ export default function NewStaffPage() {
               <>
                 <p className="field-label mb-1.5">Linked account</p>
                 <p className="field-hint">
-                  The account list could not be loaded, so a login cannot be linked here. The staff
-                  record can still be created — but there is no staff edit screen yet, so the link
-                  cannot be added afterwards either. If this person needs a login, reload and try again
-                  before saving.
+                  The account list could not be loaded, so a login cannot be linked here. Reading it
+                  needs the separate &ldquo;View users&rdquo; permission. The staff record can still be
+                  created, and the link added later from the record itself.
                 </p>
                 {fieldErrors.user_id ? (
                   <p className="field-error mt-1.5">{fieldErrors.user_id}</p>

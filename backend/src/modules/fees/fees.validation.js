@@ -203,8 +203,16 @@ const listPayments = listQuery(
 
 const showQuery = Joi.object({ school_id: fields.school_id });
 
+/** `GET /mine` — at most a student to narrow to, a session and a status; never a school or a class. */
+const mine = Joi.object({
+  student_id: fields.student_id,
+  academic_session_id: Joi.number().integer().min(1),
+  status: Joi.string().valid(...Object.values(STUDENT_FEE_STATUS)),
+});
+
 module.exports = {
   schemas: {
+    mine,
     createStructure,
     updateStructure,
     assign,

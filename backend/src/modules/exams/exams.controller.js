@@ -164,6 +164,29 @@ async function listResults(req, res) {
 
 async function classResult(req, res) {
   const exam = await service.findExam(req, req.params.id);
+
+  /*
+   * FR-EXAM-004's "Class Result" as a PDF — SRS:1030 makes results "available for viewing, PDF export,
+   * and printing", and only the single card had an export. The whole class, not a page of it: a
+   * printed class result that stopped at the page size would be a different document. Recorded in the
+   * trail for the reason `showResult()` gives.
+   */
+  if (req.query.format === REPORT_FORMATS.PDF) {
+    const buffer = await service.classResultPdf(exam, req.query);
+    describeActivity(req, {
+      entityType: 'exam',
+      entityId: exam.id,
+      description: `Exported the class result of "${exam.name}" as PDF`,
+      metadata: { exam_id: exam.id, bytes: buffer.length },
+    });
+    res.setHeader('Content-Type', PDF_MIME);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="class-result-${exam.id}-${new Date().toISOString().slice(0, 10)}.pdf"`
+    );
+    return res.status(200).send(buffer);
+  }
+
   const pagination = getPagination(req);
   const result = await service.listResults(
     req,

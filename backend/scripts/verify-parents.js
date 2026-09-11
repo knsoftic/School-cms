@@ -650,6 +650,22 @@ async function verifyHttp() {
     check('the school comes from the tenant', Number(parent.school_id), schoolA.id);
     check('a verification email was issued', dataOf(createdRes).verificationEmailSent, true);
 
+    /*
+     * A Teacher holds parents.view to reach a child's family, and read every parent's national ID and
+     * address through it — and could find a parent by national ID. Without parents.manage, neither.
+     */
+    await db.Parent.update({ national_id: 'NID-4417-SECRET', address: '9 Quiet Street' }, { where: { id: parent.id } });
+    const REGISTRY_ONLY = ['national_id', 'address', 'occupation'];
+    const teacherRow = dataOf(await expectOk('/parents?limit=50', { token: teacher }, 200)).find((p) => p.id === parent.id) || {};
+    const teacherRecord = dataOf(await expectOk(`/parents/${parent.id}`, { token: teacher }, 200)).parent;
+    check('a Teacher reads a parent\'s name, relation and contact — the directory',
+      [teacherRecord.name, teacherRecord.relation, teacherRecord.email], ['Yusuf Bello', 'Father', `yusuf.home@${DOMAIN}`]);
+    check('  and not the national ID, address or occupation, in the list or the record',
+      [REGISTRY_ONLY.filter((k) => k in teacherRow), REGISTRY_ONLY.filter((k) => k in teacherRecord)], [[], []]);
+    check('  nor can find a parent by national ID, which the Principal still can',
+      [dataOf(await expectOk('/parents?q=4417-SECRET', { token: teacher }, 200)).length,
+        dataOf(await expectOk('/parents?q=4417-SECRET', { token: principalA }, 200)).length], [0, 1]);
+
     /* The account itself. */
     const account = await db.User.findByPk(parent.user_id);
     check('an account was created with the parent role', Number(account.role_id), roles[ROLES.PARENT].id);
@@ -917,10 +933,19 @@ async function verifyHttp() {
       return changed.body.data.accessToken;
     })();
 
+    /* One child placed, so the dashboard has a class and a section to name. */
+    const kidClass = await db.Class.create({ school_id: schoolA.id, organization_id: org.id, name: 'Parents Grade 3' });
+    const kidSection = await db.Section.create({ school_id: schoolA.id, organization_id: org.id, class_id: kidClass.id, name: 'Blue' });
+    await kidOne.update({ class_id: kidClass.id, section_id: kidSection.id });
+
     const dash = await expectOk('/parents/dashboard', { token: parentToken }, 200);
     check('the parent gets their own dashboard', Number(dataOf(dash).parent.id), Number(parent.id));
     check('with both children', dataOf(dash).counts.children, 2);
     check('and an active count', dataOf(dash).counts.activeChildren, 2);
+    /* A parent holds no `classes.view`, so the dashboard is the only place the class can be named. */
+    const placed = (dataOf(dash).children || []).map((link) => link.student).find((s) => s && s.id === kidOne.id) || {};
+    check('each child comes with their class and section by name (SRS:842)',
+      [placed.class && placed.class.name, placed.section && placed.section.name], ['Parents Grade 3', 'Blue']);
 
     const looseDash = await call('/parents/dashboard', { token: looseParent });
     check('a parent-role user with no profile is 404, not 403', looseDash.status, 404);
@@ -951,6 +976,84 @@ async function verifyHttp() {
 
     const teacherRead = await expectOk('/parents', { token: teacher }, 200);
     check('a teacher may read parents', Array.isArray(dataOf(teacherRead)), true);
+
+    /*
+     * ═══ D17 — the self-service views: a student's own records, and a parent's for each child ═══
+     *
+     * SRS:105 gives a student "access relevant to their own records", SRS:835 a parent "records for all
+     * linked children", and the catalogue granted both `students.self.view`, `attendance.self.view` and
+     * `fees.self.view` with nothing mounting any of them. Bilal gets a login of his own, so the student
+     * half and the parent half are each asserted against the other.
+     */
+    await kidTwo.update({ class_id: kidClass.id });
+    const studentRole = await db.Role.findOne({ where: { slug: ROLES.STUDENT } });
+    const bilalUser = await db.User.create({
+      role_id: studentRole.id, organization_id: org.id, school_id: schoolA.id, name: 'Verify P Bilal',
+      email: `bilal@${DOMAIN}`, username: 'vpa_bilal', password_hash, status: USER_STATUS.ACTIVE, must_change_password: false,
+    });
+    created.users.push(bilalUser.id);
+    await kidTwo.update({ user_id: bilalUser.id });
+    const bilalToken = await signIn(`bilal@${DOMAIN}`);
+
+    const mark = (student, day, status) => db.StudentAttendance.create({
+      school_id: schoolA.id, organization_id: org.id, student_id: student.id, class_id: kidClass.id,
+      attendance_date: day, status,
+    });
+    await mark(kidOne, '2026-06-12', 'absent');
+    await mark(kidOne, '2026-06-13', 'present');
+    await mark(kidTwo, '2026-06-12', 'present');
+    const aminaFee = await db.StudentFee.create({
+      school_id: schoolA.id, organization_id: org.id, student_id: kidOne.id, component: 'monthly_fee',
+      title: 'June tuition', currency: 'USD', amount: 300, net_amount: 300, paid_amount: 100, pending_amount: 200,
+      due_date: '2026-06-30', status: 'partially_paid',
+    });
+    await db.FeePayment.create({
+      school_id: schoolA.id, organization_id: org.id, student_fee_id: aminaFee.id, student_id: kidOne.id,
+      receipt_number: `${CODE_PREFIX}RCP1`, currency: 'USD', amount: 100, method: 'cash', paid_at: new Date('2026-06-10T09:00:00Z'),
+    });
+
+    const idsOf = (res) => (dataOf(res).students || []).map((row) => Number((row.student || row).id)).sort((a, b) => a - b);
+    const bothKids = [Number(kidOne.id), Number(kidTwo.id)].sort((a, b) => a - b);
+
+    const parentRecords = await expectOk('/students/mine', { token: parentToken }, 200);
+    const bilalRecord = await expectOk('/students/mine', { token: bilalToken }, 200);
+    check('D17 — a parent reads each linked child\'s student record, and a student only their own',
+      [idsOf(parentRecords), idsOf(bilalRecord)], [bothKids, [Number(kidTwo.id)]]);
+    const aminaRecord = dataOf(parentRecords).students.find((s) => Number(s.id) === Number(kidOne.id)) || {};
+    check('  named and placed — the class by name — and without the stored photo path',
+      [aminaRecord.class && aminaRecord.class.name, 'photo_path' in aminaRecord, aminaRecord.has_photo],
+      ['Parents Grade 3', false, false]);
+    check('  nor the office\'s working notes about the child — the record, not the staff row',
+      ['notes', 'metadata', 'leaving_reason', 'user_id'].filter((key) => key in aminaRecord), []);
+
+    const juneAttendance = dataOf(await expectOk('/attendance/mine?period=monthly&date=2026-06-15', { token: parentToken }, 200)).attendance;
+    const aminaJune = juneAttendance.students.find((row) => Number(row.student.id) === Number(kidOne.id)) || {};
+    check('D17 — a parent reads each child\'s attendance for the month: the counts, the percentage and the days',
+      [juneAttendance.label, idsOf({ body: { data: juneAttendance } }), aminaJune.counts && aminaJune.counts.absent,
+        aminaJune.percentage, (aminaJune.records || []).map((r) => r.status)],
+      ['2026-06', bothKids, 1, 50, ['absent', 'present']]);
+    const bilalJune = dataOf(await expectOk('/attendance/mine?period=monthly&date=2026-06-15', { token: bilalToken }, 200)).attendance;
+    check('  and a student only their own', idsOf({ body: { data: bilalJune } }), [Number(kidTwo.id)]);
+
+    const aminaFees = dataOf(await expectOk(`/fees/mine?student_id=${kidOne.id}`, { token: parentToken }, 200)).students;
+    check('D17 — a parent reads a child\'s fees with what is paid and pending, the receipts, and the total still owed',
+      [aminaFees.length, (aminaFees[0].fees || []).map((f) => [f.title, Number(f.pending_amount)]),
+        (aminaFees[0].payments || []).map((p) => p.receipt_number), aminaFees[0].outstanding],
+      [1, [['June tuition', 200]], [`${CODE_PREFIX}RCP1`], [{ currency: 'USD', amount: 200 }]]);
+    check('  and none of what staff write for staff: not who collected it, nor the receipt file, the ledger entry or the notes',
+      [...Object.keys((aminaFees[0].fees || [])[0] || {}), ...Object.keys((aminaFees[0].payments || [])[0] || {})]
+        .filter((key) => ['collected_by', 'receipt_path', 'income_id', 'remarks', 'waiver_reason',
+          'reminder_sent_at', 'created_by'].includes(key)), []);
+
+    /* The narrowing holds: only a child of theirs, and a student only themselves. */
+    const otherChild = await call(`/fees/mine?student_id=${foreignKid.id}`, { token: parentToken });
+    const siblingPeek = await call(`/attendance/mine?student_id=${kidOne.id}`, { token: bilalToken });
+    check('  a parent cannot narrow to someone else\'s child, nor a student to their sibling',
+      [otherChild.status, codeOf(otherChild), siblingPeek.status, codeOf(siblingPeek)],
+      [403, 'STUDENT_NOT_LINKED', 403, 'STUDENT_NOT_LINKED']);
+    const teacherSelf = await call('/attendance/mine', { token: teacher });
+    check('  and a teacher, who holds attendance.self.view, is told there is no student or parent profile here',
+      [teacherSelf.status, codeOf(teacherSelf)], [404, 'SELF_PROFILE_MISSING']);
 
     /*
      * Deactivation has to reach the account, not just the profile. This is the one module that

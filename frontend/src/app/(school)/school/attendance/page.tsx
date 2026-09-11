@@ -33,6 +33,14 @@
  *   2. **The action button leads to a register, not a create form** — see the note on
  *      `PageHeader` below. It was omitted entirely until the register screen existed.
  *
+ * ## FR-ATT-002 is the third tab
+ *
+ * `GET /attendance/students/report` — "System generates Daily, Monthly, and Yearly attendance
+ * reports" and "calculates attendance Percentage" (SRS:892-894) — was mounted, verified, and had no
+ * caller anywhere in the frontend: this screen listed register rows and nothing else, so the
+ * percentage §16 asks for could not be seen by anyone. It is a tab here rather than a screen of its
+ * own for the reason the teacher register is: §33 names one Attendance screen.
+ *
  * ## The module gate needs nothing from this file
  *
  * `attendance.routes.js` mounts `requireModule(MODULES.ATTENDANCE)` at router level, so a school
@@ -45,12 +53,17 @@
 import Link from 'next/link';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 
+import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
-import { useCollection } from '@/lib/useCollection';
+import { localDay } from '@/lib/instants';
+import { EXPLAINED_CODES, useCollection } from '@/lib/useCollection';
+import type { Refusal } from '@/lib/useCollection';
+import { OPTION_LIMIT, useClassSections } from '@/lib/useTimetablePickers';
 import { Icon } from '@/components/icon';
 import { Tabs, TabPanel, useActiveTab } from '@/components/tabs';
 import type { TabDef } from '@/components/tabs';
 import {
+  Notice,
   SearchField,
   FilterBar,
   FilterSelect,
@@ -62,6 +75,7 @@ import {
   EmptyNotice,
   ErrorNotice,
   LoadingBlock,
+  MetricCard,
   PageHeader,
   Pagination,
   RefusalNotice,
@@ -704,6 +718,421 @@ function TeachersPanel() {
   );
 }
 
+/* ─────────────────────────────── the student report ─────────────────────────────── */
+
+/**
+ * `GET /attendance/students/report`, as `attendance.service.js report()` answers it inside
+ * `{ report }`.
+ *
+ * Every raw count arrives beside the percentage, deliberately — the service header says a consumer
+ * preferring another definition can compute it — so the screen shows the counts rather than only the
+ * figure they produce.
+ */
+interface AttendanceReport {
+  period: 'daily' | 'monthly' | 'yearly';
+  /** The period's own name as `periodRange()` builds it: `2026-09-05`, `2026-09` or `2026`. */
+  label: string;
+  /** Both `YYYY-MM-DD`, inclusive — the window the server derived from the anchor date. */
+  from: string;
+  to: string;
+  /** All four of §16's statuses, zero-filled by the service so a missing word is never a guess. */
+  counts: Record<string, number>;
+  marked: number;
+  attended: number;
+  /** Two decimals, and **null** when nothing was marked — an unknown rate, not a zero one. */
+  percentage: number | null;
+}
+
+/** FR-ATT-002's three periods, exactly — `Joi.string().valid('daily', 'monthly', 'yearly')`. */
+const PERIODS = [
+  { value: 'daily', label: 'Daily' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'yearly', label: 'Yearly' },
+] as const;
+
+/** A student as the picker needs one — `GET /students` returns the whole row; these are read. */
+interface StudentOption {
+  id: number;
+  student_id: string;
+  first_name: string;
+  last_name: string | null;
+  roll_number: string | null;
+}
+
+/* Pinned to `en-US`, as the dashboard pins its own, so a count is grouped the same way everywhere. */
+const COUNT = new Intl.NumberFormat('en-US');
+
+function studentLabel(row: StudentOption): string {
+  const name = [row.first_name, row.last_name].filter(Boolean).join(' ');
+  return `${name} (${row.roll_number ? `roll ${row.roll_number} · ` : ''}${row.student_id})`;
+}
+
+/** `2026-09` → `Sep 2026`, by slicing, for the reason `formatDateOnly` gives. */
+function periodTitle(report: AttendanceReport): string {
+  if (report.period === 'daily') return formatDateOnly(report.label);
+  const match = /^(\d{4})-(\d{2})$/.exec(report.label);
+  const month = match ? MONTHS[Number(match[2]) - 1] : undefined;
+  return match && month ? `${month} ${match[1]}` : report.label;
+}
+
+/**
+ * FR-ATT-002 — the period, the percentage, and the counts behind it.
+ *
+ * ## Monthly is the default, and the reason is the tab beside it
+ *
+ * A single day's attendance is the register the Students tab already lists, filtered by date; the
+ * month is the first figure that tab cannot give. §16 names no default and this is not a rule, only
+ * where the controls start — the period select changes it in one step.
+ *
+ * ## Class, section and student are narrowing, not required
+ *
+ * `report()` copies each into its `where` only when present, so none of them is needed: blank is the
+ * whole school. Each is a picker, never an id box — "Grade 7B is `class_id=12`" is not something an
+ * administrator can be asked to know. The class and section come from the register's own pair of
+ * lists (`useClassSections`), and the student from `GET /students?q=`, narrowed by whichever class
+ * and section are chosen, because a school's roll can be longer than the hundred rows one page holds.
+ * A picker the caller cannot feed — `classes.view` and `students.view` are separate grants from
+ * `attendance.view` — is left off rather than shown empty, and the report still runs without it.
+ */
+function ReportPanel() {
+  const { can } = useAuth();
+  const canPickClass = can('classes.view');
+  const canPickStudent = can('students.view');
+
+  const [period, setPeriod] = useState<string>('monthly');
+  /* The viewer's today: the anchor is a calendar day, and the UTC one is not theirs. */
+  const [date, setDate] = useState(() => localDay(new Date()) ?? '');
+  const [classId, setClassId] = useState('');
+  const [sectionId, setSectionId] = useState('');
+  const [studentId, setStudentId] = useState('');
+
+  const { classes, sections } = useClassSections(classId, canPickClass);
+
+  /* ── the student picker: a search over the roll, as the account pickers search accounts ── */
+
+  const [studentSearch, setStudentSearch] = useState('');
+  const [studentQuery, setStudentQuery] = useState('');
+  const [students, setStudents] = useState<StudentOption[]>([]);
+  const [studentTotal, setStudentTotal] = useState(0);
+  const [studentsFailed, setStudentsFailed] = useState(false);
+  /*
+   * The chosen student is remembered as a row, not only as an id. A new search refetches the list,
+   * and a choice that falls outside the new page would otherwise leave the select blank while the
+   * report is still narrowed to that child — a control that disagrees with what it is doing.
+   */
+  const [pinnedStudent, setPinnedStudent] = useState<StudentOption | null>(null);
+
+  /* 300 ms, as every search box here waits: `apiLimiter` sits in front of each keystroke. */
+  useEffect(() => {
+    const timer = setTimeout(() => setStudentQuery(studentSearch.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [studentSearch]);
+
+  useEffect(() => {
+    if (!canPickStudent) return;
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        const page = await api.page<StudentOption[]>('/students', {
+          query: {
+            limit: OPTION_LIMIT,
+            q: studentQuery || undefined,
+            class_id: classId || undefined,
+            section_id: sectionId || undefined,
+          },
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        setStudents(page.data ?? []);
+        setStudentTotal(page.meta?.total ?? page.data.length);
+        setStudentsFailed(false);
+      } catch {
+        /* Which failure it was does not change the remedy: the report runs without a student. */
+        if (controller.signal.aborted) return;
+        setStudents([]);
+        setStudentTotal(0);
+        setStudentsFailed(true);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [canPickStudent, studentQuery, classId, sectionId]);
+
+  const studentOptions =
+    pinnedStudent && !students.some((row) => row.id === pinnedStudent.id)
+      ? [pinnedStudent, ...students]
+      : students;
+
+  /** A narrower class or section can exclude the child chosen under a wider one, so it clears them. */
+  function narrowTo(nextClass: string, nextSection: string) {
+    setClassId(nextClass);
+    setSectionId(nextSection);
+    setStudentId('');
+    setPinnedStudent(null);
+  }
+
+  /* ── the report ── */
+
+  const [report, setReport] = useState<AttendanceReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  /** A 500 or a dropped connection — where retrying makes sense. */
+  const [error, setError] = useState<string | null>(null);
+  /** A 422 — the request itself was refused, so a retry button would only ask the same thing again. */
+  const [invalid, setInvalid] = useState<string | null>(null);
+  const [refusal, setRefusal] = useState<Refusal | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    /* `date` is `.required()`; a cleared box asks for one rather than sending a guaranteed 422. */
+    if (!date) {
+      setReport(null);
+      setLoading(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    setInvalid(null);
+    setRefusal(null);
+
+    (async () => {
+      try {
+        /*
+         * `{ report }`, not the report: `attendance.controller.js` answers
+         * `ApiResponse.ok(res, { report: data })`, the same envelope the finance report uses.
+         */
+        const result = await api.get<{ report: AttendanceReport }>('/attendance/students/report', {
+          query: {
+            period,
+            date,
+            class_id: classId || undefined,
+            section_id: sectionId || undefined,
+            student_id: studentId || undefined,
+          },
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        setReport(result.report ?? null);
+      } catch (caught) {
+        if (controller.signal.aborted) return;
+        setReport(null);
+        if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
+          setRefusal({ code: caught.code, message: caught.message });
+        } else if (caught instanceof ApiError) {
+          /* No control here renders a field error, so the first message the server wrote is the one. */
+          const [first] = [...caught.formErrors(), ...Object.values(caught.fieldErrors())];
+          if (caught.status === 422) setInvalid(first ?? caught.message);
+          else setError(caught.message);
+        } else if ((caught as Error)?.name !== 'AbortError') {
+          setError('Could not reach the server. Check your connection and try again.');
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [period, date, classId, sectionId, studentId, attempt]);
+
+  /** Who the figures are about, in the words the pickers used. */
+  const scope = (() => {
+    const chosenStudent = studentOptions.find((row) => String(row.id) === studentId);
+    if (chosenStudent) return studentLabel(chosenStudent);
+    const klass = classes.state === 'ready' ? classes.rows.find((row) => String(row.id) === classId) : undefined;
+    const section =
+      sections.state === 'ready' ? sections.rows.find((row) => String(row.id) === sectionId) : undefined;
+    if (klass && section) return `${klass.name}, section ${section.name}`;
+    if (klass) return klass.name;
+    return 'The whole school';
+  })();
+
+  return (
+    <>
+      <FilterBar
+        activeCount={[classId, sectionId, studentId].filter(Boolean).length}
+        onClear={() => {
+          narrowTo('', '');
+          setStudentSearch('');
+        }}
+      >
+        <FilterSelect id="report-period" label="Period" labelVisible value={period} onChange={setPeriod}>
+          {PERIODS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </FilterSelect>
+
+        {/*
+          * One anchor date, not a range: `periodRange()` derives the window from it, so any day in
+          * the month is the month. The label says so, because "Date" over a monthly report reads as
+          * if only that one day were counted.
+          */}
+        <FilterDate
+          id="report-date"
+          label={period === 'daily' ? 'Day' : period === 'monthly' ? 'Any day in the month' : 'Any day in the year'}
+          value={date}
+          onChange={setDate}
+        />
+
+        {canPickClass ? (
+          <>
+            <FilterSelect
+              id="report-class"
+              label="Class"
+              labelVisible
+              value={classId}
+              onChange={(value) => narrowTo(value, '')}
+              disabled={classes.state !== 'ready'}
+            >
+              <option value="">
+                {classes.state === 'loading'
+                  ? 'Loading…'
+                  : classes.state === 'failed'
+                    ? 'Classes unavailable'
+                    : 'Whole school'}
+              </option>
+              {classes.state === 'ready'
+                ? classes.rows.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name}
+                      {row.is_active ? '' : ' — inactive'}
+                    </option>
+                  ))
+                : null}
+            </FilterSelect>
+
+            <FilterSelect
+              id="report-section"
+              label="Section"
+              labelVisible
+              value={sectionId}
+              onChange={(value) => narrowTo(classId, value)}
+              disabled={!classId || sections.state !== 'ready'}
+            >
+              <option value="">Whole class</option>
+              {sections.state === 'ready'
+                ? sections.rows.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {row.name}
+                      {row.is_active ? '' : ' — inactive'}
+                    </option>
+                  ))
+                : null}
+            </FilterSelect>
+          </>
+        ) : null}
+
+        {canPickStudent && !studentsFailed ? (
+          <>
+            <SearchField
+              id="report-student-search"
+              label="Find a student"
+              labelVisible
+              placeholder="Name, student ID or roll number…"
+              value={studentSearch}
+              onChange={setStudentSearch}
+            />
+            <FilterSelect
+              id="report-student"
+              label="Student"
+              labelVisible
+              value={studentId}
+              onChange={(value) => {
+                setStudentId(value);
+                setPinnedStudent(value ? (studentOptions.find((row) => String(row.id) === value) ?? null) : null);
+              }}
+            >
+              <option value="">Every student</option>
+              {studentOptions.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {studentLabel(row)}
+                </option>
+              ))}
+            </FilterSelect>
+          </>
+        ) : null}
+      </FilterBar>
+
+      {/* The one sentence the student select cannot carry: it is a page of the roll, not all of it. */}
+      {canPickStudent && !studentsFailed && studentTotal > students.length ? (
+        <p className="field-hint -mt-2 mb-4">
+          The student list shows the first {students.length} of {COUNT.format(studentTotal)} — search to
+          narrow it.
+        </p>
+      ) : null}
+      {canPickStudent && studentsFailed ? (
+        <p className="field-hint -mt-2 mb-4">
+          The student list could not be loaded, so the report cannot be narrowed to one child here. It
+          still runs for a class, a section or the whole school.
+        </p>
+      ) : null}
+
+      {refusal ? (
+        <RefusalNotice refusal={refusal} />
+      ) : error ? (
+        <ErrorNotice message={error} onRetry={() => setAttempt((n) => n + 1)} />
+      ) : invalid ? (
+        <Notice tone="error">{invalid}</Notice>
+      ) : !date ? (
+        <EmptyNotice>Choose a day to anchor the report — any day inside the period will do.</EmptyNotice>
+      ) : loading && !report ? (
+        <LoadingBlock rows={2} />
+      ) : !report ? (
+        <EmptyNotice>Nothing was returned for this report.</EmptyNotice>
+      ) : (
+        <section
+          aria-labelledby="attendance-report-heading"
+          aria-busy={loading || undefined}
+          className={`transition-opacity duration-200 ${loading ? 'opacity-60' : ''}`}
+        >
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+            <h2 id="attendance-report-heading" className="text-base font-semibold tracking-tight text-ink">
+              {PERIODS.find((option) => option.value === report.period)?.label ?? report.period} report —{' '}
+              {periodTitle(report)}
+            </h2>
+            <p className="text-sm text-muted">
+              {scope} · {formatDateOnly(report.from)}
+              {report.to !== report.from ? ` to ${formatDateOnly(report.to)}` : ''}
+            </p>
+          </div>
+
+          <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {/*
+              * The percentage is the server's, never recomputed here — a second definition in the
+              * browser would be free to disagree with the one §22's Attendance Report delegates to.
+              * The hint states that definition, because §16 does not and a reader cannot guess it.
+              */}
+            <MetricCard
+              label="Attendance"
+              value={report.percentage === null ? '—' : `${report.percentage.toFixed(2)}%`}
+              hint={
+                report.percentage === null
+                  ? 'Nothing was marked in this period, so there is no rate to give — which is not the same as 0%.'
+                  : 'Present and late, out of every mark recorded. Leave counts as marked but not attended; unmarked days are not counted.'
+              }
+            />
+            <MetricCard
+              label="Marks recorded"
+              value={COUNT.format(report.marked)}
+              hint="One per student for each day the register was marked, of any status."
+            />
+            <MetricCard label="Attended" value={COUNT.format(report.attended)} hint="Marked present or late." />
+          </dl>
+
+          <dl className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {STATUSES.map((status) => (
+              <MetricCard key={status} label={spell(status)} value={COUNT.format(report.counts[status] ?? 0)} />
+            ))}
+          </dl>
+        </section>
+      )}
+    </>
+  );
+}
+
 /* ─────────────────────────────── the screen ─────────────────────────────── */
 
 /**
@@ -711,11 +1140,13 @@ function TeachersPanel() {
  *
  * Tabs, on the precedent Library and Fees already set: splitting one of §33's screens in two would
  * be rewriting the requirement, and leaving the teacher register unreachable was the alternative —
- * `GET` and `POST /attendance/teachers` had no caller anywhere in the product.
+ * `GET` and `POST /attendance/teachers` had no caller anywhere in the product. FR-ATT-002's report is
+ * the third, for the same reason.
  */
 const TABS: TabDef[] = [
   { key: 'students', label: 'Students' },
   { key: 'teachers', label: 'Teachers' },
+  { key: 'report', label: 'Student report' },
 ];
 
 function AttendanceScreen() {
@@ -729,7 +1160,13 @@ function AttendanceScreen() {
       />
       <Tabs tabs={TABS} active={active} onChange={setActive} label="Attendance registers" />
       <TabPanel tabKey={active}>
-        {active === 'students' ? <StudentsPanel /> : <TeachersPanel />}
+        {active === 'report' ? (
+          <ReportPanel />
+        ) : active === 'teachers' ? (
+          <TeachersPanel />
+        ) : (
+          <StudentsPanel />
+        )}
       </TabPanel>
     </div>
   );

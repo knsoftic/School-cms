@@ -22,8 +22,8 @@
  *
  * It is not a simulation of a language model and does not pretend to be. It produces well-formed output
  * that satisfies §21's contract and the `mcqNeedsOptionsAndAnswer` model validator, so the *workflow*
- * can be exercised end to end. The quality of generated questions is the provider's business, and the
- * provider is Phase 5.2.
+ * can be exercised end to end. The quality of generated questions is the provider's business — the
+ * real one is `anthropic.js` (Phase 5.2), selected by `AI_DRIVER`.
  */
 
 const OPTION_KEYS = Object.freeze(['A', 'B', 'C', 'D']);

@@ -17,10 +17,16 @@
  * structure; the fine and discount are the 'may configure' half and default at the column."* This
  * form marks the same three and no others.
  *
- * Everything else has a default at the column — `currency` `'USD'`, `is_recurring` false,
- * `fine_amount` and `discount_amount` 0, `fine_type` and `discount_type` `'none'`,
- * `fine_grace_days` 0, `is_active` true — so a blank control means "take the column's default"
- * rather than "no answer".
+ * Everything else has a default — `is_recurring` false, `fine_amount` and `discount_amount` 0,
+ * `fine_type` and `discount_type` `'none'`, `fine_grace_days` 0, `is_active` true at the column, and
+ * the currency below — so a blank control means "take the default" rather than "no answer".
+ *
+ * The currency is the one this form fills in itself. The owner's decision D35 makes the school's own
+ * currency (§14.1's setting) the default, and `createStructure()` applies it to a structure sent
+ * without one; only a school that has never saved its settings has none, and then the column's `USD`
+ * stands. The field starts on that currency, read from the profile (`school.currency` on
+ * `/auth/me`), which every school role receives — so an Accountant, who cannot read the settings
+ * themselves, sees the currency the structure will be in rather than a blank.
  *
  * `id` and `organization_id` are `forbidden()` rather than merely absent, so they have no control
  * here; `organization_id` is copied from the school row by `createStructure()`.
@@ -92,6 +98,13 @@
  * session would hide classes the API would have accepted. Each class option names its own session
  * instead, which is what tells two identically-named classes from consecutive years apart.
  *
+ * What both do refuse is a **closed** session — the owner's decision D20. `createStructure()` calls
+ * `assertOpenForNew()` on the session named and on the class's own, and answers 409 `SESSION_CLOSED`
+ * naming the session. So a closed session is not offered, and a class of one is listed but disabled,
+ * with the reason in the hint. Both need the session list; for a caller without it the API's refusal
+ * is the only notice, and it is put under the field it is about — the session when that is the one
+ * named, the class otherwise.
+ *
  * Inactive classes are annotated, never withheld, for the same reason: `loadClassInSchool()` does not
  * test `is_active`, and a picker that dropped them would enforce a rule the module does not have.
  *
@@ -106,17 +119,31 @@
  *     fees list renders exactly that as "all classes". A structure with no class is the normal case
  *     for an admission or exam fee.
  *   * **Academic session** blank is NULL too. `assign()` falls back to the *student's* session before
- *     the structure's, so leaving it blank does not orphan the fees raised from it.
+ *     the structure's, so leaving it blank does not orphan the fees raised from it. It starts on the
+ *     current session all the same — D20's "forms default to the current session" — and "Not tied to
+ *     a session" is still there to choose.
  *
- * ## Half of this form is configuration the service records and never reads
+ * The current session comes from the profile (`school.current_session` on `/auth/me`), not from
+ * `GET /sessions/current`, which needs the same `sessions.view` as the list. The seeded Accountant —
+ * FR-FEE-001's third actor — does not hold it, and so used to meet a disabled select and no default. Now
+ * a caller who cannot read the list is offered the current session alone, beside "Not tied to a
+ * session", and one who can gets the list with the current session chosen.
+ *
+ * ## The fine is applied by a daily job; three other fields are recorded and not read
  *
  * Worth knowing before writing hints that promise more than the module does. `assign()` reads
  * `component`, `amount`, `currency`, `name` (as the fee's title), `class_id` and
- * `academic_session_id` from the structure, and applies the discount through `discountFor()`. It
- * reads **none** of `fine_amount`, `fine_type`, `fine_grace_days`, `due_day` or `is_recurring`: the
- * service header records that §17 names no clock-driven process that grows a fine, so there is no
- * accrual to configure, and the fine actually charged is set on the assignment. Those four fields are
- * stored §17 configuration. The hints say so rather than implying an automation that does not exist.
+ * `academic_session_id` from the structure, and applies the discount through `discountFor()`.
+ *
+ * The fine is the owner's decision D29: `fees.service.applyFines()`, run daily by the `fee-fines`
+ * task, fines each fee raised from this structure that is still unpaid or part-paid once its due
+ * date plus `fine_grace_days` has passed — `fixed` the amount once, `percentage` that share of the
+ * fee's amount once, `per_day` the amount for each day late beyond the grace days, until the fee is
+ * paid. It only ever raises a fee's fine, so one set by hand at assignment is kept when it is higher.
+ *
+ * `due_day` and `is_recurring` are read by nothing: no process raises a fee on a schedule, and each
+ * fee's due date is set on its assignment. The hints say so rather than imply an automation that
+ * does not exist.
  *
  * ## `discount_amount` is not always an amount
  *
@@ -162,6 +189,9 @@ import type { Refusal } from '@/lib/useCollection';
 /** `PAGINATION.MAX_LIMIT` — the most `commonSchemas.pagination` accepts in one page. */
 const OPTION_LIMIT = 100;
 
+/** `ACADEMIC_SESSION_STATUS.CLOSED` — the one status D20 refuses a new fee structure in. */
+const CLOSED = 'closed';
+
 /** §17's four components, mirroring `FEE_COMPONENT_LIST` in `constants.js`. */
 const COMPONENTS = ['monthly_fee', 'admission_fee', 'exam_fee', 'transport_fee'];
 
@@ -183,7 +213,7 @@ interface ClassOption {
 interface SessionOption {
   id: number;
   name: string;
-  /** `ACADEMIC_SESSION_STATUS` — upcoming, active or closed. Shown, never acted on. */
+  /** `ACADEMIC_SESSION_STATUS` — upcoming, active or closed. Closed is refused by D20; see the header. */
   status: string;
   is_current: boolean;
 }
@@ -240,10 +270,30 @@ function humanise(value: string): string {
 
 export default function NewFeeStructurePage() {
   const router = useRouter();
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
   const { success } = useToast();
 
+  /* D35 and D20's defaults, from the profile every school role receives — see the header. */
+  const schoolCurrency = profile?.school?.currency?.trim() || null;
+  const current = profile?.school?.current_session ?? null;
+  const currentId = current && current.status !== CLOSED ? String(current.id) : '';
+
   const [values, setValues] = useState(EMPTY_VALUES);
+
+  /*
+   * Both defaults, only into an empty field, so neither overwrites what was chosen; and only when the
+   * default itself changes, so a field cleared to take the column's value, or set to "Not tied to a
+   * session", stays that way. See the header.
+   */
+  useEffect(() => {
+    if (!schoolCurrency) return;
+    setValues((prev) => (prev.currency ? prev : { ...prev, currency: schoolCurrency }));
+  }, [schoolCurrency]);
+
+  useEffect(() => {
+    if (!currentId) return;
+    setValues((prev) => (prev.academic_session_id ? prev : { ...prev, academic_session_id: currentId }));
+  }, [currentId]);
 
   const [classes, setClasses] = useState<Loaded<ClassOption>>(NOT_LOADED);
   const [sessions, setSessions] = useState<Loaded<SessionOption>>(NOT_LOADED);
@@ -294,12 +344,31 @@ export default function NewFeeStructurePage() {
     };
   }, [can]);
 
+  /*
+   * The sessions the select offers. The list, with the current session added when it fell past the
+   * first page — it is the default, so it has to be an option — or, for a caller who cannot read the
+   * list, the current session alone. See the header.
+   */
+  const sessionOptions = useMemo<SessionOption[]>(() => {
+    const own = current ? { ...current, is_current: true } : null;
+    if (sessions.failed) return own ? [own] : [];
+    return own && !sessions.rows.some((row) => row.id === own.id) ? [own, ...sessions.rows] : sessions.rows;
+  }, [sessions, current]);
+
   /** Session names by id, for the label that tells two same-named classes apart. */
   const sessionNames = useMemo(() => {
     const byId = new Map<number, string>();
-    for (const session of sessions.rows) byId.set(session.id, session.name);
+    for (const session of sessionOptions) byId.set(session.id, session.name);
     return byId;
-  }, [sessions.rows]);
+  }, [sessionOptions]);
+
+  /** The sessions D20 refuses a new structure in — see the header. Empty when the list could not be read. */
+  const closedSessions = useMemo(
+    () => new Set(sessionOptions.filter((session) => session.status === CLOSED).map((session) => session.id)),
+    [sessionOptions]
+  );
+  const inClosedSession = (row: ClassOption) =>
+    row.academic_session_id !== null && closedSessions.has(row.academic_session_id);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -332,6 +401,19 @@ export default function NewFeeStructurePage() {
     } catch (caught) {
       if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
         setRefusal({ code: caught.code, message: caught.message });
+      } else if (caught instanceof ApiError && caught.code === 'SESSION_CLOSED') {
+        /*
+         * D20, under the field it is about — see the header. The refusal names the closed session;
+         * when that is not the one chosen here, it was the class's own.
+         */
+        const named = caught.context?.academic_session_id;
+        const onSession = values.academic_session_id !== '' && String(named) === values.academic_session_id;
+        setFieldErrors(
+          onSession
+            ? { academic_session_id: caught.message }
+            : { class_id: `${caught.message}. This class is in that session; choose a class of an open one, or All classes.` }
+        );
+        focusFirstInvalidField();
       } else if (caught instanceof ApiError) {
         /*
          * A field this form does not have — `fineTypeNeedsAmount`, `school_id` — goes to the banner
@@ -433,7 +515,11 @@ export default function NewFeeStructurePage() {
             error={fieldErrors.currency}
             /* No dropdown: neither `constants.js` nor the column carries a currency list, so any set of
                options here would be one this screen made up. Uppercased server-side, as the org code is. */
-            hint="Up to 10 characters, stored in upper case — e.g. USD. Blank stores the column default, USD. Every fee raised from this structure inherits it."
+            hint={`Up to 10 characters, stored in upper case — e.g. USD.${
+              schoolCurrency
+                ? ` Starts on ${schoolCurrency}, this school’s currency, which a blank also takes.`
+                : ' Blank takes the school’s currency, or USD while the school has not saved one in its settings.'
+            } Every fee raised from this structure inherits it.`}
           />
 
           <SelectField
@@ -452,6 +538,10 @@ export default function NewFeeStructurePage() {
                       classes.total > classes.rows.length
                         ? ` Showing the first ${classes.rows.length} of ${classes.total}; a page cannot hold more.`
                         : ''
+                    }${
+                      classes.rows.some(inClosedSession)
+                        ? ' A class of a closed session is shown and cannot be chosen: a closed session takes no new fee structure.'
+                        : ''
                     }`
             }
           >
@@ -464,11 +554,13 @@ export default function NewFeeStructurePage() {
               const session = row.academic_session_id
                 ? sessionNames.get(row.academic_session_id)
                 : undefined;
+              const closed = inClosedSession(row);
               return (
-                <option key={row.id} value={row.id}>
+                <option key={row.id} value={row.id} disabled={closed}>
                   {row.name}
                   {row.code ? ` (${row.code})` : ''}
                   {session ? ` — ${session}` : ''}
+                  {closed ? ' (closed)' : ''}
                   {row.is_active ? '' : ' — inactive'}
                 </option>
               );
@@ -480,12 +572,15 @@ export default function NewFeeStructurePage() {
             label="Academic session"
             value={values.academic_session_id}
             onChange={set('academic_session_id')}
-            disabled={loadingOptions || sessions.failed}
+            /* Without the list, still the current session — see the header. */
+            disabled={loadingOptions || (sessions.failed && sessionOptions.length === 0)}
             error={fieldErrors.academic_session_id}
             hint={
               sessions.failed
-                ? 'The session list could not be loaded — reading it needs the separate “View academic sessions” permission. The structure can be created without one.'
-                : `Optional. A fee raised from this structure takes the student’s own session first, so leaving this blank does not leave those fees unattached.${
+                ? `The session list could not be loaded — reading it needs the separate “View academic sessions” permission${
+                    sessionOptions.length > 0 ? ', so only the current session is offered' : ''
+                  }. The structure can be created without one.`
+                : `Optional, and starts on the current session. A fee raised from this structure takes the student’s own session first, so leaving this blank does not leave those fees unattached. Closed sessions are not offered — a closed session takes no new fee structure.${
                     sessions.total > sessions.rows.length
                       ? ` Showing the first ${sessions.rows.length} of ${sessions.total}, newest first.`
                       : ''
@@ -493,16 +588,21 @@ export default function NewFeeStructurePage() {
             }
           >
             <option value="">
-              {loadingOptions ? 'Loading…' : sessions.failed ? 'Unavailable' : 'Not tied to a session'}
+              {loadingOptions
+                ? 'Loading…'
+                : sessions.failed && sessionOptions.length === 0
+                  ? 'Unavailable'
+                  : 'Not tied to a session'}
             </option>
-            {sessions.rows.map((session) => (
-              /* Status and "current" are context, never acted on: `loadSessionInSchool()` checks the
-                 school and nothing else, so disabling a closed session would be a rule of our own. */
-              <option key={session.id} value={session.id}>
-                {session.name} · {session.status}
-                {session.is_current ? ' · current' : ''}
-              </option>
-            ))}
+            {sessionOptions
+              /* D20: `createStructure()` refuses a closed session with `SESSION_CLOSED` — see the header. */
+              .filter((session) => session.status !== CLOSED)
+              .map((session) => (
+                <option key={session.id} value={session.id}>
+                  {session.name} · {session.status}
+                  {session.is_current ? ' · current' : ''}
+                </option>
+              ))}
           </SelectField>
 
           <SelectField
@@ -535,7 +635,7 @@ export default function NewFeeStructurePage() {
 
         <FormSection
           title="Late payment fine"
-          description="Charged automatically once the grace period has passed. Leave the type unset for no fine."
+          description="Applied automatically, by a daily check, to each fee raised from this structure that is still owed, in whole or in part, once its due date and the grace days have passed. Leave the type unset for no fine."
         >
           <SelectField
             id="fine_type"
@@ -543,7 +643,7 @@ export default function NewFeeStructurePage() {
             value={values.fine_type}
             onChange={set('fine_type')}
             error={fieldErrors.fine_type}
-            hint="§17’s Fine, recorded as configuration. Anything but “none” needs a fine amount above zero, and the amount below is refused otherwise. Nothing accrues a fine on a clock — the fine actually charged is set when the fee is assigned."
+            hint="Fixed adds the amount once; percentage adds that share of the fee once; per day adds the amount for each day the fee is late past the grace days, until it is paid. The check only ever raises a fee’s fine, so one set higher by hand when the fee was assigned is kept. Anything but “none” needs a fine amount above zero."
           >
             <option value="">Column default (none)</option>
             {FINE_TYPES.map((value) => (
@@ -575,7 +675,7 @@ export default function NewFeeStructurePage() {
             value={values.fine_grace_days}
             onChange={set('fine_grace_days')}
             error={fieldErrors.fine_grace_days}
-            hint="0 to 365. The days of grace the school intends to allow before fining; recorded with the rest of the fine configuration, and read by nothing. Blank stores 0."
+            hint="0 to 365. How many days after a fee’s due date pass before the fine applies; a per-day fine counts only the days after them. Blank stores 0."
           />
         </FormSection>
 

@@ -173,7 +173,11 @@ const PERMISSION_KEY_SET = new Set(PERMISSION_KEYS);
 /** Every permission — used for the Super Admin role. */
 const ALL = PERMISSION_KEYS;
 
-const SCHOOL_LEADERSHIP = [
+/*
+ * School leadership's defaults before the owner's decision D27 — kept, because the seeder upgrades a role
+ * that still holds exactly an earlier version's defaults (see `PREVIOUS_DEFAULTS`).
+ */
+const SCHOOL_LEADERSHIP_BEFORE_D27 = [
   'school.dashboard.view',
   'school.settings.view',
   'school.settings.manage',
@@ -238,6 +242,30 @@ const SCHOOL_LEADERSHIP = [
   'payments.submit',
   'coupons.redeem',
 ];
+
+/*
+ * The owner's decision D27 — the school billing screen. FR-SUB-013/014/015 and FR-BILL-003/005 name the
+ * school as an actor, and school leadership held `subscriptions.self.manage` and `payments.submit` but
+ * not the reads those actions need: the plans it could move to, the add-ons it could buy, and its own
+ * payments' status. Three keys the catalogue already had; no new permission. A school's reads of all
+ * three are confined by the tenant layer (`plans.service.scopeFor()` shows it the public active plans,
+ * `addons.service` the active add-ons, `payments.service.list()` its own school's payments).
+ */
+const D27_BILLING_KEYS = ['plans.view', 'addons.view', 'payments.view'];
+const SCHOOL_LEADERSHIP = [...SCHOOL_LEADERSHIP_BEFORE_D27, ...D27_BILLING_KEYS];
+
+/**
+ * Earlier versions' defaults, per role — what an install seeded before a default changed holds.
+ *
+ * `03-role-permissions` leaves a role's grants alone once it has any: they are the Super Admin's to
+ * change. That also meant a change to the defaults never reached an existing install. A role whose
+ * grants are **exactly** one of these earlier sets was never customised, so the seeder brings it up to
+ * the current defaults; a role that differs in any way is left as configured.
+ */
+const PREVIOUS_DEFAULTS = Object.freeze({
+  [ROLES.PRINCIPAL]: [SCHOOL_LEADERSHIP_BEFORE_D27],
+  [ROLES.SCHOOL_ADMIN]: [SCHOOL_LEADERSHIP_BEFORE_D27],
+});
 
 /**
  * Default role → permission grants, seeded into `role_permissions`.
@@ -426,4 +454,5 @@ module.exports = {
   PERMISSION_KEYS,
   PERMISSION_KEY_SET,
   DEFAULT_ROLE_PERMISSIONS,
+  PREVIOUS_DEFAULTS,
 };

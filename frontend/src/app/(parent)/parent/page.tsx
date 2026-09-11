@@ -3,28 +3,40 @@
 /**
  * Parent dashboard — SRS §15.2 (FR-PARENT-002), checklist row 4.6.
  *
- * ## §5 grants a parent exactly one thing
+ * ## What a parent's grants actually reach
  *
- * *"Holds a Parent Account, may be linked to multiple children, and has access to a Parent
- * Dashboard."* That is the whole of it. No parent-facing list screens are named anywhere in the SRS,
- * and none exist in the API — `GET /parents/dashboard` and `GET /parents/{id}/children` are the only
- * two endpoints a parent's permissions reach.
+ * §5 gives a parent an account, links to children and "access to a Parent Dashboard", and
+ * FR-PARENT-001's outcome is that the parent "can access records for all linked children". The
+ * `parent` block in `permissions.js` carries that onto these read routes, each confined to the
+ * caller's own children by the service rather than by the permission:
  *
- * So this screen is the parent surface, not its landing page. That is the requirement rather than a
- * shortfall, and it is worth saying plainly: a fuller parent portal — attendance, fees, results per
- * child — would need self-service endpoints the SRS never asks for and the backend deliberately did
- * not mount. `attendance.self.view`, `fees.self.view` and `students.self.view` all exist in §29's
- * fixed permission catalogue with **no route behind them**, and each router records that decision in
- * its own header rather than leaving it to look like an oversight.
+ *   - `GET /parents/dashboard` (`parents.dashboard.view`) — this screen: the children and their links;
+ *   - `GET /exams/my-results` (`results.self.view`) — published results only, confined by
+ *     `exams.service.js myResults()` through `parent_students` — the Results screen;
+ *   - `GET /homework` (`homework.view`) — published homework, narrowed by `homework.service.js` to
+ *     the children's classes — the Homework screen;
+ *   - `GET /attendance/mine`, `GET /fees/mine` and `GET /students/mine` (`attendance.self.view`,
+ *     `fees.self.view`, `students.self.view`) — the owner's decision D17, confined by
+ *     `services/selfScope.js` — the Attendance, Fees and Student record screens;
+ *   - `GET /timetable/class/:classId` (`timetable.view`), for the class this dashboard names — the
+ *     Timetable screen;
+ *   - `GET /assignments` (`assignments.view`) and the notification inbox, linked from the header.
+ *
+ * This header used to say that the dashboard and `GET /parents/{id}/children` were the only two
+ * endpoints a parent's permissions reach. The second is `parents.view`, which a parent does not hold,
+ * and the claim left out the results and homework routes above — so results the API was already
+ * confining to a parent's own children had no screen, and the footnote told parents the school office
+ * held them.
+ *
+ * It then said the three self-view keys had **no route behind them**, and the footnote told parents
+ * that attendance and fees were held by the school office. Both were true until D17 mounted the three
+ * routes; the screens now exist and are linked below the table.
  */
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
 
-import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
-import { EXPLAINED_CODES } from '@/lib/useCollection';
-import type { Refusal } from '@/lib/useCollection';
+import { useEntitlements } from '@/lib/entitlements';
 import {
   Column,
   DataTable,
@@ -36,85 +48,44 @@ import {
   StatusBadge,
 } from '@/components/table';
 
-/** A parent–student link, with the student included by the service. */
-interface ChildLink {
-  id: number;
-  student_id: number;
-  relation: string | null;
-  /**
-   * `is_primary_guardian`, not `is_primary`.
-   *
-   * The column on `parent_students` is `is_primary_guardian` (`models/people.js`), and
-   * `parents.service.js` writes exactly that name. This was declared and read as `is_primary`, which
-   * is `undefined` on every row — so the "Primary contact" column answered **"no" for every child**,
-   * including the one the school had recorded as the first to call.
-   *
-   * Worth naming the trap: `is_primary` *does* exist in `models/academic.js`, on a different table.
-   * A grep for the bare name confirms the wrong thing.
-   */
-  is_primary_guardian: boolean;
-  student?: {
-    id: number;
-    first_name: string;
-    last_name: string | null;
-    student_id: string | null;
-    roll_number: string | null;
-    status: string;
-  };
-}
+import { childName, useParentDashboard } from './children';
+import type { ChildLink } from './children';
 
-interface ParentDashboard {
-  parent: { id: number; name: string };
-  counts: { children: number; activeChildren: number };
-  children: ChildLink[];
-}
+/**
+ * The children's records, each gated exactly as its `PARENT_NAV` entry is — the permission and the
+ * module its router requires — so a card never leads to a refusal the nav would have spared. Each
+ * screen asks which child when there is more than one.
+ */
+const RECORDS = [
+  { href: '/parent/results', label: 'Results', description: 'Exam results, once the school publishes them.', permission: 'results.self.view', module: 'exams' },
+  { href: '/parent/homework', label: 'Homework', description: 'Homework published for your children’s classes.', permission: 'homework.view', module: 'homework' },
+  { href: '/parent/attendance', label: 'Attendance', description: 'The register for a day, a month or a year, with the percentage.', permission: 'attendance.self.view', module: 'attendance' },
+  { href: '/parent/fees', label: 'Fees', description: 'What is charged, paid and still pending, with the receipts.', permission: 'fees.self.view', module: 'fees' },
+  { href: '/parent/timetable', label: 'Timetable', description: 'Each child’s class week, period by period.', permission: 'timetable.view', module: 'timetable' },
+  { href: '/parent/record', label: 'Student record', description: 'What the school holds on file about each child.', permission: 'students.self.view', module: 'students' },
+];
 
 export default function ParentDashboard() {
   const { profile, can } = useAuth();
+  const { hasModule } = useEntitlements();
+  const { data, loading, error, refusal, reload } = useParentDashboard();
 
-  const [data, setData] = useState<ParentDashboard | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [refusal, setRefusal] = useState<Refusal | null>(null);
-  const [nonce, setNonce] = useState(0);
+  const records = RECORDS.filter((item) => can(item.permission) && hasModule(item.module));
 
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    setRefusal(null);
-
-    (async () => {
-      try {
-        const result = await api.get<ParentDashboard>('/parents/dashboard', { signal: controller.signal });
-        if (controller.signal.aborted) return;
-        setData(result);
-      } catch (caught) {
-        if (controller.signal.aborted) return;
-        if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
-          setRefusal({ code: caught.code, message: caught.message });
-        } else if (caught instanceof ApiError) {
-          setError(caught.message);
-        } else if ((caught as Error)?.name !== 'AbortError') {
-          setError('Could not reach the server. Check your connection and try again.');
-        }
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
-      }
-    })();
-
-    return () => controller.abort();
-  }, [nonce]);
-
+  /*
+   * Class and Section by name. They were missing because `dashboard()` selected each child's
+   * `class_id` and `section_id` without joining `Class` or `Section`, and a parent holds no
+   * `classes.view` to resolve an id another way; the service now includes both names (SRS:842,
+   * "relevant information for their children"). Either can be null — a child not yet placed, or a
+   * class not divided into sections — and says so with a dash rather than an id.
+   */
   const columns: Column<ChildLink>[] = [
     {
       key: 'name',
       header: 'Child',
       cell: (row) =>
         row.student ? (
-          <span className="font-medium">
-            {[row.student.first_name, row.student.last_name].filter(Boolean).join(' ')}
-          </span>
+          <span className="font-medium">{childName(row.student)}</span>
         ) : (
           <span className="text-muted-soft">student #{row.student_id}</span>
         ),
@@ -124,6 +95,8 @@ export default function ParentDashboard() {
       header: 'Student ID',
       cell: (row) => <code className="text-xs text-muted">{row.student?.student_id ?? '—'}</code>,
     },
+    { key: 'class', header: 'Class', cell: (row) => row.student?.class?.name ?? <span className="text-muted-soft">—</span> },
+    { key: 'section', header: 'Section', cell: (row) => row.student?.section?.name ?? <span className="text-muted-soft">—</span> },
     { key: 'roll', header: 'Roll', cell: (row) => row.student?.roll_number ?? <span className="text-muted-soft">—</span> },
     {
       key: 'relation',
@@ -139,8 +112,9 @@ export default function ParentDashboard() {
       key: 'primary',
       header: 'Primary contact',
       /*
-       * The flag decides who is contacted first, so it earns a column on the one screen a parent
-       * sees. Rendered as words rather than a tick, which a screen reader announces as nothing.
+       * The flag decides who is contacted first, so it earns a column on the one screen that shows a
+       * parent their links. Rendered as words rather than a tick, which a screen reader announces as
+       * nothing.
        */
       cell: (row) => (row.is_primary_guardian ? 'yes' : <span className="text-muted-soft">no</span>),
     },
@@ -161,8 +135,12 @@ export default function ParentDashboard() {
            * The inbox — §23 addresses attendance alerts, fee reminders, receipts and results to a
            * guardian — and the children's assignments (`assignments.view`, narrowed to their classes
            * by the API). Links rather than nav entries, as the student dashboard does.
+           *
+           * Results and Homework used to be buttons here as well. They are records FR-PARENT-001
+           * promises, like the four D17 added, so all six now sit together under the table — the
+           * same list the nav's Records section carries.
            */
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Link href="/parent/notifications" className="btn btn-secondary">
               Notifications
             </Link>
@@ -178,7 +156,7 @@ export default function ParentDashboard() {
       {refusal ? (
         <RefusalNotice refusal={refusal} />
       ) : error ? (
-        <ErrorNotice message={error} onRetry={() => setNonce((n) => n + 1)} />
+        <ErrorNotice message={error} onRetry={reload} />
       ) : loading ? (
         <LoadingBlock />
       ) : !data ? null : data.children.length === 0 ? (
@@ -207,14 +185,36 @@ export default function ParentDashboard() {
             busy={loading}
           />
 
+          {records.length > 0 ? (
+            <section className="mt-8">
+              <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
+                Your children’s records
+              </h2>
+              <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {records.map((item) => (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      className="surface block p-4 transition-transform duration-200 hover:-translate-y-0.5 hover:border-teal"
+                    >
+                      <span className="font-semibold text-ink">{item.label}</span>
+                      <p className="mt-1 text-xs text-muted">{item.description}</p>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
           {/*
-            * Said once, plainly, rather than left as an absence the parent has to infer. §5 grants a
-            * parent a dashboard and nothing else, so there is no attendance or fee view to link to —
-            * and a parent looking for one should learn that here rather than by hunting.
+            * This footnote used to say that attendance and fees were "held by the school office" —
+            * true while their permissions had no route, and false since D17 mounted them; they are
+            * linked above. What is still worth saying is that the records are read-only, and who to
+            * ask when one is wrong.
             */}
           <p className="mt-4 text-xs text-muted-soft">
-            Attendance, fees and results are held by the school office; this account shows the link
-            between you and your children.
+            Your children’s records are read-only here. If something looks wrong, speak to the school
+            office.
           </p>
         </>
       )}

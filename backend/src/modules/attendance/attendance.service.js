@@ -60,6 +60,7 @@ const {
   loadSessionInSchool,
 } = require('../../utils/schoolScope');
 const { paginateQuery, getSort } = require('../../utils/pagination');
+const selfScope = require('../../services/selfScope');
 const { ATTENDANCE_STATUS, ATTENDANCE_STATUS_LIST } = require('../../config/constants');
 
 const SORTABLE = Object.freeze(['id', 'attendance_date', 'status', 'student_id', 'created_at']);
@@ -424,7 +425,53 @@ async function report(req, query) {
   };
 }
 
+/**
+ * FR-ATT-002's report for the people it is about — `attendance.self.view`, the owner's decision D17.
+ *
+ * A student sees their own attendance and a parent each linked child's (`services/selfScope`): for one
+ * period, the four counts and the percentage exactly as `report()` computes them for staff — the same
+ * function, narrowed to the one student, so the figure a parent reads cannot disagree with the school's —
+ * and beside them the register day by day. No class or section filter: whose records these are is the
+ * caller's identity, and a student may narrow only to themselves or a parent to one of their children.
+ *
+ * @param {import('express').Request} req
+ * @param {{period: string, date: string, student_id?: number}} query
+ * @returns {Promise<object>}
+ */
+async function mine(req, query) {
+  const ids = selfScope.pickLinked(await selfScope.linkedStudentIds(req), query.student_id);
+  const students = await selfScope.linkedStudents(ids);
+  const range = periodRange(query.period, query.date);
+
+  const out = [];
+  for (const student of students) {
+    // eslint-disable-next-line no-await-in-loop
+    const summary = await report(req, { period: query.period, date: query.date, student_id: student.id });
+    // eslint-disable-next-line no-await-in-loop
+    const records = await db.StudentAttendance.findAll({
+      where: {
+        student_id: student.id,
+        school_id: student.school_id,
+        attendance_date: { [Op.gte]: range.from, [Op.lte]: range.to },
+      },
+      attributes: ['id', 'attendance_date', 'status', 'late_minutes', 'remarks'],
+      order: [['attendance_date', 'ASC']],
+    });
+    out.push({
+      student,
+      counts: summary.counts,
+      marked: summary.marked,
+      attended: summary.attended,
+      percentage: summary.percentage,
+      records,
+    });
+  }
+
+  return { period: query.period, label: range.label, from: range.from, to: range.to, students: out };
+}
+
 module.exports = {
+  mine,
   markStudents,
   listStudents,
   markTeachers,

@@ -306,9 +306,13 @@ function verifyRouting() {
   console.log('\n── Part 2 — declared routes ──\n');
 
   const routes = routesOf(studentRoutes);
-  /* Twelve since the owner's decision D13 gave §15.1's "Documents" its upload, list and download. */
-  check('the twelve §15.1 routes are declared', routes, [
+  /*
+   * Twelve since the owner's decision D13 gave §15.1's "Documents" its upload, list and download, and
+   * thirteen since D17 mounted the self-service read — above `GET /:id`, so the literal is never an id.
+   */
+  check('the twelve §15.1 routes and the D17 self-service read are declared', routes, [
     'GET /',
+    'GET /mine',
     'POST /',
     'POST /:id/photo',
     'GET /:id/photo',
@@ -623,6 +627,12 @@ async function verifyHttp() {
         limit_key: LIMITS.FILE_UPLOAD_LIMIT,
         limit_type: LIMIT_TYPES.FIXED,
         limit_value: 5,
+      });
+      /* And storage, which every upload is charged against and which is zero when unconfigured too. */
+      await db.PlanLimit.create({
+        plan_id: plan.id,
+        limit_key: LIMITS.STORAGE_LIMIT,
+        limit_type: LIMIT_TYPES.UNLIMITED,
       });
       return plan;
     };
@@ -1100,6 +1110,90 @@ async function verifyHttp() {
       promotedMin.roll_number,
       '2'
     );
+
+    /*
+     * The session follows the class, as the section does not.
+     *
+     * A class belongs to one academic session and §15.1's promotion is "to a new class/session"
+     * (SRS:821). The promote dialog sends no session, and `resolvePlacement` used to keep the student's
+     * old one — so a student promoted into next year's class carried last year's session, which fee
+     * assignment then stamped on their fee rows and documents printed on their certificates.
+     */
+    const mkDSession = (name, start, end, current) => db.AcademicSession.create({
+      school_id: schoolD.id, organization_id: org.id, name, start_date: start, end_date: end,
+      status: ACADEMIC_SESSION_STATUS.ACTIVE, is_current: current,
+    });
+    const dYearOne = await mkDSession('D 2025-2026', '2025-04-01', '2026-03-31', true);
+    const dYearTwo = await mkDSession('D 2026-2027', '2026-04-01', '2027-03-31', false);
+    const mkDClass = (name, order, sessionRow) => db.Class.create({
+      school_id: schoolD.id, organization_id: org.id, academic_session_id: sessionRow.id, name, numeric_order: order,
+    });
+    const dYearOneClass = await mkDClass('D Grade 3', 3, dYearOne);
+    const dYearTwoClass = await mkDClass('D Grade 4', 4, dYearTwo);
+
+    const dCohort = dataOf(await mkD({
+      first_name: 'DeeCohort', admission_date: '2025-04-09', class_id: dYearOneClass.id,
+    })).student;
+    check('an admission that names no session takes its class\'s session',
+      Number(dCohort.academic_session_id), dYearOne.id);
+    const nextYear = dataOf(await expectOk(
+      `/students/${dCohort.id}/promote`,
+      { method: 'POST', token: principalD, body: { class_id: dYearTwoClass.id } },
+      200
+    )).student;
+    check('a promotion into next year\'s class moves the student into next year\'s session',
+      Number(nextYear.academic_session_id), dYearTwo.id);
+    const namedSession = dataOf(await mkD({
+      first_name: 'DeeNamed', admission_date: '2025-04-10', class_id: dYearOneClass.id,
+    })).student;
+    const keptNamed = dataOf(await expectOk(
+      `/students/${namedSession.id}/promote`,
+      { method: 'POST', token: principalD, body: { class_id: dYearTwoClass.id, academic_session_id: dYearOne.id } },
+      200
+    )).student;
+    check('  while a session the caller names is the one written',
+      Number(keptNamed.academic_session_id), dYearOne.id);
+
+    /*
+     * And `PATCH` moves the section and session with the class. It wrote only the keys the body
+     * carried, so a student moved into another class kept a section of the old one.
+     */
+    const dPatched = dataOf(await mkD({
+      first_name: 'DeePatched', admission_date: '2025-04-11', class_id: dClassOne.id, section_id: dSectionOne.id,
+    })).student;
+    const afterPatch = dataOf(await expectOk(
+      `/students/${dPatched.id}`,
+      { method: 'PATCH', token: principalD, body: { class_id: dYearOneClass.id } },
+      200
+    )).student;
+    check('a PATCH that moves the class leaves the old class\'s section behind and takes the new class\'s session',
+      [Number(afterPatch.class_id), afterPatch.section_id, Number(afterPatch.academic_session_id)],
+      [dYearOneClass.id, null, dYearOne.id]);
+
+    /* D20 — a closed session takes no new admission, including one whose session came with the class. */
+    await dYearTwo.update({ status: ACADEMIC_SESSION_STATUS.CLOSED });
+    const intoClosed = await call('/students', {
+      method: 'POST', token: principalD,
+      body: { first_name: 'DeeClosed', admission_date: '2025-04-12', class_id: dYearTwoClass.id },
+    });
+    check('D20 — an admission into a class of a closed session is refused',
+      [intoClosed.status, codeOf(intoClosed)], [409, 'SESSION_CLOSED']);
+    /*
+     * Nor by the other doors: admitted to an open year and then moved by PATCH into the closed one, or
+     * promoted into it. A rule a two-step walks around is not a rule.
+     */
+    const movedIn = await call(`/students/${dPatched.id}`, {
+      method: 'PATCH', token: principalD, body: { class_id: dYearTwoClass.id },
+    });
+    const promotedIn = await call(`/students/${dPatched.id}/promote`, {
+      method: 'POST', token: principalD, body: { class_id: dYearTwoClass.id },
+    });
+    check('  nor may a student be moved into it by PATCH, or promoted into it',
+      [movedIn.status, codeOf(movedIn), promotedIn.status, codeOf(promotedIn)],
+      [409, 'SESSION_CLOSED', 409, 'SESSION_CLOSED']);
+    const unmoved = await db.Student.findByPk(dPatched.id);
+    check('  and the student stays where they were', Number(unmoved.class_id), dYearOneClass.id);
+    await dYearTwo.update({ status: ACADEMIC_SESSION_STATUS.ACTIVE });
 
     /*
      * The two cross-tenant FKs that were written straight from the body. `academic_session_id` was

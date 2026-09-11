@@ -119,6 +119,7 @@ import {
   useWholeList,
   teacherName,
   dayLabel,
+  sessionNames,
 } from '@/lib/useTimetablePickers';
 
 /**
@@ -192,6 +193,8 @@ export default function NewTimetableEntryPage() {
   const subjects = useWholeList('/subjects', pickers.subjects);
   const teachers = useWholeList('/teachers', pickers.teachers);
   const sessions = useWholeList('/sessions', pickers.sessions);
+  /* Each class option names its session — "Grade 5" exists once a year. See `sessionNames`. */
+  const classSessions = sessionNames(sessions);
 
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
@@ -352,6 +355,10 @@ export default function NewTimetableEntryPage() {
                 classes.state === 'ready' && classes.rows.length === 0
                   ? 'This school has no classes yet. One has to exist before a period can be scheduled against it.'
                   : `In promotion order.${
+                      classSessions.size > 0
+                        ? ' Each names its session, so two classes of the same name from consecutive years can be told apart.'
+                        : ''
+                    }${
                       classes.state === 'ready' && classes.total > classes.rows.length
                         ? ` Showing the first ${classes.rows.length} of ${classes.total}.`
                         : ''
@@ -362,15 +369,22 @@ export default function NewTimetableEntryPage() {
                 {classes.state === 'loading' ? 'Loading…' : 'Choose a class'}
               </option>
               {classes.state === 'ready'
-                ? classes.rows.map((option) => (
-                    /* Retired classes are marked, not withheld — `loadClassInSchool()` checks the
-                       school and nothing else, so excluding them would be a rule of our own. */
-                    <option key={option.id} value={option.id}>
-                      {option.name}
-                      {option.code ? ` (${option.code})` : ''}
-                      {option.is_active ? '' : ' · inactive'}
-                    </option>
-                  ))
+                ? classes.rows.map((option) => {
+                    const session =
+                      option.academic_session_id === null
+                        ? undefined
+                        : classSessions.get(option.academic_session_id);
+                    return (
+                      /* Retired classes are marked, not withheld — `loadClassInSchool()` checks the
+                         school and nothing else, so excluding them would be a rule of our own. */
+                      <option key={option.id} value={option.id}>
+                        {option.name}
+                        {option.code ? ` (${option.code})` : ''}
+                        {session ? ` · ${session}` : ''}
+                        {option.is_active ? '' : ' · inactive'}
+                      </option>
+                    );
+                  })
                 : null}
             </SelectField>
           )}

@@ -352,7 +352,9 @@ function verifyRouting() {
   console.log('\n── Part 2 — declared routes ──\n');
 
   const routes = routesOf(feeRoutes);
-  check('the eight §17 routes are declared', routes, [
+  /* Nine since the owner's decision D17 mounted the self-service view. */
+  check('the eight §17 routes and the D17 self-service view are declared', routes, [
+    'GET /mine',
     'GET /structures',
     'POST /structures',
     'GET /structures/:id',
@@ -368,11 +370,12 @@ function verifyRouting() {
     routes.some((r) => r.startsWith('DELETE')),
     false
   );
-  check(
-    'and no self-service view — §17 names none, so fees.self.view stays unmounted',
-    routes.some((r) => r.includes('self') || r.includes('/me')),
-    false
-  );
+  /* D17 — the self-service view is on the self-view key. */
+  const { metaOf } = require('../src/utils/routeMeta');
+  const mineLayer = feeRoutes.stack.find((l) => l.route && l.route.path === '/mine' && l.route.methods.get);
+  const mineGuard = mineLayer && mineLayer.route.stack.map((s) => metaOf(s.handle)).find((m) => m && m.permissions);
+  check('D17 — GET /mine is guarded by fees.self.view ("View own / child fees")',
+    mineGuard ? mineGuard.permissions : null, ['fees.self.view']);
   check(
     'the literal /structures is declared before the parameterised one',
     routes.indexOf('GET /structures') < routes.indexOf('GET /structures/:id'),
@@ -517,6 +520,7 @@ async function verifyHttp() {
       await db.Student.destroy({ where: { school_id: created.schools }, force: true });
       await db.Class.destroy({ where: { school_id: created.schools }, force: true });
       await db.AcademicSession.destroy({ where: { school_id: created.schools }, force: true });
+      await db.SchoolSetting.destroy({ where: { school_id: created.schools } });
     }
     if (created.subscriptions.length) {
       await db.UsageRecord.destroy({ where: { subscription_id: created.subscriptions } });
@@ -835,6 +839,19 @@ async function verifyHttp() {
       body: { name: 'Bad', component: FEE_COMPONENTS.ADMISSION_FEE, amount: 100, discount_type: 'percentage' },
     });
     check('a discount_type with a zero amount is refused', emptyDiscount.status, 422);
+
+    /* D20 — a closed session takes no new fee structure. */
+    const closedYear = await db.AcademicSession.create({
+      school_id: schoolA.id, organization_id: org.id, name: '2019-2020',
+      start_date: '2019-04-01', end_date: '2020-03-31', status: ACADEMIC_SESSION_STATUS.CLOSED, is_current: false,
+    });
+    const structureInClosed = await call('/fees/structures', {
+      method: 'POST',
+      token: accountant,
+      body: { name: 'Old year', component: FEE_COMPONENTS.ADMISSION_FEE, amount: 100, academic_session_id: closedYear.id },
+    });
+    check('D20 — a fee structure cannot be added to a closed session',
+      [structureInClosed.status, codeOf(structureInClosed)], [409, 'SESSION_CLOSED']);
 
     /* A structure at school D, so the listing has something to exclude. */
     const dStructRes = await expectOk(
@@ -1450,6 +1467,40 @@ async function verifyHttp() {
     );
     check('and the row on disk holds the same day', String(westRows[0].due_date).slice(0, 10), '2025-07-01');
 
+    /*
+     * ── the owner's decision D35 — the school's name, logo and currency are applied ──
+     *
+     * Before this, every one of the three structures above was created in USD because nothing read the
+     * school's setting, and only school leadership could read the setting at all. Asserted on the two
+     * roles FR-FEE-001 and FR-FEE-002 name, neither of whom holds `settings.view`.
+     */
+    const brandBefore = dataOf(await expectOk('/auth/me', { token: receptionist }, 200)).school;
+    check('D35 — before a school sets a display name, its screens are named by the platform record',
+      [brandBefore && brandBefore.name, brandBefore && brandBefore.currency], [schoolA.name, null]);
+    await db.SchoolSetting.create({
+      school_id: schoolA.id, organization_id: org.id, name: 'Verify FE Display Name',
+      logo_path: 'https://example.invalid/logo.png', currency: 'PKR',
+    });
+    const brand = dataOf(await expectOk('/auth/me', { token: receptionist }, 200)).school;
+    check('  and once it has, every school user is told its name, logo and currency — a Receptionist too',
+      [brand.name, brand.logo_path, brand.currency], ['Verify FE Display Name', 'https://example.invalid/logo.png', 'PKR']);
+    check('  with its current session, so a form can default to it (D20) without reading the session list',
+      [brand.current_session && brand.current_session.id, brand.current_session && brand.current_session.name],
+      [session.id, session.name]);
+    check('  and nothing else of the settings row — contact details and preferences stay behind settings.view',
+      Object.keys(brand).sort(), ['currency', 'current_session', 'id', 'logo_path', 'name']);
+    check('  while a platform caller has no school to name', dataOf(await expectOk('/auth/me', { token: platform }, 200)).school, null);
+    const inSchoolCurrency = dataOf(await expectOk('/fees/structures', {
+      method: 'POST', token: accountant,
+      body: { name: 'D35 Admission', component: FEE_COMPONENTS.ADMISSION_FEE, amount: 5000 },
+    }, 201)).structure;
+    const namedCurrency = dataOf(await expectOk('/fees/structures', {
+      method: 'POST', token: accountant,
+      body: { name: 'D35 Exam', component: FEE_COMPONENTS.EXAM_FEE, amount: 50, currency: 'GBP' },
+    }, 201)).structure;
+    check('  a fee structure entered without a currency is in the school\'s, not USD; one that names a currency keeps it',
+      [inSchoolCurrency.currency, namedCurrency.currency], ['PKR', 'GBP']);
+
     /* ── the trail ── */
 
     const activity = await settleDistinct(
@@ -1507,6 +1558,36 @@ async function verifyHttp() {
         audits.filter((r) => r.table_name === 'student_fees' && r.event === 'update').length > 0,
       true
     );
+
+    /*
+     * D29 — a structure's fine is applied by the clock. §17 lets a user configure one and never says
+     * when it applies, so it was stored and read by nothing. At the end of the run, on school D's child,
+     * so no figure asserted above can move. A per-day fine of 5 with 3 grace days, on a fee ten days
+     * late: 5 × 7 = 35 today, 40 tomorrow, nothing more on a second run the same day.
+     */
+    const fineStructure = await db.FeeStructure.create({
+      school_id: schoolD.id, organization_id: org.id, name: 'Late-fined tuition', component: FEE_COMPONENTS.MONTHLY_FEE,
+      amount: 200, currency: 'USD', fine_type: 'per_day', fine_amount: 5, fine_grace_days: 3,
+    });
+    const fineAt = new Date('2026-06-20T12:00:00Z');
+    const lateFee = await db.StudentFee.create({
+      school_id: schoolD.id, organization_id: org.id, student_id: dKid.id, fee_structure_id: fineStructure.id,
+      component: FEE_COMPONENTS.MONTHLY_FEE, title: 'June tuition', currency: 'USD', amount: 200, net_amount: 200,
+      paid_amount: 50, pending_amount: 150, due_date: '2026-06-10', status: 'partially_paid',
+    });
+    await feesService.applyFines({ at: fineAt });
+    await lateFee.reload();
+    const firstDay = [Number(lateFee.fine_amount), Number(lateFee.net_amount), Number(lateFee.pending_amount)];
+    const sameDay = await feesService.applyFines({ at: fineAt });
+    await feesService.applyFines({ at: new Date('2026-06-21T12:00:00Z') });
+    await lateFee.reload();
+    check('D29 — a per-day fine applies after the grace days and grows by the day: 35, then 40; net and pending follow',
+      [firstDay, sameDay.fined, Number(lateFee.fine_amount), Number(lateFee.pending_amount)],
+      [[35, 235, 185], 0, 40, 190]);
+    await lateFee.update({ status: 'paid', paid_amount: 240, pending_amount: 0 });
+    await feesService.applyFines({ at: new Date('2026-06-25T12:00:00Z') });
+    await lateFee.reload();
+    check('  and stops growing once the fee is paid', Number(lateFee.fine_amount), 40);
   } finally {
     try {
       await teardown();

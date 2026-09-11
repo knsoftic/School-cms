@@ -133,6 +133,7 @@ const {
   PLAN_VISIBILITY,
   LIMIT_LIST,
   LIMIT_TYPES,
+  SUBSCRIPTION_STATES,
 } = require('../src/config/constants');
 
 const { settle } = require('./lib/settle');
@@ -739,7 +740,7 @@ async function verifyDatabase() {
   check('coupons.expireLapsed(epoch).expired', coupons.expired, 0);
 
   const invoices = await invoicesService.markOverdue({ at: epoch });
-  check('invoices.markOverdue(epoch)', invoices, { scanned: 0, flagged: 0 });
+  check('invoices.markOverdue(epoch)', invoices, { scanned: 0, flagged: 0, subscriptionIds: [] });
 
   const quotations = await quotationsService.expireLapsed({ asOf: epoch });
   check('quotations.expireLapsed(epoch)', quotations, { expired: 0 });
@@ -1408,6 +1409,26 @@ async function verifyHttp() {
     check('a principal cannot record a payment', refusedRecord.status, 403);
     check('recording is platform-scoped, not a missing permission', codeOf(refusedRecord), 'PLATFORM_SCOPE_REQUIRED');
 
+    /*
+     * A payment is in its invoice's currency. The schemas take a currency, the row stored whatever came,
+     * and settlement adds amounts as they are — so 990 of another currency would have paid this invoice.
+     */
+    const otherCurrency = invoiced.currency === 'GBP' ? 'EUR' : 'GBP';
+    const foreignForm = new FormData();
+    foreignForm.append('invoice_id', String(invoiced.id));
+    foreignForm.append('amount', '990');
+    foreignForm.append('method', PAYMENT_METHODS.BANK_TRANSFER);
+    foreignForm.append('transaction_id', 'TXN-VBL-FX');
+    foreignForm.append('currency', otherCurrency);
+    const foreignSubmit = await call('/payments', { method: 'POST', token: principal, form: foreignForm });
+    const foreignRecord = await call('/payments/record', {
+      method: 'POST', token: platform,
+      body: { invoice_id: invoiced.id, amount: 990, method: PAYMENT_METHODS.BANK_TRANSFER, currency: otherCurrency },
+    });
+    check('a payment in another currency than its invoice\'s is refused — submitted or recorded',
+      [foreignSubmit.status, codeOf(foreignSubmit), foreignRecord.status, codeOf(foreignRecord)],
+      [422, 'PAYMENT_CURRENCY_MISMATCH', 422, 'PAYMENT_CURRENCY_MISMATCH']);
+
     const form = new FormData();
     form.append('invoice_id', String(invoiced.id));
     form.append('amount', '990');
@@ -1421,6 +1442,32 @@ async function verifyHttp() {
 
     const stillUnpaid = await expectOk(`/invoices/${invoiced.id}`, { token: platform }, 200);
     check('a pending payment does not settle the invoice', dataOf(stillUnpaid).invoice.status, INVOICE_STATUS.UNPAID);
+    /*
+     * Known Issues #26 on the invoice read too: its joined payments were spread whole, so every invoice
+     * response carried each payment's stored screenshot path. Only whether there is one goes out.
+     */
+    /*
+     * D27 — school leadership now reads the plans it could move to, the add-ons it could buy, and its
+     * own payments: the three reads the school billing screen needs. Its own payments only — the list
+     * is confined by the tenant, and a `school_id` naming another school is refused by the service too.
+     */
+    const ownPayments = await call('/payments?limit=100', { token: principal });
+    check('D27 — a Principal lists payments, the plans and the add-ons — its own school\'s payments only',
+      [ownPayments.status, (dataOf(ownPayments) || []).every((p) => Number(p.school_id) === Number(school.id)),
+        (dataOf(ownPayments) || []).some((p) => p.id === pending.id),
+        (await call('/plans', { token: principal })).status, (await call('/addons', { token: principal })).status],
+      [200, true, true, 200, 200]);
+    let widened = null;
+    try {
+      await paymentsService.list({ isPlatform: false, schoolId: school.id, organizationId: org.id }, { school_id: school.id + 1 },
+        { page: 1, limit: 10, offset: 0 });
+    } catch (err) { widened = err.code; }
+    check('  and naming another school in the filter is refused by the service, not merely by the middleware',
+      widened, 'CROSS_TENANT_ACCESS_DENIED');
+    const invoicePayment = (dataOf(stillUnpaid).invoice.payments || []).find((p) => p.id === pending.id) || {};
+    check('an invoice\'s payments go out without their stored screenshot path — only whether there is one',
+      [invoicePayment.id === pending.id, 'screenshot_path' in invoicePayment, invoicePayment.has_screenshot],
+      [true, false, false]);
 
     const approved = await expectOk(
       `/payments/${pending.id}/approve`,
@@ -1429,6 +1476,29 @@ async function verifyHttp() {
     );
     check('approval marks the payment approved', dataOf(approved).payment.status, PAYMENT_STATUS.APPROVED);
     check('and the invoice is now paid', dataOf(approved).settlement.status, INVOICE_STATUS.PAID);
+
+    /*
+     * The reviewer's note is the platform's: "internal note the reviewer leaves; not shown to the school"
+     * says the schema, and every payment and invoice read handed it to the school anyway.
+     */
+    const schoolPayment = dataOf(await expectOk(`/payments/${pending.id}`, { token: principal }, 200)).payment;
+    const platformPayment = dataOf(await expectOk(`/payments/${pending.id}`, { token: platform }, 200)).payment;
+    const schoolInvoice = dataOf(await expectOk(`/invoices/${invoiced.id}`, { token: principal }, 200)).invoice;
+    const platformInvoice = dataOf(await expectOk(`/invoices/${invoiced.id}`, { token: platform }, 200)).invoice;
+    const schoolInvoicePayment = (schoolInvoice.payments || []).find((p) => p.id === pending.id) || {};
+    check('the reviewer\'s internal note reaches the platform and not the school — on the payment or the invoice',
+      [platformPayment.review_note, 'review_note' in schoolPayment, 'review_note' in schoolInvoicePayment],
+      ['Bank statement matches', false, false]);
+    /*
+     * And a coupon appears on a school's bill as the school needs it — not as the platform configured it:
+     * which other schools and plans it is restricted to, and how often it has been used, are coupons.view.
+     */
+    check('a school reads its invoice\'s coupon as code, name and discount — not the platform\'s configuration of it',
+      [schoolInvoice.coupon && schoolInvoice.coupon.code,
+        ['restricted_school_ids', 'restricted_plan_ids', 'used_count', 'max_uses', 'max_uses_per_school']
+          .filter((k) => schoolInvoice.coupon && k in schoolInvoice.coupon),
+        platformInvoice.coupon && 'used_count' in platformInvoice.coupon],
+      ['VBL10', [], true]);
 
     const approvalAudit = await settle(
       () => db.AuditLog.findOne({
@@ -1534,6 +1604,21 @@ async function verifyHttp() {
       201
     );
     const addonItemId = dataOf(bought).purchase.itemId;
+    /*
+     * D24 — this period's invoice already went out (the coupon invoice above), so the add-on bought
+     * now is charged at purchase, prorated for the rest of the period, as an immediate upgrade is.
+     * It used to ride free until the next period's invoice.
+     */
+    const purchaseInvoice = dataOf(bought).invoice;
+    const purchaseInvoiceRow = purchaseInvoice
+      ? await db.Invoice.findByPk(purchaseInvoice.id, { include: [{ model: db.InvoiceItem, as: 'items' }] })
+      : null;
+    if (purchaseInvoiceRow) created.invoices.push(purchaseInvoiceRow.id);
+    const purchaseLine = purchaseInvoiceRow ? (purchaseInvoiceRow.items || [])[0] || {} : {};
+    check('D24 — an add-on bought after its period was invoiced is invoiced at purchase, prorated, never above a full period',
+      [Boolean(purchaseInvoiceRow), purchaseLine.item_type, /prorated for \d+ day/.test(purchaseLine.description || ''),
+        num(purchaseLine.amount) > 0 && num(purchaseLine.amount) <= 50],
+      [true, 'addon', true, true]);
 
     const secondIssued = await expectOk(
       '/invoices/generate',
@@ -1819,6 +1904,173 @@ async function verifyHttp() {
       num(afterWindow.plan.amount),
       1000
     );
+
+    /*
+     * Cancelling an invoice gives back the coupon use it recorded, as taking the coupon off already did.
+     * §13.4's Maximum Uses must count only discounts that took effect, and a cancelled invoice is never
+     * paid — so keeping the use let a re-issued period be refused the same coupon as exhausted.
+     */
+    const couponUses = async () => ({
+      used: Number((await db.Coupon.findByPk(coupon.id)).used_count),
+      rows: await db.CouponUsage.count({ where: { coupon_id: coupon.id } }),
+    });
+    const toCancel = dataOf(await expectOk('/invoices/generate', {
+      method: 'POST',
+      token: platform,
+      body: {
+        subscription_id: subscriptionId, tax_id: tax.id,
+        billing_period_start: '2034-01-01T00:00:00.000Z', billing_period_end: '2034-01-31T00:00:00.000Z',
+      },
+    }, 201)).invoice;
+    created.invoices.push(toCancel.id);
+    const usesBefore = await couponUses();
+    await expectOk(`/invoices/${toCancel.id}/coupon`, { method: 'POST', token: principal, body: { code: 'VBL10' } }, 200);
+    const usesApplied = await couponUses();
+    await expectOk(`/invoices/${toCancel.id}/cancel`, { method: 'POST', token: platform, body: { reason: 'Issued in error' } }, 200);
+    const usesAfter = await couponUses();
+    check('applying a coupon to an invoice counts one use against it',
+      [usesApplied.used - usesBefore.used, usesApplied.rows - usesBefore.rows], [1, 1]);
+    check('  and cancelling that invoice gives the use back — Maximum Uses counts only discounts that took effect',
+      [usesAfter.used, usesAfter.rows], [usesBefore.used, usesBefore.rows]);
+
+    /*
+     * A coupon that brings an invoice below the credit it drew gives the difference back to the
+     * subscription. The recompute capped the credit at the new total and the rest vanished — the school's
+     * credit destroyed, and owed again in full once the coupon came off. 1050 of credit on an invoice
+     * above that; the 10% coupon takes the total below 1050, and what the invoice no longer needs goes
+     * back and stays back. Asserted as relations, so the plan's price earlier in this suite does not
+     * matter: it is the conservation that is the point.
+     */
+    const creditBefore = num((await db.Subscription.findByPk(subscriptionId)).credit_balance);
+    await db.Subscription.update({ credit_balance: 1050 }, { where: { id: subscriptionId } });
+    const credited = dataOf(await expectOk('/invoices/generate', {
+      method: 'POST', token: platform,
+      body: {
+        subscription_id: subscriptionId, tax_id: tax.id,
+        billing_period_start: '2034-02-01T00:00:00.000Z', billing_period_end: '2034-02-28T00:00:00.000Z',
+      },
+    }, 201)).invoice;
+    created.invoices.push(credited.id);
+    const balance = async () => num((await db.Subscription.findByPk(subscriptionId)).credit_balance);
+    const drawn = [num(credited.total), num(credited.credit_applied), await balance()];
+    const couponed = dataOf(await expectOk(`/invoices/${credited.id}/coupon`, { method: 'POST', token: principal, body: { code: 'VBL10' } }, 200)).invoice;
+    const afterCoupon = [num(couponed.total), num(couponed.credit_applied), await balance()];
+    const uncouponed = dataOf(await expectOk(`/invoices/${credited.id}/coupon`, { method: 'DELETE', token: platform, body: {} }, 200)).invoice;
+    const afterRemoval = [num(uncouponed.credit_applied), await balance()];
+    check('an invoice draws the subscription\'s credit at issue — all 1050, on a larger total — and the balance empties',
+      [drawn[0] > 1050, drawn[1], drawn[2]], [true, 1050, 0]);
+    check('  a coupon taking the total below 1050 caps the credit at it, and gives the rest back to the subscription',
+      [afterCoupon[0] < 1050, afterCoupon[1] === afterCoupon[0], num((1050 - afterCoupon[0]).toFixed(2)) === afterCoupon[2], afterCoupon[2] > 0],
+      [true, true, true, true]);
+    check('  and removing the coupon loses none of it: what the invoice holds and what the subscription holds is 1050 still',
+      [afterRemoval[0], num((afterRemoval[0] + afterRemoval[1]).toFixed(2))], [afterCoupon[1], 1050]);
+    await expectOk(`/invoices/${credited.id}/cancel`, { method: 'POST', token: platform, body: { reason: 'Credit probe' } }, 200);
+    await db.Subscription.update({ credit_balance: creditBefore }, { where: { id: subscriptionId } });
+
+    /*
+     * ═══ Billing drives the subscription's state — the owner's decision D23 — and the first cycle ═══
+     *
+     * A second school on the same plan, so every edge below starts from a subscription nothing above
+     * touched. The plan has no trial, so it is born pending and the D6 job invoices it at once. It
+     * carries a one-off setup line and the closed line of a cancelled add-on, so the first cycle's two
+     * rules have something to act on.
+     */
+    const school2 = await db.School.create({ organization_id: org.id, name: 'Verify Billing School 2', code: 'VBL-S2' });
+    created.schools.push(school2.id);
+    const sub2 = dataOf(await expectOk('/subscriptions', {
+      method: 'POST', token: platform, body: { school_id: school2.id, plan_id: planId },
+    }, 201)).subscription;
+    created.subscriptions.push(sub2.id);
+    /*
+     * Back-dated two days, for the reason the first subscription above is: created and activated in
+     * the same second, the re-based period equals the invoiced one at DATETIME's one-second grain, and
+     * the C2 check below would pass against the old code. It did, until this line.
+     */
+    const twoDaysAgo = new Date(Date.now() - 2 * 86400000);
+    await db.Subscription.update(
+      { starts_at: twoDaysAgo, current_period_start: twoDaysAgo, current_period_end: new Date(twoDaysAgo.getTime() + 30 * 86400000) },
+      { where: { id: sub2.id } }
+    );
+    await db.SubscriptionItem.create({
+      subscription_id: sub2.id, school_id: school2.id, item_type: 'setup_fee', description: 'Setup',
+      quantity: 1, unit_amount: 150, amount: 150, currency: 'USD', is_recurring: false,
+    });
+    const cancelledPurchase = await db.SubscriptionAddon.create({
+      subscription_id: sub2.id, school_id: school2.id, addon_id: extraStudents.id, quantity: 1, unit_amount: 25,
+      currency: 'USD', effect_type: extraStudents.effect_type, effect_target: extraStudents.effect_target,
+      units_granted: 1, status: 'cancelled', starts_at: new Date(), ends_at: new Date(), is_recurring: false,
+    });
+    await db.SubscriptionItem.create({
+      subscription_id: sub2.id, school_id: school2.id, item_type: 'addon', addon_id: extraStudents.id,
+      description: 'Cancelled add-on', quantity: 1, unit_amount: 25, amount: 25, currency: 'USD',
+      is_recurring: false, period_end: new Date(), metadata: { subscription_addon_id: cancelledPurchase.id },
+    });
+
+    const invoicesOf2 = () => db.Invoice.findAll({
+      where: { subscription_id: sub2.id },
+      include: [{ model: db.InvoiceItem, as: 'items' }],
+      order: [['id', 'ASC']],
+    });
+    const record = (invoice, key) => expectOk('/payments/record', {
+      method: 'POST', token: platform,
+      body: { invoice_id: invoice.id, amount: num(invoice.total), method: PAYMENT_METHODS.BANK_TRANSFER, transaction_id: `TXN-VBL-${key}` },
+    }, 201);
+    const stateOf2 = async () => (await db.Subscription.findByPk(sub2.id)).state;
+
+    await invoicesService.issueForStartedPeriods({ at: new Date() });
+    const [firstInvoice] = await invoicesOf2();
+    created.invoices.push(firstInvoice.id);
+    check('the D6 job invoices the pending subscription\'s first period, setup fee and all — but not a cancelled add-on\'s line',
+      [sub2.state, (firstInvoice.items || []).map((item) => item.item_type).sort()],
+      [SUBSCRIPTION_STATES.PENDING, ['plan', 'setup_fee']]);
+
+    /* C2 — paying it activates the subscription, which re-bases the period; the invoice moves with it. */
+    await record(firstInvoice, 'C2');
+    const activated = await db.Subscription.findByPk(sub2.id);
+    await firstInvoice.reload();
+    const secondRun = await invoicesService.issueForStartedPeriods({ at: new Date() });
+    check('paying the first invoice activates the subscription and its invoice follows the re-based period',
+      [activated.state, new Date(firstInvoice.billing_period_start).getTime() === new Date(activated.current_period_start).getTime()],
+      [SUBSCRIPTION_STATES.ACTIVE, true]);
+    check('  so the next job run finds that period billed and does not invoice the first cycle a second time',
+      [(await invoicesOf2()).length, secondRun.failed.length], [1, 0]);
+
+    /* The setup fee is owed once: a later period bills the recurring lines only. */
+    const generate2 = async (start, end) => {
+      const invoice = dataOf(await expectOk('/invoices/generate', {
+        method: 'POST', token: platform,
+        body: { subscription_id: sub2.id, billing_period_start: start, billing_period_end: end },
+      }, 201)).invoice;
+      created.invoices.push(invoice.id);
+      return invoice;
+    };
+    const laterInvoice = await generate2('2036-01-01T00:00:00.000Z', '2036-01-31T00:00:00.000Z');
+    check('a later period bills the plan line only — the setup fee is owed once, once any invoice has billed it',
+      (laterInvoice.items || []).map((item) => item.item_type), ['plan']);
+
+    /* D23 — the invoice goes overdue: the job moves the subscription to Past Due, and into grace. */
+    await db.Invoice.update({ due_date: '2020-01-01' }, { where: { id: laterInvoice.id } });
+    const overdueTask = require('../src/jobs/tasks/invoiceOverdue');
+    const overdueRun = await overdueTask.run({ at: new Date() });
+    const lapsed = await db.Subscription.findByPk(sub2.id);
+    check('D23 — an overdue invoice makes the subscription Past Due, and FR-SUB-012 then puts it in grace',
+      [overdueRun.subscriptionIds.includes(Number(sub2.id)), lapsed.state, Boolean(lapsed.grace_period_ends_at),
+        await db.SubscriptionHistory.count({ where: { subscription_id: sub2.id, event: 'past_due' } })],
+      [true, SUBSCRIPTION_STATES.GRACE_PERIOD, true, 1]);
+
+    /* D23 — paying every overdue invoice, while the period still runs, returns it to Active. */
+    const overdueRow = await db.Invoice.findByPk(laterInvoice.id);
+    await record(overdueRow, 'D23');
+    const settled = await db.Subscription.findByPk(sub2.id);
+    check('D23 — paying the overdue invoice returns the subscription to Active and closes its grace period',
+      [settled.state, settled.grace_period_ends_at], [SUBSCRIPTION_STATES.ACTIVE, null]);
+
+    /* D23 — but paying a debt never revives a subscription an administrator stopped. */
+    await expectOk(`/subscriptions/${sub2.id}/suspend`, { method: 'POST', token: platform, body: { reason: 'Verification' } }, 200);
+    const debt = await generate2('2037-01-01T00:00:00.000Z', '2037-01-31T00:00:00.000Z');
+    await record(debt, 'SUSP');
+    check('D23 — a suspended subscription stays suspended when an invoice of its is paid',
+      [await stateOf2(), (await db.Invoice.findByPk(debt.id)).status], [SUBSCRIPTION_STATES.SUSPENDED, INVOICE_STATUS.PAID]);
   } finally {
     try {
       await teardown();

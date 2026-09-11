@@ -22,14 +22,15 @@ process.env.CSRF_ENABLED = 'true';
  * HTTP with real JWTs and real multipart bodies.
  *
  *   middlewares/upload       per-surface allowlists, the plan-vs-server ceiling, the three refusals,
- *                            random stored names, per-school directories, cleanup
+ *                            random stored names, per-school directories, cleanup, and the Storage
+ *                            Limit charged, refused and refunded (a fifth plan, STORE)
  *   middlewares/rateLimit    address canonicalisation, per-user keying, the 429 envelope
  *   middlewares/csrf         double-submit across every failure shape, and the two escape hatches
  *   middlewares/activityLog  what gets a row and what does not, audit diffing, and the two things
  *                            recorded whether or not a route asked
  *   middlewares/sanitize     the multipart body pass added for the upload chain
  *
- * The four upload plans differ only in their `plan_limits` row for `file_upload_limit`, which is what
+ * The four ceiling plans differ only in their `plan_limits` row for `file_upload_limit`, which is what
  * makes SRS §30 Rule 1 verifiable here: 1 MB, 5 MB, Unlimited and *absent* produce four different
  * ceilings from identical code, and every expected number below is derived from the row rather than
  * from a plan name.
@@ -111,6 +112,7 @@ const AUDIT_TABLE = 'verify_mw_records';
 
 const MEGABYTE = 1024 * 1024;
 const UPLOAD_LIMIT = LIMITS.FILE_UPLOAD_LIMIT;
+const STORAGE_LIMIT = LIMITS.STORAGE_LIMIT;
 
 const STARTS_AT = new Date('2026-01-01T00:00:00Z');
 const PERIOD_START = new Date('2026-08-01T00:00:00Z');
@@ -228,13 +230,19 @@ async function buildFixtures() {
    * Four plans, one `plan_limits` row of difference between them. The server backstop is 2 MB, so:
    * SMALL is stricter than it, BIG is looser, UNLIM defers to it entirely, and ZERO never configured
    * the limit at all — which the entitlement chain answers with a deny, not with "unlimited".
+   *
+   * The first three also grant Unlimited storage: every upload is charged against `storage_limit`, and
+   * an unconfigured one is zero too, so without it these plans would be testing the storage refusal
+   * rather than the per-file ceiling. STORE is the plan that tests storage, with 3 MB of it.
    */
+  const unlimitedStorage = { limit_key: STORAGE_LIMIT, limit_type: LIMIT_TYPES.UNLIMITED, unit: 'megabytes' };
   const plans = {
     small: await makePlan({
       code: 'SMALL',
       tierRank: 1,
       limits: [
         { limit_key: UPLOAD_LIMIT, limit_type: LIMIT_TYPES.FIXED, limit_value: 1, unit: 'megabytes' },
+        unlimitedStorage,
       ],
     }),
     big: await makePlan({
@@ -242,14 +250,32 @@ async function buildFixtures() {
       tierRank: 2,
       limits: [
         { limit_key: UPLOAD_LIMIT, limit_type: LIMIT_TYPES.FIXED, limit_value: 5, unit: 'megabytes' },
+        unlimitedStorage,
       ],
     }),
     unlimited: await makePlan({
       code: 'UNLIM',
       tierRank: 3,
-      limits: [{ limit_key: UPLOAD_LIMIT, limit_type: LIMIT_TYPES.UNLIMITED, unit: 'megabytes' }],
+      limits: [{ limit_key: UPLOAD_LIMIT, limit_type: LIMIT_TYPES.UNLIMITED, unit: 'megabytes' }, unlimitedStorage],
     }),
     zero: await makePlan({ code: 'ZERO', tierRank: 4, limits: [] }),
+    store: await makePlan({
+      code: 'STORE',
+      tierRank: 5,
+      limits: [
+        { limit_key: UPLOAD_LIMIT, limit_type: LIMIT_TYPES.FIXED, limit_value: 5, unit: 'megabytes' },
+        { limit_key: STORAGE_LIMIT, limit_type: LIMIT_TYPES.FIXED, limit_value: 3, unit: 'megabytes' },
+      ],
+    }),
+    /* One megabyte of storage: the smallest allowance that parallel uploads can race for. */
+    race: await makePlan({
+      code: 'RACE',
+      tierRank: 6,
+      limits: [
+        { limit_key: UPLOAD_LIMIT, limit_type: LIMIT_TYPES.FIXED, limit_value: 5, unit: 'megabytes' },
+        { limit_key: STORAGE_LIMIT, limit_type: LIMIT_TYPES.FIXED, limit_value: 1, unit: 'megabytes' },
+      ],
+    }),
   };
 
   const schools = {};
@@ -271,6 +297,9 @@ async function buildFixtures() {
   }
   /* In the other organization, so a cross-tenant reference is unambiguous. */
   await makeSchool('U8', orgTwo);
+  /* On STORE, the storage-limit plan, and on RACE. */
+  await makeSchool('U9', orgOne);
+  await makeSchool('U10', orgOne);
 
   async function subscribe(school, plan, state) {
     return db.Subscription.create({
@@ -295,6 +324,8 @@ async function buildFixtures() {
   /* U6 gets no subscription row at all. */
   await subscribe(schools.U7, plans.small, SUBSCRIPTION_STATES.ACTIVE);
   await subscribe(schools.U8, plans.small, SUBSCRIPTION_STATES.ACTIVE);
+  await subscribe(schools.U9, plans.store, SUBSCRIPTION_STATES.ACTIVE);
+  await subscribe(schools.U10, plans.race, SUBSCRIPTION_STATES.ACTIVE);
 
   async function makeUser(key, attrs) {
     const user = await db.User.create({
@@ -317,7 +348,7 @@ async function buildFixtures() {
       organization_id: orgOne.id,
     }),
   };
-  for (const key of ['U1', 'U2', 'U3', 'U4', 'U5', 'U6', 'U7']) {
+  for (const key of ['U1', 'U2', 'U3', 'U4', 'U5', 'U6', 'U7', 'U9', 'U10']) {
     // eslint-disable-next-line no-await-in-loop
     users[key] = await makeUser(`p${key}`, {
       role_id: roleId[ROLES.PRINCIPAL],
@@ -476,6 +507,16 @@ function buildApp() {
   api.post('/upload/photo', ...uploadSingle(UPLOAD_PROFILES.PERSON_PHOTO, 'photo'), report);
   api.post('/upload/ai', ...uploadSingle(UPLOAD_PROFILES.AI_SOURCE, 'source'), report);
   api.post('/upload/proof', ...uploadSingle(UPLOAD_PROFILES.PAYMENT_PROOF, 'proof'), report);
+  /* Mounted the way `payments.routes` mounts §13.3's screenshot. */
+  api.post(
+    '/upload/billing-proof',
+    ...uploadSingle(UPLOAD_PROFILES.PAYMENT_PROOF, 'proof', { allowInactiveSubscription: true }),
+    report
+  );
+  /* A handler that refuses after the upload chain accepted — a validator, a missing row, a failed insert. */
+  api.post('/upload/refused-after', ...uploadSingle(UPLOAD_PROFILES.PERSON_PHOTO, 'photo'), (req, res) =>
+    res.status(422).json({ success: false, code: 'VALIDATION_ERROR', message: 'Refused after the upload' })
+  );
   api.post('/upload/docs', ...uploadArray(UPLOAD_PROFILES.STUDENT_DOCUMENT, 'documents'), report);
   api.post('/upload/two', ...uploadArray(UPLOAD_PROFILES.STUDENT_DOCUMENT, 'documents', 2), report);
   api.post(
@@ -1268,6 +1309,83 @@ async function main() {
     check('legitimate text is left alone', r.data.body.ok, 'Smith & Sons 5 < 7');
   }
 
+  console.log('\n--- upload: the Storage Limit is charged and enforced (SRS §11.2, FR-SUB-008) ---');
+  {
+    const storageUsed = async () => {
+      const row = await db.UsageRecord.findOne({
+        where: { school_id: schools.U9.id, limit_key: STORAGE_LIMIT },
+        raw: true,
+      });
+      return row ? Number(row.used_value) : 0;
+    };
+    /* A refund lands after the response does; wait for it rather than guessing a delay. */
+    const storageSettlesAt = async (expected) => {
+      for (let i = 0; i < 40; i += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        if ((await storageUsed()) === expected) return expected;
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(50);
+      }
+      return storageUsed();
+    };
+    const photosOnDisk = () => {
+      const dir = path.join(config.uploads.dir, `school-${schools.U9.id}`, 'person_photo');
+      return fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
+    };
+    const pdf = (name, bytes) => ({ field: 'documents', name, type: 'application/pdf', bytes });
+
+    const first = await upload('/api/v1/upload/photo', { user: users.U9, files: [png(4096)] });
+    check('an upload within the storage allowance is accepted', first.status, 200);
+    check('and is charged in whole megabytes, rounded up — 4 KB costs 1 MB', await storageUsed(), 1);
+
+    const failed = await upload('/api/v1/upload/refused-after', { user: users.U9, files: [png(4096)] });
+    check('a request refused after its upload was accepted', failed.status, 422);
+    check('  is refunded — a school is charged only for the files it kept', await storageSettlesAt(1), 1);
+
+    const docs = await upload('/api/v1/upload/docs', {
+      user: users.U9,
+      files: [pdf('a.pdf', 700 * 1024), pdf('b.pdf', 700 * 1024), pdf('c.pdf', 100 * 1024)],
+    });
+    check('several files in one request', docs.status, 200);
+    check('  are charged together, rounded up: 1.5 MB in three files costs 2 MB — not 1, not 3', await storageUsed(), 3);
+
+    const before = photosOnDisk();
+    const over = await upload('/api/v1/upload/photo', { user: users.U9, files: [png(4096)] });
+    check('an upload that would pass the Storage Limit is refused', over.status, 403);
+    check('  code', over.code, 'PLAN_LIMIT_EXCEEDED');
+    check('  naming the limit, the allowance and what is in use', [over.details.limitKey, over.details.limit, over.details.used], [STORAGE_LIMIT, 3, 3]);
+    check('  and nothing is charged for it', await storageUsed(), 3);
+    check('  and the file multer wrote is deleted again', photosOnDisk(), before);
+
+    const proof = await upload('/api/v1/upload/billing-proof', {
+      user: users.U9,
+      files: [{ field: 'proof', name: 'receipt.png', type: 'image/png', bytes: 4096 }],
+    });
+    check('a payment screenshot is still accepted at the cap — it is how a school pays for more', proof.status, 200);
+    check('  and is not charged against the storage it may be buying', await storageUsed(), 3);
+  }
+  {
+    /*
+     * Eight uploads racing for one megabyte. A check followed by a separate write lets several through —
+     * each reads 0 used before any has written — which is why the charge is `reserveUsage()`'s single
+     * conditional UPDATE; `verify-concurrency.js` makes the same measurement for the headcount keys.
+     */
+    const raced = await Promise.all(
+      Array.from({ length: 8 }, (_, n) =>
+        upload('/api/v1/upload/photo', { user: users.U10, files: [png(4096, `race-${n}.png`)] })
+      )
+    );
+    const row = await db.UsageRecord.findOne({
+      where: { school_id: schools.U10.id, limit_key: STORAGE_LIMIT },
+      raw: true,
+    });
+    const dir = path.join(config.uploads.dir, `school-${schools.U10.id}`, 'person_photo');
+    check('eight uploads racing for the last megabyte: exactly one is accepted', raced.filter((r) => r.status === 200).length, 1);
+    check('  the other seven are refused by the Storage Limit and nothing else', [...new Set(raced.filter((r) => r.status !== 200).map((r) => r.code))], ['PLAN_LIMIT_EXCEEDED']);
+    check('  the counter stands at the allowance, not past it', row ? Number(row.used_value) : 0, 1);
+    check('  and one file is on disk', fs.existsSync(dir) ? fs.readdirSync(dir).length : 0, 1);
+  }
+
   console.log('\n--- upload: construction-time validation ---');
   checkThrows(
     'an unknown profile',
@@ -1293,7 +1411,7 @@ async function main() {
   check(
     'the chain a route mounts',
     uploadSingle(UPLOAD_PROFILES.PERSON_PHOTO, 'photo').length,
-    4
+    5
   );
 
   /* ─────────────────── rate limiting over HTTP ─────────────────── */

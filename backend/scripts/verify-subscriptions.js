@@ -326,6 +326,7 @@ function verifySchemas() {
   /* The purchase copy: the four columns the service computes, refused with their sources named. */
   const purchaseRefusals = run(schemas.purchaseAddon, {
     addon_id: 15,
+    addon_price_id: 9,
     effect_type: 'limit_increase',
     effect_target: 'student_limit',
     units_granted: 500,
@@ -344,8 +345,14 @@ function verifySchemas() {
   );
   check(
     'quantity defaults to one',
-    run(schemas.purchaseAddon, { addon_id: 15 }).value.quantity,
+    run(schemas.purchaseAddon, { addon_id: 15, addon_price_id: 9 }).value.quantity,
     1
+  );
+  /* D21 — Known Issues #18: a purchase naming no price was recorded and billed at 0.00. */
+  check(
+    'D21 — a purchase must name its price; one that does not is refused, naming the field',
+    run(schemas.purchaseAddon, { addon_id: 15 }).messages.some((message) => message.includes('addon_price_id')),
+    true
   );
 
   /* §33 — the four override shapes. */
@@ -1787,6 +1794,22 @@ async function verifyHttp() {
       30 * 1440
     );
 
+    /*
+     * A quantity change reaches the plan line, which is what every invoice is built from. `update()`
+     * recalculated `cycle_amount` on the subscription row and left `subscription_items` alone, so a
+     * school moved from 100 to 200 students on a per-unit price went on being invoiced for 100.
+     */
+    const planLineOf = () => db.SubscriptionItem.findOne({ where: { subscription_id: sub.id, item_type: 'plan' } });
+    const quantityBefore = Number((await planLineOf()).quantity);
+    const requantified = await call(`/subscriptions/${sub.id}`, {
+      method: 'PATCH', token: platform, body: { quantity: quantityBefore + 4 },
+    });
+    const lineAfter = await planLineOf();
+    check('a quantity change moves the plan line with it, so the next invoice bills the new quantity',
+      [requantified.status, Number(lineAfter.quantity), money.toNumber(lineAfter.amount)],
+      [200, quantityBefore + 4, money.toNumber(subOf(requantified).cycle_amount)]);
+    await call(`/subscriptions/${sub.id}`, { method: 'PATCH', token: platform, body: { quantity: quantityBefore } });
+
     /* ─────────────────────── reads, and the tenant boundary ─────────────────────── */
 
     console.log('\n--- reads: scope, and what a school may not see ---');
@@ -2089,16 +2112,22 @@ async function verifyHttp() {
       undefined
     );
     /*
-     * Bought without naming a price, deliberately — the other half of the pricing path. There is no
-     * implicit selection here, unlike `selectPrice()` for a plan: a purchase that names no
-     * `addon_price_id` is recorded at zero with a null pointer. That is what makes the module usable
-     * against the shipped seed data, where `addon_prices` is empty, and it is asserted rather than
-     * assumed because a purchase silently priced at zero is a billing figure nobody chose.
+     * Bought at its own price. A purchase naming no `addon_price_id` used to be recorded at zero with a
+     * null pointer and billed as a zero line — a billing figure nobody chose (Known Issues #18). The
+     * owner's decision D21 refuses it, over HTTP as in the schema check above.
      */
-    const unlocked = await call(`/subscriptions/${sub.id}/addons`, {
+    const priceless = await call(`/subscriptions/${sub.id}/addons`, {
       method: 'POST',
       token: platform,
       body: { addon_id: premiumReports.id },
+    });
+    check('D21 — over HTTP too, a purchase naming no price is refused rather than billed at 0.00',
+      [priceless.status, [].concat(detailsOf(priceless) || []).map((d) => d.field)],
+      [422, ['addon_price_id']]);
+    const unlocked = await call(`/subscriptions/${sub.id}/addons`, {
+      method: 'POST',
+      token: platform,
+      body: { addon_id: premiumReports.id, addon_price_id: reportPrice.id },
     });
     check(
       'a feature_unlock purchase grants zero units and says so',
@@ -2112,13 +2141,13 @@ async function verifyHttp() {
     );
     const unlockedRow = await db.SubscriptionAddon.findByPk(dataOf(unlocked).purchase.id);
     check(
-      'and with no price named it is recorded at zero, in the subscription’s own currency',
+      'and it is recorded at the price it names, in that price’s currency',
       {
-        addon_price_id: unlockedRow.addon_price_id,
+        addon_price_id: Number(unlockedRow.addon_price_id),
         unit_amount: money.toNumber(unlockedRow.unit_amount),
         currency: unlockedRow.currency,
       },
-      { addon_price_id: null, unit_amount: 0, currency: 'USD' }
+      { addon_price_id: Number(reportPrice.id), unit_amount: 10, currency: 'USD' }
     );
     check(
       'a feature_unlock purchase grants zero units and says so',
@@ -2373,6 +2402,166 @@ async function verifyHttp() {
       { where: { id: sub.id } }
     );
     const periodEndBeforeUpgrade = (await db.Subscription.findByPk(sub.id)).current_period_end;
+
+    /*
+     * C4 — a plan change during a trial is not prorated. §12.3's remaining credit is credit from the
+     * prior plan, and a trial paid for nothing: prorating one turned the free trial into wallet credit a
+     * school could mint with an immediate downgrade, and billed an upgrade twice. A school of its own,
+     * born in trial on the basic plan, and half-way through that trial.
+     */
+    const trialSchool = await db.School.create({
+      organization_id: fixtures.school.organization_id, name: 'Verify Subs Trial Change', code: 'VSB-TRIAL-CH',
+    });
+    created.schools.push(trialSchool.id);
+    const inTrial = subOf(await call('/subscriptions', {
+      method: 'POST', token: platform, body: { school_id: trialSchool.id, plan_id: planIds.basic },
+    }));
+    created.subscriptions.push(inTrial.id);
+    await db.Subscription.update(
+      { current_period_start: new Date(upgradeAt - 15 * DAY), current_period_end: new Date(upgradeAt + 15 * DAY) },
+      { where: { id: inTrial.id } }
+    );
+    const trialUpgrade = await call(`/subscriptions/${inTrial.id}/upgrade`, {
+      method: 'POST', token: platform, body: { plan_id: planIds.pro, reason: 'Trying the bigger plan' },
+    });
+    const trialChange = dataOf(trialUpgrade).change || {};
+    check('C4 — an upgrade during a trial moves the plan and prorates nothing: no credit, nothing due, no invoice',
+      [inTrial.state, trialUpgrade.status, (trialChange.proration || {}).unusedCredit, (trialChange.proration || {}).amountDue,
+        await db.Invoice.count({ where: { subscription_id: inTrial.id } }),
+        Number((await db.Subscription.findByPk(inTrial.id)).plan_id)],
+      [SUBSCRIPTION_STATES.TRIAL, 200, 0, 0, 0, Number(planIds.pro)]);
+
+    /*
+     * D26 — a Per-Student price bills the school's live active-student count, taken at creation and
+     * again at every renewal. All three per-unit models used to bill whatever quantity was typed, and
+     * a renewal carried the old amount forward whatever the school had grown to. A plan of its own, one
+     * price, 100 a cycle plus 2 per student; a school of three active students and one who has left.
+     */
+    const perStudentPlan = await db.SubscriptionPlan.create({
+      name: 'Verify Subs Per Student', code: 'VSB-PERSTUDENT', status: 'active', tier_rank: 5, trial_days: 0, grace_period_days: 3,
+    });
+    await db.PlanPrice.create({
+      plan_id: perStudentPlan.id, billing_cycle: BILLING_CYCLES.CUSTOM_DAYS, cycle_days: 30,
+      pricing_model: PRICING_MODELS.PER_STUDENT, currency: 'USD', base_amount: 100, unit_amount: 2, included_units: 0,
+      is_default: true, is_active: true,
+    });
+    const countedSchool = await db.School.create({
+      organization_id: fixtures.school.organization_id, name: 'Verify Subs Counted', code: 'VSB-COUNTED',
+    });
+    created.schools.push(countedSchool.id);
+    const mkPupil = (key, status = 'active') => db.Student.create({
+      school_id: countedSchool.id, organization_id: countedSchool.organization_id, student_id: `VSB-P${key}`,
+      first_name: `Pupil${key}`, admission_date: '2026-01-05', status,
+    });
+    for (const key of ['1', '2', '3']) await mkPupil(key); // eslint-disable-line no-await-in-loop
+    await mkPupil('4', 'left');
+
+    const counted = subOf(await call('/subscriptions', {
+      method: 'POST', token: platform, body: { school_id: countedSchool.id, plan_id: perStudentPlan.id, quantity: 40 },
+    }));
+    created.subscriptions.push(counted.id);
+    check('D26 — a Per-Student subscription bills the school\'s active students, not a typed quantity: 3, so 100 + 2 × 3',
+      [Number(counted.quantity), money.toNumber(counted.cycle_amount)], [3, 106]);
+
+    const typedQuantity = await call(`/subscriptions/${counted.id}`, { method: 'PATCH', token: platform, body: { quantity: 9 } });
+    check('  and its quantity cannot be typed over — the next renewal would count again',
+      [typedQuantity.status, codeOf(typedQuantity)], [409, 'SUBSCRIPTION_QUANTITY_COUNTED']);
+
+    await call(`/subscriptions/${counted.id}/activate`, { method: 'POST', token: platform });
+    await mkPupil('5');
+    await mkPupil('6');
+    await call(`/subscriptions/${counted.id}/renew`, { method: 'POST', token: platform, body: {} });
+    const recounted = await db.Subscription.findByPk(counted.id);
+    const recountedLine = await db.SubscriptionItem.findOne({ where: { subscription_id: counted.id, item_type: 'plan' } });
+    check('  and a renewal counts again — five students now — and the plan line it will invoice follows',
+      [Number(recounted.quantity), money.toNumber(recounted.cycle_amount), Number(recountedLine.quantity), money.toNumber(recountedLine.amount)],
+      [5, 110, 5, 110]);
+
+    /*
+     * One cycle ahead, never two. That renewal was early — the period had only just begun — so the
+     * next period has not started yet. A second renewal moved the period on again, and the one between
+     * was never current on any day the invoice job ran, so it was never billed.
+     */
+    const stacked = await call(`/subscriptions/${counted.id}/renew`, { method: 'POST', token: platform, body: {} });
+    check('a renewal on top of a period that has not begun yet is refused — the period between would never be invoiced',
+      [stacked.status, codeOf(stacked), Number((await db.Subscription.findByPk(counted.id)).renewal_count)],
+      [409, 'SUBSCRIPTION_ALREADY_RENEWED', Number(recounted.renewal_count)]);
+
+    /*
+     * D23 — a renewal starts the next period; it does not settle what is owed. A Past Due subscription
+     * with an overdue invoice, its period lapsed an hour ago, renewed: the period moves on and the state
+     * stays Past Due, where it used to become Active with the invoice still unpaid.
+     */
+    const lapsedAt = new Date(Date.now() - 3600 * 1000);
+    const graceEnd = new Date(Date.now() + 2 * 86400000);
+    await db.Subscription.update(
+      {
+        state: SUBSCRIPTION_STATES.PAST_DUE,
+        current_period_start: new Date(lapsedAt.getTime() - 30 * 86400000),
+        current_period_end: lapsedAt,
+        next_renewal_at: lapsedAt,
+        grace_period_ends_at: graceEnd,
+      },
+      { where: { id: counted.id } }
+    );
+    const owed = dataOf(await call('/invoices/generate', {
+      method: 'POST', token: platform,
+      body: { subscription_id: counted.id, billing_period_start: '2035-01-01T00:00:00.000Z', billing_period_end: '2035-01-31T00:00:00.000Z' },
+    })).invoice;
+    await db.Invoice.update({ status: 'overdue', due_date: '2020-01-01' }, { where: { id: owed.id } });
+    const inArrears = await call(`/subscriptions/${counted.id}/renew`, { method: 'POST', token: platform, body: {} });
+    const afterArrears = await db.Subscription.findByPk(counted.id);
+    const arrearsHistory = await db.SubscriptionHistory.findOne({
+      where: { subscription_id: counted.id, event: SUBSCRIPTION_EVENTS.RENEWED }, order: [['id', 'DESC']],
+    });
+    check('D23 — renewing with an invoice overdue moves the period on and leaves the subscription Past Due, not Active',
+      [inArrears.status, afterArrears.state, arrearsHistory.to_state, minutesBetween(lapsedAt, afterArrears.current_period_start)],
+      [200, SUBSCRIPTION_STATES.PAST_DUE, SUBSCRIPTION_STATES.PAST_DUE, 0]);
+    /* A cleared grace end is what the sweep's pass 4 expires on, so the renewal must not clear it. */
+    check('  keeping the grace it had — a renewal does not hand the sweep a reason to expire it',
+      afterArrears.grace_period_ends_at ? minutesBetween(graceEnd, afterArrears.grace_period_ends_at) : null, 0);
+    /* Settled, the renewed subscription is Active again — the one path D23 names. */
+    await db.Invoice.update({ status: 'paid' }, { where: { id: owed.id } });
+    check('  and once nothing is overdue, settling returns it to Active',
+      [await subscriptionsService.settleArrears(null, counted.id), (await db.Subscription.findByPk(counted.id)).state],
+      ['settled', SUBSCRIPTION_STATES.ACTIVE]);
+
+    /*
+     * From Active with an invoice overdue that the job has not flagged yet, a renewal takes D23's own edge:
+     * Grace for the configured days — `pastDueForOverdueInvoices()`'s two steps — never a bare Past Due
+     * the sweep would expire at its next run.
+     */
+    const owedAgain = dataOf(await call('/invoices/generate', {
+      method: 'POST', token: platform,
+      body: { subscription_id: counted.id, billing_period_start: '2035-02-01T00:00:00.000Z', billing_period_end: '2035-02-28T00:00:00.000Z' },
+    })).invoice;
+    await db.Invoice.update({ status: 'unpaid', due_date: '2020-01-01' }, { where: { id: owedAgain.id } });
+    const graceDays = Number((await db.Subscription.findByPk(counted.id)).grace_period_days);
+    const fromActive = await call(`/subscriptions/${counted.id}/renew`, { method: 'POST', token: platform, body: {} });
+    const afterActive = await db.Subscription.findByPk(counted.id);
+    check('  from Active with an invoice overdue, the renewal starts the configured grace period instead',
+      [fromActive.status, graceDays > 0, afterActive.state,
+        afterActive.grace_period_ends_at ? Math.round(minutesBetween(new Date(), afterActive.grace_period_ends_at) / 1440) : null],
+      [200, true, SUBSCRIPTION_STATES.GRACE_PERIOD, graceDays]);
+
+    /*
+     * And an Expired subscription in arrears is refused. Past Due is a usable state, so a renewal that
+     * moved it there handed access back unpaid until the next hourly sweep expired it again.
+     */
+    await db.Subscription.update(
+      {
+        state: SUBSCRIPTION_STATES.EXPIRED,
+        current_period_start: new Date(lapsedAt.getTime() - 30 * 86400000),
+        current_period_end: lapsedAt,
+        next_renewal_at: lapsedAt,
+      },
+      { where: { id: counted.id } }
+    );
+    const fromExpired = await call(`/subscriptions/${counted.id}/renew`, { method: 'POST', token: platform, body: {} });
+    check('  and an expired subscription with an invoice overdue is refused — paying reactivates it, renewing cannot',
+      [fromExpired.status, codeOf(fromExpired), (await db.Subscription.findByPk(counted.id)).state],
+      [409, 'SUBSCRIPTION_IN_ARREARS', SUBSCRIPTION_STATES.EXPIRED]);
+    await db.Invoice.update({ status: 'cancelled' }, { where: { id: owedAgain.id } });
 
     const upgraded = await call(`/subscriptions/${sub.id}/upgrade`, {
       method: 'POST',
@@ -2843,7 +3032,7 @@ async function verifyHttp() {
     const buyWhileSuspended = await call(`/subscriptions/${sub.id}/addons`, {
       method: 'POST',
       token: platform,
-      body: { addon_id: extraStudents.id },
+      body: { addon_id: extraStudents.id, addon_price_id: openPrice.id },
     });
     check(
       'nothing more can be sold onto it',
@@ -3243,6 +3432,17 @@ async function verifyHttp() {
       notice: SUBSCRIPTION_STATES.EXPIRING,
     });
 
+    /*
+     * D23 — "trial days are not billed". The first paid period starts when the trial ended, so the D6
+     * job's first invoice bills the period after the trial, not the trial. The fixture's period was
+     * created starting a month back; the sweep moves it to begin at `trial_ends_at`.
+     */
+    const trialAfter = await db.Subscription.findByPk(wTrial.id);
+    check('D23 — when a trial runs out, the first paid period starts where the trial ended, a full cycle long',
+      [minutesBetween(wTrial.trial_ends_at, trialAfter.current_period_start),
+        minutesBetween(trialAfter.current_period_start, trialAfter.current_period_end)],
+      [0, 30 * 1440]);
+
     const renewedRow = await db.Subscription.findByPk(wAuto.id);
     check(
       'the automatic renewal advanced the period from where it ended and counted itself',
@@ -3307,7 +3507,8 @@ async function verifyHttp() {
     check(
       'each sweep school’s cached column moved with its subscription',
       await db.School.findAll({
-        where: { id: created.schools.slice(1) },
+        /* The sweep schools by their own code, since the C4 trial-change school joined `created.schools`. */
+        where: { id: created.schools.slice(1), code: { [db.Op.like]: 'VSB-W%' } },
         attributes: ['code', 'subscription_state'],
         order: [['id', 'ASC']],
         raw: true,

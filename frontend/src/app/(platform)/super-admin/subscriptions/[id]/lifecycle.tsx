@@ -174,7 +174,7 @@ const COPY: Record<
       api.post<TransitionResponse>(`/subscriptions/${id}/renew`, body),
     title: 'Renew for the next billing cycle?',
     description:
-      'A renewal an operator starts rather than one the hourly lifecycle sweep starts. The next period begins where the current one ends, and a downgrade scheduled for the cycle boundary is applied as part of it.',
+      'A renewal an operator starts rather than one the hourly lifecycle sweep starts. The next period begins where the current one ends, and a downgrade scheduled for the cycle boundary is applied as part of it. It settles nothing: with an invoice overdue, the subscription stays Past Due until that is paid.',
     confirm: 'Renew',
     busy: 'Renewing…',
     tone: 'primary',
@@ -226,6 +226,8 @@ export function LifecycleBar({
 }) {
   const { success } = useToast();
   const [pending, setPending] = useState<string | null>(null);
+  /* The clock, read once when the bar mounts — a render must not read it (react-hooks/purity). */
+  const [openedAt] = useState(() => Date.now());
   const [reason, setReason] = useState('');
 
   /*
@@ -282,7 +284,14 @@ export function LifecycleBar({
    * `one_time` subscription, which has no next period at all: offering the button there would be
    * offering an operation whose only outcome is a refusal.
    */
-  const offerRenew = canRenew && subscription.standing.isOpen && subscription.standing.isRecurring;
+  /*
+   * Not when the period on record has not begun: that is a renewal already made, and `renew()` refuses
+   * to stack another (`SUBSCRIPTION_ALREADY_RENEWED`) — the period between would never be invoiced.
+   */
+  const alreadyRenewed = Boolean(
+    subscription.current_period_start && new Date(subscription.current_period_start).getTime() > openedAt
+  );
+  const offerRenew = canRenew && subscription.standing.isOpen && subscription.standing.isRecurring && !alreadyRenewed;
 
   if (!canAct && !offerRenew) return null;
 

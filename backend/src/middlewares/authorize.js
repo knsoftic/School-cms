@@ -183,7 +183,7 @@ function requireAllPermissions(...keys) {
  * @returns {import('express').RequestHandler}
  */
 function requirePlatformScope() {
-  return function platformGuard(req, res, next) {
+  const documented = function platformGuard(req, res, next) {
     if (!req.tenant) {
       logger.error('requirePlatformScope ran without a resolved tenant', {
         requestId: req.id,
@@ -202,6 +202,9 @@ function requirePlatformScope() {
 
     return next();
   };
+
+  /* A guard with no arguments still refuses; the document has to know it is here. See utils/routeMeta.js. */
+  return annotate(documented, { platformOnly: true });
 }
 
 module.exports = {

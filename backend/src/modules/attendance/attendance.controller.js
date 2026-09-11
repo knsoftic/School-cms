@@ -60,4 +60,10 @@ async function report(req, res) {
   return ApiResponse.ok(res, { report: data });
 }
 
-module.exports = { markStudents, listStudents, markTeachers, listTeachers, report };
+/** GET /mine — D17: the caller's own attendance, or each linked child's, for one period. */
+async function mine(req, res) {
+  const data = await service.mine(req, req.query);
+  return ApiResponse.ok(res, { attendance: data });
+}
+
+module.exports = { markStudents, listStudents, markTeachers, listTeachers, report, mine };

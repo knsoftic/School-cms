@@ -257,9 +257,9 @@ export default function AddonsPage() {
         header: 'Purchasable',
         /*
          * Derived per response and never stored, so it cannot disagree with the price rows. Unlike a
-         * plan, an add-on may be activated with nothing priced — `subscription_addons.addon_price_id`
-         * is nullable, so a comped add-on is a shape the schema allows — which is exactly why this
-         * has to be shown rather than assumed from the status badge beside it.
+         * plan, an add-on may be switched on with nothing priced, and since D21 a purchase must name a
+         * price — so an active add-on with no price is on sale and cannot be bought, which is exactly
+         * why this has to be shown rather than assumed from the status badge beside it.
          */
         cell: (row) =>
           row.readiness.purchasable ? (

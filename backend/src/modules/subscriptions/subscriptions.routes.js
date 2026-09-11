@@ -69,9 +69,8 @@
  *
  * The date-driven half of FR-SUB-010 and FR-SUB-015's Automatic Renewal are implemented — as
  * `subscriptionsService.runLifecycleSweep()`, with no route. Their actor is the *system*: a
- * scheduler, which `package.json` already anticipates with `"cron": "node src/jobs/cron.js"`.
- * `src/jobs/` does not exist yet, so the trigger is Phase 5 work; exposing the sweep over HTTP to
- * make it reachable sooner would be inventing an endpoint the SRS does not describe.
+ * scheduler — the hourly `subscription-lifecycle` job in `src/jobs/` (`npm run cron`). Exposing the
+ * sweep over HTTP as well would be inventing an endpoint the SRS does not describe.
  *
  * ## Route ordering
  *

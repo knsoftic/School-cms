@@ -23,6 +23,7 @@
     "db:schema": "node src/database/cli.js schema",
     "db:reset": "node src/database/cli.js reset",
     "db:backup": "node src/jobs/tasks/databaseBackup.js",
+    "db:restore-drill": "node scripts/restore-drill.js",
     "check:models": "node scripts/check-models.js",
     "test": "jest --runInBand",
     "test:baseline": "node scripts/record-baseline.js",

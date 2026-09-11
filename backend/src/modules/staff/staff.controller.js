@@ -16,7 +16,7 @@ async function list(req, res) {
 }
 
 async function show(req, res) {
-  const member = await service.findById(req, req.params.id);
+  const member = await service.findForView(req, req.params.id);
   return ApiResponse.ok(res, { staff: member });
 }
 

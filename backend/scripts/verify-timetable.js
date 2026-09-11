@@ -788,6 +788,12 @@ async function verifyHttp() {
 
     const teacherWeek = dataOf(await expectOk(`/timetable/teacher/${A.teacher.id}`, { token: principalA }, 200)).timetable;
     check('the Teacher Timetable names its teacher', teacherWeek.teacher.id, A.teacher.id);
+    /*
+     * And only names them. `timetable.view` reaches Students and Parents, and this returned the whole
+     * teachers row — salary, notes, date of birth, address — for any teacher id in the school.
+     */
+    check('  as a heading — id, employee id and name — never the staff record behind it',
+      Object.keys(teacherWeek.teacher).sort(), ['employee_id', 'first_name', 'id', 'last_name']);
     check('and every row is theirs', teacherWeek.entries.every((e) => e.teacher_id === A.teacher.id), true);
     check('  which is a different set from the class view — the same rows asked a different question',
       teacherWeek.entries.length !== classWeek.entries.length, true);

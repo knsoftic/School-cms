@@ -178,6 +178,26 @@ async function list(req, query, pagination) {
   if (query.is_active !== undefined) where.is_active = query.is_active;
   if (query.is_elective !== undefined) where.is_elective = query.is_elective;
 
+  /*
+   * `?class_id=` (with `section_id=` to narrow) — the class's curriculum: the subjects a homework or an
+   * assignment for that class may name, by exactly the rule `homework.assertOnCurriculum()` enforces
+   * (the owner's decision D30): active class-subject rows, whole-class or the named section. Before this
+   * the only way to read a curriculum was per subject, `GET /:id/classes`, so a form had to ask once for
+   * every subject in the school to fill one picker.
+   */
+  if (query.class_id) {
+    const onCurriculum = await db.ClassSubject.findAll({
+      where: tenantWhere(req.tenant, {
+        class_id: query.class_id,
+        is_active: true,
+        [Op.or]: [{ section_id: null }, ...(query.section_id ? [{ section_id: query.section_id }] : [])],
+      }),
+      attributes: ['subject_id'],
+      raw: true,
+    });
+    where.id = { [Op.in]: [...new Set(onCurriculum.map((row) => Number(row.subject_id)))] };
+  }
+
   return paginateQuery(
     db.Subject,
     { where, order: getSort({ query }, SORTABLE, ['name', 'ASC']) },

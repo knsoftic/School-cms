@@ -220,8 +220,6 @@ export default function StudentsPage() {
    * `students.progression` — the narrower of the two student keys. See the actions column.
    */
   const canProgress = can('students.progression');
-  /* `students.manage` — the key both the edit and the photo route are mounted behind. */
-  const canManage = can('students.manage');
   /* A student's login is an account — `POST /users`, behind `users.manage` (owner decision D1). */
   const canCreateLogin = can('users.manage');
   const [loginFor, setLoginFor] = useState<LoginTarget | null>(null);
@@ -245,23 +243,20 @@ export default function StudentsPage() {
          * `POST /students/:id/photo` had no caller anywhere, so a student could be admitted and
          * then never corrected — a mistyped name, a guardian's changed phone number, all permanent.
          *
-         * A link only for somebody who can act on it. A reader with `students.view` alone would
-         * reach a screen that refuses them, and a name that looks clickable and answers with a
-         * refusal is worse than a name that does not.
+         * A link for everyone who can see this list. It used to be offered only with
+         * `students.manage`, because the record refused anybody else — but the record, its photo and
+         * its documents are all served on `students.view` (the owner's decision D13 for the
+         * documents), so the record now renders read-only for a reader instead of refusing them, and
+         * a class teacher or an accountant can open the file the list is an index of.
          */
-        cell: (row) =>
-          canManage ? (
-            <Link
-              href={`/school/students/${row.id}`}
-              className="font-medium text-brand-text underline-offset-4 hover:underline"
-            >
-              {[row.first_name, row.last_name].filter(Boolean).join(' ')}
-            </Link>
-          ) : (
-            <span className="font-medium">
-              {[row.first_name, row.last_name].filter(Boolean).join(' ')}
-            </span>
-          ),
+        cell: (row) => (
+          <Link
+            href={`/school/students/${row.id}`}
+            className="font-medium text-brand-text underline-offset-4 hover:underline"
+          >
+            {[row.first_name, row.last_name].filter(Boolean).join(' ')}
+          </Link>
+        ),
       },
       {
         key: 'student_id',
@@ -391,7 +386,7 @@ export default function StudentsPage() {
           ),
       },
     ];
-  }, [canProgress, canManage, canCreateLogin]);
+  }, [canProgress, canCreateLogin]);
 
   const filtered = Boolean(debounced || status);
 
@@ -577,6 +572,18 @@ function fullName(row: StudentRow): string {
  * on `classes` is what makes "the next class" meaningful (the model's own comment says it "drives
  * default promotion target"), and the picker is ordered by it, but nothing here guesses: naming the
  * target is the operator's decision and a wrong guess silently moves a cohort.
+ *
+ * ## The destination class decides the session and the roll number
+ *
+ * `students.service.resolvePlacement()` moves the student into the destination class's academic
+ * session when that class has one — a class belongs to one session, and §15.1's promotion is "to a
+ * new class/session". So the dialog offers no session control, though `/promote` would accept one:
+ * the class carries it, and a promotion that kept last year's session is the mismatch the service was
+ * changed to stop (fee rows and certificates both read it).
+ *
+ * `applyTransition()` re-allocates the roll number for the destination unless one is named. A number
+ * issued in the old class means nothing in the new one, and carrying it across issued duplicates, so
+ * a blank box is a request for a fresh number rather than a request to keep the old one.
  */
 function PromoteDialog({
   student,
@@ -621,7 +628,11 @@ function PromoteDialog({
       await api.post(`/students/${student.id}/promote`, {
         class_id: Number(classId),
         section_id: sectionId ? Number(sectionId) : undefined,
-        /* Blank keeps whatever the student already had; the service does not clear it. */
+        /*
+         * Blank is left out, and then `applyTransition()` numbers the student afresh within the
+         * destination class and section. It used to say blank kept the old number; the service no
+         * longer carries it across — see the header.
+         */
         roll_number: rollNumber.trim() || undefined,
         reason: reason.trim() || undefined,
       });
@@ -643,7 +654,7 @@ function PromoteDialog({
       open={student !== null}
       onClose={onClose}
       title={student ? `Promote ${fullName(student)}` : 'Promote'}
-      description="Moves the student to another class. They stay active and keep counting towards your student allowance — a promotion is a move, not a departure."
+      description="Moves the student to another class, and into that class's academic session when it has one. They stay active and keep counting towards your student allowance — a promotion is a move, not a departure."
       busy={busy}
       footer={
         <>
@@ -671,7 +682,7 @@ function PromoteDialog({
           }}
           error={fieldErrors.class_id}
           disabled={classes.state === 'loading'}
-          hint="Ordered the way classes are ordered — by `numeric_order`, which is what makes “the next class” mean anything."
+          hint="Ordered the way classes are ordered — by `numeric_order`, which is what makes “the next class” mean anything. The student’s session becomes this class’s session; a class with none leaves the session as it is."
         >
           <option value="">{classes.state === 'loading' ? 'Loading…' : 'Choose a class'}</option>
           {classes.state === 'ready'
@@ -712,7 +723,7 @@ function PromoteDialog({
           value={rollNumber}
           onChange={(event) => setRollNumber(event.target.value)}
           error={fieldErrors.roll_number}
-          hint="Optional. Left blank the student keeps the roll number they had, which is rarely what a new class wants."
+          hint="Optional. Left blank, the student is given the next number after the highest already used in the chosen class and section — the old class’s number is not carried across."
         />
 
         <Field

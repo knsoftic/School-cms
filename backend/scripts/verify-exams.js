@@ -525,6 +525,7 @@ async function verifyHttp() {
       await db.Section.destroy({ where: { school_id: created.schools }, force: true });
       await db.Class.destroy({ where: { school_id: created.schools }, force: true });
       await db.AcademicSession.destroy({ where: { school_id: created.schools }, force: true });
+      await db.SchoolSetting.destroy({ where: { school_id: created.schools } });
     }
     if (created.subscriptions.length) {
       await db.UsageRecord.destroy({ where: { subscription_id: created.subscriptions } });
@@ -796,6 +797,26 @@ async function verifyHttp() {
       body: { name: 'Bad', exam_type: 'Midterm', class_id: D.klass.id },
     });
     check("an exam cannot name another school's class", foreignClass.status, 422);
+
+    /* D20 — a closed session takes no new exam. */
+    const closedYear = await db.AcademicSession.create({
+      school_id: schoolA.id, organization_id: org.id, name: 'A 2019-2020',
+      start_date: '2019-04-01', end_date: '2020-03-31', status: ACADEMIC_SESSION_STATUS.CLOSED, is_current: false,
+    });
+    const examInClosed = await call('/exams', {
+      method: 'POST', token: principalA,
+      body: { name: 'Old', exam_type: 'Midterm', class_id: A.klass.id, academic_session_id: closedYear.id },
+    });
+    check('D20 — an exam cannot be added to a closed session', [examInClosed.status, codeOf(examInClosed)], [409, 'SESSION_CLOSED']);
+    /* Nor to a closed year's class by naming no session — the class's own session counts too. */
+    const closedYearClass = await db.Class.create({
+      school_id: schoolA.id, organization_id: org.id, academic_session_id: closedYear.id, name: 'A Grade 1 (2019)', numeric_order: 1,
+    });
+    const examInClosedClass = await call('/exams', {
+      method: 'POST', token: principalA, body: { name: 'Old class', exam_type: 'Midterm', class_id: closedYearClass.id },
+    });
+    check('  nor to a class of a closed session when the body names no session at all',
+      [examInClosedClass.status, codeOf(examInClosedClass)], [409, 'SESSION_CLOSED']);
 
     const exam = dataOf(await expectOk('/exams', {
       method: 'POST', token: principalA,
@@ -1075,6 +1096,14 @@ async function verifyHttp() {
 
     const card = dataOf(await expectOk(`/exams/results/${byName.Amina.id}`, { token: principalA }, 200)).card;
     check('the card names the school without a second call', card.school.name, 'Verify Exams A');
+    /* D35 — and names it as the school does, once the school has set a display name. */
+    const displayName = await db.SchoolSetting.create({
+      school_id: schoolA.id, organization_id: org.id, name: 'Verify Exams Display Name',
+    });
+    check('D35 — a result card carries the school\'s display name once it has set one',
+      dataOf(await expectOk(`/exams/results/${byName.Amina.id}`, { token: principalA }, 200)).card.school.name,
+      'Verify Exams Display Name');
+    await displayName.destroy();
     check('the exam', [card.exam.name, card.exam.exam_type], ['Midterm 2025', 'Midterm']);
     check('the student', card.student.first_name, 'Amina');
     check('the totals', [card.totals.total_marks_obtained, card.totals.percentage, card.totals.grade_name], [175, 87.5, 'A']);
@@ -1168,6 +1197,34 @@ async function verifyHttp() {
       card.subjects.map((paper) => paper.subject_name).filter((n) => n && !cardText.includes(n)), []);
 
     /*
+     * FR-EXAM-004's Class Result, exported the way the card is. SRS:1030 makes results "available for
+     * viewing, PDF export, and printing" and only the single card had an export; a principal printing a
+     * class's results had one PDF per student to open.
+     */
+    const classPdf = await call(`/exams/${exam.id}/results?format=pdf`, { token: principalA, binary: true });
+    check('FR-EXAM-004 — the class result is exported as a PDF too, named for the exam',
+      [classPdf.status, classPdf.contentType,
+        new RegExp(`attachment; filename="class-result-${exam.id}-\\d{4}-\\d{2}-\\d{2}\\.pdf"`).test(classPdf.disposition),
+        classPdf.buffer.slice(0, 5).toString()],
+      [200, 'application/pdf', true, '%PDF-']);
+    const classText = inflatePdf(classPdf.buffer);
+    check('  carrying the exam and every student with a result',
+      ['Class Result', 'Midterm 2025', 'Amina', 'Bilal', 'Chidi', 'Dara', 'Elif'].filter((t) => !classText.includes(t)), []);
+    check('  in merit order — first place before fourth, fourth before fifth',
+      [classText.indexOf('Amina') < classText.indexOf('Elif'), classText.indexOf('Elif') < classText.indexOf('Chidi')],
+      [true, true]);
+    check('  and a format §19 does not name is refused, as it is on the card',
+      (await call(`/exams/${exam.id}/results?format=xlsx`, { token: principalA })).status, 422);
+    /*
+     * It honours the list's `is_published` filter, so the PDF is the set the screen was filtered to.
+     * Nothing is published yet at this point (the publish step is below), so "published only" is empty.
+     */
+    const publishedOnlyPdf = inflatePdf((await call(`/exams/${exam.id}/results?format=pdf&is_published=true`,
+      { token: principalA, binary: true })).buffer);
+    check('  and filtered to published results — none yet — the PDF carries none of the unpublished rows',
+      ['Amina', 'Bilal', 'Chidi', 'Dara', 'Elif'].filter((name) => publishedOnlyPdf.includes(name)), []);
+
+    /*
      * The absence rule, asserted where a fixture can reach it.
      *
      * §19 stores `null` for an absent paper and the card must print `absent`, never `0` — a zero
@@ -1208,6 +1265,8 @@ async function verifyHttp() {
     const mine = dataOf(await expectOk('/exams/my-results', { token: studentToken }, 200));
     check('now the student sees their own result — §19.3 "Student Result"', mine.length, 1);
     check('  and it is theirs', mine[0].student.first_name, 'Amina');
+    check('  without the column a stored card path would travel in — no path leaves the server (#26)',
+      'result_card_path' in mine[0], false);
 
     const theirs = dataOf(await expectOk('/exams/my-results', { token: parentToken }, 200));
     check('a parent sees their own child, and only that child', theirs.map((r) => r.student.first_name), ['Bilal']);
@@ -1328,6 +1387,8 @@ async function verifyHttp() {
     check('  the half-sitter keeps their record — it is what was marked', Boolean(half), true);
     check('  scored over the one paper they sat', [Number(half.total_full_marks), half.subjects_count], [100, 1]);
     check('  but carries no position, so they cannot out-rank a full sitter', [half.position, half.position_out_of], [null, null]);
+    check('  and the merit list puts them at its foot, as the PDF does — not above first place',
+      [driftRows[0].position, driftRows[driftRows.length - 1].student_id], [1, halfSitter.id]);
     check(
       '  and everyone else is ranked out of the six who actually sat it',
       [...new Set(driftRows.filter((r) => r.position !== null).map((r) => r.position_out_of))],

@@ -52,8 +52,9 @@ this machine supports `-checkend`.
 
 **Not verified, and cannot be here:**
 
-- **Nothing has run under cron, on Linux, or against a live deployment.** `nginx`, `pm2`, `mysql`,
-  `mysqldump` and `logrotate` are all absent from the authoring machine. No line of the §6 crontab
+- **Nothing has run under cron, on Linux, or against a live deployment.** `nginx`, `pm2` and
+  `logrotate` are absent from the authoring machine; `mysql` and `mysqldump` are present only as
+  XAMPP's, off PATH, and the restore drill in §5.3 was run with them. No line of the §6 crontab
   has ever been installed; no probe here has ever hit a running production API.
 - **`zcat`, `zgrep`, `stat -c`, `date -d` and `df -P` are assumed to be the GNU versions.** They are
   on any mainstream Linux distribution. On BusyBox or a BSD they are not, and `stat -c` in
@@ -349,7 +350,7 @@ port` line (`server.js:117-121`) in `combined-*.log` for that restart.**
 
 **Failure A: it never started.** Resident mode refuses to run unless `ENABLE_CRON=true`
 (`config/env.js:281`, `.env.example:116`) and exits 1 with an explanation
-(`jobs/cron.js:249-255`). Under PM2 that is a restart loop: the restart counter climbs, the process
+(`jobs/cron.js:255-261`). Under PM2 that is a restart loop: the restart counter climbs, the process
 never reaches `online` for long, and the message repeats in `pm2 logs` — for the cron app, in
 `storage/logs/pm2-cron-error.log`. It is the most likely way this deployment ends up with no sweeps
 at all, because the flag defaults to false.
@@ -390,7 +391,7 @@ Three complications, all real:
 - **`cron: task still running, skipped` (`jobs/cron.js:152`) is not an error and not harmless.** A
   task whose previous tick has not finished is skipped, and if it never finishes, every subsequent
   tick of that task is skipped for the life of the process. `TASK_TIMEOUT_MS` of ten minutes
-  (`jobs/cron.js:101`) is what breaks that cycle. Repeated skip lines for one task name mean the
+  (`jobs/cron.js:107`) is what breaks that cycle. Repeated skip lines for one task name mean the
   bound is being hit.
 - **A `cron: task failed` line for `database-backup` does not prove there is no backup.** The
   timeout bounds the *scheduler's* wait, not the work — nothing here can cancel a half-written
@@ -455,7 +456,7 @@ written to. The cost is that each run reads both days in full: about 38 MB on th
 false positive in the ten minutes after midnight.
 
 **Only one cron process may ever run.** The skip-if-running set is in-process memory
-(`jobs/cron.js:85`), so two instances do not coordinate: they double-notify and race the renewals,
+(`jobs/cron.js:91`), so two instances do not coordinate: they double-notify and race the renewals,
 which is precisely what `ENABLE_CRON` exists to prevent (`jobs/cron.js:56-60`). Never start the cron
 app in PM2 cluster mode or with `-i` > 1. `pm2 list` showing two cron entries is itself an incident.
 
@@ -516,10 +517,55 @@ is done, size is checked by eye:
 ls -lt "$BACKEND/storage/backups/" | head -5
 ```
 
-And the only check that really proves a backup: restore the newest dump into a scratch database and
-count the tables. That is a manual drill, not a probe — nothing on §27's list will do it for you.
-Row 7.9's verification asserts that a dump contains all 64 model tables as `CREATE TABLE`, so a
-restore drill has a known expected answer.
+And the only check that really proves a backup is restoring one. Row 7.9's verification asserts that
+a dump *contains* all 64 model tables as `CREATE TABLE`; that is evidence a file was written, not that
+it restores. `backend/scripts/restore-drill.js` restores one:
+
+```sh
+cd "$BACKEND"
+npm run db:restore-drill                       # the newest dump in BACKUP_DIR
+npm run db:restore-drill -- --file <dump.sql>  # a named one
+npm run db:restore-drill -- --fresh            # dump now, then restore it; row counts are judged too
+```
+
+It restores the dump into a scratch database, `<DB_NAME>_restore_drill`, with the `mysql` client that
+sits beside `MYSQLDUMP_PATH`; checks that the same tables come back with every column's type and
+nullability, every foreign key and the same migration ledger (`sequelize_meta`); with `--fresh`,
+checks every table's row count too (for an older dump of a live database the counts are printed, not
+judged — they are supposed to have moved); and drops the scratch database whatever happened. It exits
+non-zero on any difference. It is a drill, not a probe: run it by hand, monthly and after any change to
+`databaseBackup.js`. The scratch database lives on the production server for as long as the restore
+takes, so run it outside the 03:00 backup and with the disk headroom for one more copy.
+
+Measured on 2026-09-10 against this repository's test database: a fresh 1.29 MB dump restored in
+1.9 s, 65 tables (64 model tables and `sequelize_meta`), every column, foreign key and ledger row
+identical, 3,028 rows table-for-table; and a copy of the same dump cut off half-way failed at its line
+294 with 59 tables missing — the drill reported it and dropped the scratch database.
+
+#### Restoring for real
+
+When the database itself is lost or damaged — not for a drill:
+
+1. **Stop every writer.** `pm2 stop msms-api msms-cron` (every host that runs them). A restore under a
+   running API is a restore that loses whatever was written during it; a running scheduler can start
+   `database-backup` or a renewal sweep half-way through.
+2. **Pick the dump.** The newest `"message":"Database backup written"` line in
+   `backend/storage/logs/cron/combined-<date>.log` names it; never a file the log does not name — a dump
+   killed mid-stream can survive on disk (see msms-cron in `deploy/pm2/ecosystem.config.js`). Prove
+   it first: `npm run db:restore-drill -- --file <that dump>`.
+3. **Restore into a new database, not over the old one.** Create it with the source's character set,
+   `CREATE DATABASE msms_restored CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`, then
+   `mysql --default-character-set=utf8mb4 msms_restored < <that dump>` (password through `MYSQL_PWD`,
+   as the backup task passes it). The damaged database stays untouched until the new one is proven.
+4. **Point the application at it.** `DB_NAME=msms_restored` in `backend/.env`. If the dump predates a
+   migration the code now expects, `npm run db:migrate` brings its schema forward; `sequelize_meta`
+   says which have run.
+5. **Start and check.** `pm2 start msms-api` and `GET /api/v1/health/ready` → 200 with the database
+   check passing; sign in as a school user and read a recent record. Only then `pm2 start msms-cron`,
+   and take a fresh backup (`npm run db:backup`) of the restored database before anything else.
+6. **Record what was lost.** Everything written between the dump's timestamp and the failure. The
+   activity and audit trails of that window went with it; the nginx access log (`/var/log/nginx/`) and
+   PM2's logs outlive the database and are the record of what the application was asked to do.
 
 ### 5.4 The logs
 

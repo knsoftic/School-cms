@@ -306,7 +306,7 @@ async function renew(req, res) {
 
 /** POST /:id/addons — purchase an add-on onto this subscription. */
 async function purchaseAddon(req, res) {
-  const { subscription, purchase } = await service.purchaseAddon(req, req.params.id, req.body);
+  const { subscription, purchase, invoice } = await service.purchaseAddon(req, req.params.id, req.body);
 
   describeActivity(req, {
     entityId: subscription.id,
@@ -326,7 +326,8 @@ async function purchaseAddon(req, res) {
 
   return ApiResponse.created(
     res,
-    { subscription: present(subscription), purchase },
+    /* `invoice` — D24's charge at purchase when the period was already billed, else null. */
+    { subscription: present(subscription), purchase, invoice },
     {
       /*
        * What the add-on actually granted, in words. A `limit_increase` bought with the wrong

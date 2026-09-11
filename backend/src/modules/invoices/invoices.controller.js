@@ -6,6 +6,7 @@
  */
 
 const service = require('./invoices.service');
+const paymentPresenter = require('../payments/payments.controller');
 const ApiResponse = require('../../utils/ApiResponse');
 const money = require('../../utils/money');
 const { getPagination } = require('../../utils/pagination');
@@ -16,24 +17,44 @@ const { INVOICE_STATUS } = require('../../config/constants');
  * An invoice plus the two things a §13.1 screen needs that no column holds.
  *
  * `is_overdue` is derived rather than read from `status`, because `markOverdue()` is a scheduled sweep
- * and `src/jobs/` does not exist yet: an invoice can be past its due date while still labelled `unpaid`.
- * Deriving it means the screen is right today and stays right once the cron lands — the status column
- * remains the record, this is the read-time answer.
+ * that runs once a day (the `invoice-overdue` job, `src/jobs/tasks/invoiceOverdue.js`): between runs an
+ * invoice can be past its due date while still labelled `unpaid`. Deriving it means the screen is right
+ * at every moment — the status column remains the record, this is the read-time answer.
  *
  * `tax_is_inclusive` is on the joined tax row, and without it a total that does not equal
  * `subtotal − discount + tax` looks like an arithmetic error rather than an inclusive tax.
  *
+ * A school caller is shown the coupon as it appears on its bill — code, name and what it takes off —
+ * and not the platform's configuration of it. The whole `coupons` row was joined in, so any holder of
+ * `invoices.self.view` read which other schools a coupon is restricted to, its plan restrictions and
+ * how many times it has been used; coupon reads are otherwise `coupons.view`, which is platform-only.
+ *
  * @param {object} invoice
+ * @param {object} [tenant]  `req.tenant`; anything short of platform scope is treated as a school
  * @returns {object}
  */
-function present(invoice) {
+const SCHOOL_COUPON_FIELDS = Object.freeze(['id', 'code', 'name', 'discount_type', 'discount_value', 'currency']);
+
+function present(invoice, tenant) {
   const json = invoice.toJSON();
+  const platform = Boolean(tenant && tenant.isPlatform);
 
   const outstanding = service.OUTSTANDING_STATUSES.includes(json.status);
   const dueDate = json.due_date ? new Date(`${json.due_date}T23:59:59.999Z`) : null;
 
   return {
     ...json,
+    ...(json.coupon && !platform
+      ? { coupon: Object.fromEntries(SCHOOL_COUPON_FIELDS.map((key) => [key, json.coupon[key]])) }
+      : {}),
+    /*
+     * The joined payments go out under the rules `payments.controller.present()` applies to a payment
+     * on its own: Known Issues #26 — `screenshot_path` is suppressed and replaced by `has_screenshot` —
+     * and the reviewer's `review_note` reaches the platform only.
+     */
+    ...(Array.isArray(json.payments)
+      ? { payments: json.payments.map((payment) => paymentPresenter.withoutInternals(payment, tenant)) }
+      : {}),
     is_overdue: Boolean(outstanding && dueDate && dueDate.getTime() < Date.now()),
     tax_is_inclusive: json.tax ? Boolean(json.tax.is_inclusive) : false,
   };
@@ -46,7 +67,7 @@ async function list(req, res) {
 
   return ApiResponse.paginated(
     res,
-    { count: result.count, rows: result.rows.map(present) },
+    { count: result.count, rows: result.rows.map((row) => present(row, req.tenant)) },
     pagination
   );
 }
@@ -54,7 +75,7 @@ async function list(req, res) {
 /** GET /:id */
 async function show(req, res) {
   const invoice = await service.findById(req.tenant, req.params.id);
-  return ApiResponse.ok(res, { invoice: present(invoice) });
+  return ApiResponse.ok(res, { invoice: present(invoice, req.tenant) });
 }
 
 /** GET /summary — what the caller's scope owes, in one query rather than a summed page. */
@@ -83,7 +104,7 @@ async function generate(req, res) {
 
   return ApiResponse.created(
     res,
-    { invoice: present(invoice) },
+    { invoice: present(invoice, req.tenant) },
     {
       message: `Invoice ${invoice.invoice_number} issued for ${money.format(invoice.total, invoice.currency)}`,
     }
@@ -102,7 +123,7 @@ async function finalise(req, res) {
 
   return ApiResponse.ok(
     res,
-    { invoice: present(invoice) },
+    { invoice: present(invoice, req.tenant) },
     { message: `Invoice ${invoice.invoice_number} is now ${INVOICE_STATUS.UNPAID}` }
   );
 }
@@ -119,7 +140,7 @@ async function cancel(req, res) {
 
   return ApiResponse.ok(
     res,
-    { invoice: present(invoice) },
+    { invoice: present(invoice, req.tenant) },
     { message: `Invoice ${invoice.invoice_number} cancelled` }
   );
 }
@@ -141,7 +162,7 @@ async function applyCoupon(req, res) {
 
   return ApiResponse.ok(
     res,
-    { invoice: present(invoice) },
+    { invoice: present(invoice, req.tenant) },
     {
       message: `Coupon ${invoice.coupon_code} applied — ${money.format(invoice.discount_amount, invoice.currency)} off, total now ${money.format(invoice.total, invoice.currency)}`,
     }
@@ -160,7 +181,7 @@ async function removeCoupon(req, res) {
 
   return ApiResponse.ok(
     res,
-    { invoice: present(invoice) },
+    { invoice: present(invoice, req.tenant) },
     {
       message: `Coupon removed — total now ${money.format(invoice.total, invoice.currency)}`,
     }

@@ -364,6 +364,15 @@ const resultQuery = showQuery.keys({
   format: Joi.string().valid(...RESULT_FORMATS).default(REPORT_FORMATS.JSON),
 });
 
+/**
+ * The class result's query — FR-EXAM-004's "Class Result", which SRS:1030 makes "available for
+ * viewing, PDF export, and printing" like the card. `listResults` plus the same two formats, for the
+ * reason `resultQuery` gives.
+ */
+const classResultQuery = listResults.keys({
+  format: Joi.string().valid(...RESULT_FORMATS).default(REPORT_FORMATS.JSON),
+});
+
 module.exports = {
   schemas: {
     createGrade,
@@ -384,6 +393,7 @@ module.exports = {
     showQuery,
     RESULT_FORMATS,
     resultQuery,
+    classResultQuery,
     examSubjectParam,
     idParam: commonSchemas.idParam,
   },

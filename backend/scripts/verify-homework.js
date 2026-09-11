@@ -456,6 +456,8 @@ async function verifyHttp() {
       });
       const section = await db.Section.create({ school_id: school.id, organization_id: org.id, class_id: klass.id, name: 'A' });
       const subject = await db.Subject.create({ school_id: school.id, organization_id: org.id, name: `${tag} Maths`, code: `${CODE_PREFIX}${tag}M` });
+      /* On Grade 1's curriculum only — D30 lets homework name a subject the class is taught. */
+      await db.ClassSubject.create({ school_id: school.id, class_id: klass.id, subject_id: subject.id });
       return { session, klass, other, section, subject };
     };
     const A = await mkStructure(schoolA, 'A');
@@ -575,6 +577,32 @@ async function verifyHttp() {
       method: 'POST', token: teacher, body: { class_id: A.klass.id, subject_id: D.subject.id, title: 'x', due_date: '2025-09-20' },
     });
     check("nor name another school's subject", foreignSubject.status, 422);
+    /*
+     * D30 — FR-HW-001's "Class/subject assignment exists" (SRS:1099). The subject is the school's own
+     * and on Grade 1's curriculum, but not Grade 2's; only the pair was ever unchecked.
+     */
+    const offCurriculum = await call('/homework', {
+      method: 'POST', token: teacher, body: { class_id: A.other.id, subject_id: A.subject.id, title: 'x', due_date: '2030-09-20' },
+    });
+    check("D30 — nor a subject of this school that the class is not taught, naming the field",
+      [offCurriculum.status, ((offCurriculum.body.error || {}).details || []).map((d) => d.field)], [422, ['subject_id']]);
+    /*
+     * A section's own curriculum counts for that section only: a subject taught only in section A may be
+     * named on section A's homework, not on homework for the whole class.
+     */
+    const sectionOnlySubject = await db.Subject.create({
+      school_id: schoolA.id, organization_id: org.id, name: 'A Section Art', code: `${CODE_PREFIX}AART`,
+    });
+    await db.ClassSubject.create({ school_id: schoolA.id, class_id: A.klass.id, section_id: A.section.id, subject_id: sectionOnlySubject.id });
+    const wholeClassArt = await call('/homework', {
+      method: 'POST', token: teacher, body: { class_id: A.klass.id, subject_id: sectionOnlySubject.id, title: 'x', due_date: '2030-09-20' },
+    });
+    const sectionArt = await call('/homework', {
+      method: 'POST', token: teacher,
+      body: { class_id: A.klass.id, section_id: A.section.id, subject_id: sectionOnlySubject.id, title: 'Section art', due_date: '2030-09-20' },
+    });
+    check('  a subject on one section\'s curriculum only is refused for the whole class, and accepted for that section',
+      [wholeClassArt.status, sectionArt.status], [422, 201]);
     const foreignTeacherHw = await call('/homework', {
       method: 'POST', token: teacher, body: { class_id: A.klass.id, teacher_id: foreignTeacher.id, title: 'x', due_date: '2025-09-20' },
     });
@@ -647,7 +675,7 @@ async function verifyHttp() {
 
     /*
      * The authorization assertion, and the reason the route takes a RECORD rather than a path: the
-     * file inherits `selfScopeClasses()` from `findById()`. A student in another class cannot read
+     * file inherits `selfScopePlacements()` from `findById()`. A student in another class cannot read
      * the homework, so they cannot read its file — with no second rule written anywhere to keep in
      * step with the first.
      */
@@ -710,6 +738,26 @@ async function verifyHttp() {
     check('nor an unpublished draft for their own class', draftPeek.status, 404);
     const ownPeek = await expectOk(`/homework/${hw.id}`, { token: studentToken }, 200);
     check('  while their own published homework reads fine', dataOf(ownPeek).homework.title, 'Read chapter 4');
+
+    /*
+     * The section half. Homework can be set for one section (§20.2's "the relevant class/students", and
+     * the form's promise that naming a section confines it), and the narrowing used to check the class
+     * alone — so every other section of Amina's class was shown section A's homework, and she theirs.
+     */
+    const sectionB = await db.Section.create({
+      school_id: schoolA.id, organization_id: org.id, class_id: A.klass.id, name: 'B',
+    });
+    const forB = await mk({ class_id: A.klass.id, section_id: sectionB.id, title: 'Section B only', due_date: '2030-09-24' });
+    const sectionedTitles = dataOf(await expectOk('/homework?limit=50', { token: studentToken }, 200)).map((h) => h.title);
+    check("a student in section A sees section A's homework and the class-wide kind, and not section B's",
+      [sectionedTitles.includes('Read chapter 4'), sectionedTitles.includes('No assigned date'),
+        sectionedTitles.includes('Section B only')],
+      [true, true, false]);
+    check("  nor can they read section B's by id", (await call(`/homework/${forB.id}`, { token: studentToken })).status, 404);
+    check('  and a class_id filter narrows inside the rule rather than replacing it',
+      dataOf(await expectOk(`/homework?limit=50&class_id=${A.klass.id}`, { token: studentToken }, 200))
+        .map((h) => h.title).includes('Section B only'),
+      false);
 
     /* ── tenant scoping ── */
 

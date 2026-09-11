@@ -15,17 +15,28 @@
  * `classes.service.js` `list()` builds its `where` from `school_id`, `academic_session_id` and
  * `is_active` only, and never reads `query.q`. A search box here would accept typing, fire a request,
  * and return the unfiltered first page — the worst kind of broken control, because it looks like it
- * worked. The filter below is `is_active`, which the service does honour.
+ * worked. The filters below are `is_active` and `academic_session_id`, both of which it does honour.
  *
- * ## The academic session is a real gap, not an oversight
+ * ## The academic session is offered to whoever can read its name
  *
  * A class is unique per `(school_id, academic_session_id, name)`, so "Grade 5" legitimately exists
  * once per session, and this list returns every session's classes interleaved by `numeric_order`.
- * The endpoint accepts `?academic_session_id=`, but filling a picker for it needs `GET /sessions`,
- * which `sessions.routes.js` gates behind `sessions.view` — a permission a class teacher holding
- * only `classes.view` does not have, so the picker would be a refusal banner on a working screen for
- * exactly the people this screen is for. The duplicate-name ambiguity is recorded rather than
- * papered over with a raw `academic_session_id` column, which would name a row nobody can look up.
+ * FR-SCHOOL-003's outcome is a structure "established for the academic session", so which session a
+ * row belongs to is the first thing to know about it — hence a Session column and a session filter.
+ *
+ * Both are fed by `GET /sessions`, which `sessions.routes.js` gates behind `sessions.view`. A teacher
+ * or receptionist holding only `classes.view` does not have it, and for them the column and the
+ * filter are simply **absent**: not a refusal banner on a screen that otherwise works for them, and
+ * never a raw `academic_session_id`, which would name a row nobody can look up. The list is only
+ * requested for a caller who holds the key, so nobody is sent a 403 to learn what `can()` knew.
+ *
+ * ## The class teacher is a name where the teacher list can be read
+ *
+ * `list()` includes `sections` and nothing else, so `class_teacher_id` arrives as a bare id. The name
+ * comes from `GET /teachers` — `teachers.view` **plus** the Teachers module, which
+ * `teachers.routes.js` mounts on itself — read once and mapped by id, the way `classes/sections`
+ * already names its section teachers. Where it cannot be read, the column falls back to the
+ * presence it always showed, and the edit dialog says why it has no teacher picker.
  *
  * ## No module gate
  *
@@ -44,7 +55,10 @@ import { useMemo, useState } from 'react';
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { useCollection } from '@/lib/useCollection';
+import { teacherName, useList, useWholeList } from '@/lib/useTimetablePickers';
+import type { SessionOption, TeacherOption } from '@/lib/useTimetablePickers';
 import { EditDialog } from '@/components/editDialog';
+import type { EditField } from '@/components/editDialog';
 import { FilterBar, FilterSelect, Notice } from '@/components/form';
 import { Modal } from '@/components/overlay';
 import { useToast } from '@/components/toast';
@@ -88,9 +102,11 @@ interface SchoolClass {
   id: number;
   name: string;
   code: string | null;
+  /** Nullable on the column even though `classes.create` requires it — `SET NULL` on session delete. */
+  academic_session_id: number | null;
   numeric_order: number;
   /**
-   * The `teachers.id` of the class teacher, or null. Rendered as presence only — see the column.
+   * The `teachers.id` of the class teacher, or null. Named from `GET /teachers` — see the column.
    */
   class_teacher_id: number | null;
   capacity: number | null;
@@ -110,10 +126,14 @@ export default function ClassesPage() {
    * had a caller. A class could be created and then never renamed, re-capped, given a class teacher
    * or retired, and one created by mistake stayed for good.
    *
-   * `academic_session_id` and `class_teacher_id` are accepted by the schema and are **not offered**.
-   * Both take a numeric id, and a control that asks a school administrator to type `17` is worse
-   * than no control; the session picker in particular belongs with the sessions screen §33 does not
-   * name. Recorded rather than guessed at — see the log's §7 brief.
+   * `class_teacher_id` is offered as a picker over the teacher list below — FR-SCHOOL-003's "User
+   * assigns Class Teachers", which until now could be done at creation and never again.
+   *
+   * `academic_session_id` is accepted by the schema and is still **not offered**. The session list
+   * is loaded now, so the old reason — a box asking for a raw id — is gone; what remains is that
+   * moving a class to another session is a restructure rather than a correction. `update()` sets the
+   * one column on the class row and nothing else, so the students enrolled in it keep their own
+   * `academic_session_id`, and the class would sit in next year's structure with this year's pupils.
    */
   const [editing, setEditing] = useState<SchoolClass | null>(null);
   const [removing, setRemoving] = useState<SchoolClass | null>(null);
@@ -122,6 +142,30 @@ export default function ClassesPage() {
 
   const [page, setPage] = useState(1);
   const [active, setActive] = useState<ActiveFilter>('');
+  const [session, setSession] = useState('');
+
+  /*
+   * The two lists that turn this row's ids into names, each requested only for a caller who holds
+   * its key — see the header. `useWholeList` reads past the first page: a teacher sorting 101st by
+   * first name would otherwise show as "Assigned", and could not be chosen in the dialog.
+   */
+  const mayReadTeachers = can('teachers.view');
+  const mayReadSessions = can('sessions.view');
+  const firstTeachers = useList<TeacherOption>('/teachers', mayReadTeachers);
+  const teachers = useWholeList('/teachers', firstTeachers);
+  const firstSessions = useList<SessionOption>('/sessions', mayReadSessions);
+  const sessions = useWholeList('/sessions', firstSessions);
+
+  const teachersById = useMemo(
+    () => new Map(teachers.state === 'ready' ? teachers.rows.map((row) => [row.id, row]) : []),
+    [teachers]
+  );
+  const sessionsById = useMemo(
+    () => new Map(sessions.state === 'ready' ? sessions.rows.map((row) => [row.id, row]) : []),
+    [sessions]
+  );
+  /* Whether the session column and filter exist at all. See the header: absent, never an id. */
+  const showSessions = mayReadSessions && sessions.state === 'ready';
 
   /*
    * No debounce, because there is nothing to debounce: a select fires once per deliberate choice,
@@ -134,18 +178,29 @@ export default function ClassesPage() {
     setPage(1);
   };
 
+  const onSession = (next: string) => {
+    setSession(next);
+    setPage(1);
+  };
+
   /*
    * Only parameters `schemas.list` declares are sent. `validate()` runs with `stripUnknown` on the
    * query container, so anything else would be silently removed — a filter that appears to work and
    * does not. `is_active` goes over the wire as the string 'true'/'false'; Joi's `convert: true`
-   * (`validate.js` BASE_OPTIONS) turns it back into a boolean before the service sees it.
+   * (`validate.js` BASE_OPTIONS) turns it back into a boolean before the service sees it, and
+   * `academic_session_id` as the id's digits, which it turns back into a number.
    *
    * `school_id` is deliberately not sent: `tenantWhere(req.tenant, …)` already pins the query to the
    * caller's school, and a school-surface user has exactly one to choose from.
    */
   const query = useMemo(
-    () => ({ page, limit: 20, is_active: active || undefined }),
-    [page, active]
+    () => ({
+      page,
+      limit: 20,
+      is_active: active || undefined,
+      academic_session_id: session || undefined,
+    }),
+    [page, active, session]
   );
 
   const { rows, meta, loading, error, refusal, reload } = useCollection<SchoolClass>(
@@ -170,6 +225,37 @@ export default function ClassesPage() {
             <span className="text-muted-soft">—</span>
           ),
       },
+      ...(showSessions
+        ? [
+            {
+              /*
+               * What tells this year's "Grade 5" from last year's. "current" is the session row's own
+               * `is_current` flag, shown so the live structure can be read at a glance without
+               * filtering to it.
+               *
+               * A null id is a class whose session was deleted (`SET NULL`); an id the list does not
+               * hold is past `useWholeList`'s ceiling. Neither prints the number.
+               */
+              key: 'session',
+              header: 'Session',
+              cell: (row: SchoolClass) => {
+                const owner =
+                  row.academic_session_id === null
+                    ? undefined
+                    : sessionsById.get(row.academic_session_id);
+                if (!owner) return <span className="text-muted-soft">—</span>;
+                return (
+                  <span className="whitespace-nowrap">
+                    {owner.name}
+                    {owner.is_current ? (
+                      <span className="ml-1.5 text-xs text-muted-soft">current</span>
+                    ) : null}
+                  </span>
+                );
+              },
+            } as Column<SchoolClass>,
+          ]
+        : []),
       {
         /*
          * `numeric_order` earns a column despite looking like bookkeeping: the model comments say it
@@ -227,23 +313,31 @@ export default function ClassesPage() {
       },
       {
         /*
-         * Presence, never the id. `Class.belongsTo(Teacher, { as: 'classTeacher' })` exists in
-         * `models/index.js`, but `list()` includes only `sections` — so the teacher's name is simply
-         * not in this response, and printing `class_teacher_id: 7` would put a number in front of an
-         * administrator that names nothing they can look up.
+         * The name, never the id. `Class.belongsTo(Teacher, { as: 'classTeacher' })` exists in
+         * `models/index.js`, but `list()` includes only `sections` — so the name is looked up in the
+         * teacher list (see the header), and printing `class_teacher_id: 7` would put a number in
+         * front of an administrator that names nothing they can look up.
          *
-         * What is genuinely answerable from `class_teacher_id` alone is the question SRS §14.3's
-         * "Class Teachers" makes worth asking at a glance: which classes have nobody assigned. That
-         * is derived from the column, not a rendering of it.
+         * Where the list cannot be read the cell falls back to presence, which still answers the
+         * question SRS §14.3's "Class Teachers" makes worth asking at a glance: which classes have
+         * nobody assigned. A teacher who has since been retired is named and marked, because a class
+         * whose class teacher has left is the next thing to fix after one with none.
          */
         key: 'class_teacher',
         header: 'Class teacher',
-        cell: (row) =>
-          row.class_teacher_id === null ? (
-            <span className="text-warn">Unassigned</span>
-          ) : (
-            <span className="text-muted">Assigned</span>
-          ),
+        cell: (row) => {
+          if (row.class_teacher_id === null) return <span className="text-warn">Unassigned</span>;
+          const teacher = teachersById.get(row.class_teacher_id);
+          if (!teacher) return <span className="text-muted">Assigned</span>;
+          return (
+            <span className="whitespace-nowrap">
+              {teacherName(teacher)}
+              {teacher.is_active ? null : (
+                <span className="ml-1.5 text-xs text-warn">inactive</span>
+              )}
+            </span>
+          );
+        },
       },
       {
         /*
@@ -285,8 +379,45 @@ export default function ClassesPage() {
           ]
         : []),
     ],
-    [can]
+    /* The names arrive after the first render; without these the columns freeze on the fallback. */
+    [can, showSessions, sessionsById, teachersById]
   );
+
+  /*
+   * The class teacher picker, offered only once the teacher list is on screen.
+   *
+   * A select whose options do not hold the value it carries displays its first option — "—" here —
+   * so a dialog opened without the list would show a class that has a teacher as one with none, and
+   * the select would look like the way to clear it. So the field is left out until the list is ready
+   * and a sentence says why; `EditDialog` diffs and sends only the fields it renders, so the stored
+   * teacher is untouched meanwhile.
+   *
+   * Retired teachers are marked, not withheld — `loadTeacherInSchool()` checks the school and nothing
+   * else, as `classes/new` notes — and a stored teacher the list does not hold (past `useWholeList`'s
+   * ceiling) keeps an option of its own, for the reason `timetable/[id]` gives for `storedOption`.
+   */
+  const teacherField: EditField | null =
+    teachers.state === 'ready'
+      ? {
+          name: 'class_teacher_id',
+          label: 'Class teacher',
+          kind: 'select',
+          nullable: true,
+          options: [
+            ...teachers.rows.map((teacher) => ({
+              value: String(teacher.id),
+              label: `${teacherName(teacher)} (${teacher.employee_id})${teacher.is_active ? '' : ' · inactive'}`,
+            })),
+            ...(editing?.class_teacher_id && !teachersById.has(editing.class_teacher_id)
+              ? [{ value: String(editing.class_teacher_id), label: 'The teacher it has now' }]
+              : []),
+          ],
+          hint:
+            teachers.rows.length === 0
+              ? 'No teachers have been added to this school yet, so there is nobody to assign.'
+              : 'SRS §14.3’s class teacher. “—” leaves the class with nobody; sections carry a class teacher of their own.',
+        }
+      : null;
 
   async function remove() {
     if (!removing || removeBusy) return;
@@ -337,8 +468,12 @@ export default function ClassesPage() {
       />
 
       <FilterBar
-        activeCount={active ? 1 : 0}
-        onClear={() => onFilter('')}
+        activeCount={[active, session].filter(Boolean).length}
+        onClear={() => {
+          setActive('');
+          setSession('');
+          setPage(1);
+        }}
       >
         <FilterSelect
           id="class-active"
@@ -350,6 +485,30 @@ export default function ClassesPage() {
           <option value="true">Active only</option>
           <option value="false">Inactive only</option>
         </FilterSelect>
+
+        {/*
+          * Every session by default, as before — a default that quietly hid last year's classes would
+          * be a filter nobody chose. Absent for a caller who cannot read the session list; see the
+          * header.
+          */}
+        {showSessions ? (
+          <FilterSelect
+            id="class-session"
+            label="Academic session"
+            value={session}
+            onChange={onSession}
+          >
+            <option value="">All sessions</option>
+            {sessions.state === 'ready'
+              ? sessions.rows.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.name}
+                    {option.is_current ? ' · current' : ''}
+                  </option>
+                ))
+              : null}
+          </FilterSelect>
+        ) : null}
       </FilterBar>
 
       {refusal ? (
@@ -370,11 +529,18 @@ export default function ClassesPage() {
             * the query sent `is_active=false`, so an empty result says nothing about the active
             * rows — and the sentence is simply false for a school with no classes at all.
             */}
-          {active === 'true'
-            ? 'No active classes. Clear the filter to include retired ones.'
-            : active === 'false'
-              ? 'No inactive classes. Clear the filter to see the active ones.'
-              : 'No classes have been created for this school yet.'}
+          {/*
+            * The session branch comes first because it is the likeliest reason for an empty list:
+            * `sessions.service.js` creates no classes, so a session starts with none until they are
+            * added to it — `classes.create` requires the session, which is what "per session" means.
+            */}
+          {session
+            ? 'No class in the chosen session matches. Classes are created per session, so a new session has none until they are added.'
+            : active === 'true'
+              ? 'No active classes. Clear the filter to include retired ones.'
+              : active === 'false'
+                ? 'No inactive classes. Clear the filter to see the active ones.'
+                : 'No classes have been created for this school yet.'}
         </EmptyNotice>
       ) : (
         <>
@@ -388,7 +554,7 @@ export default function ClassesPage() {
       <EditDialog
         row={editing}
         title={editing ? `Edit ${editing.name}` : ''}
-        description="What the class is called, where it sits in the order, and how many students it holds."
+        description="What the class is called, where it sits in the order, how many students it holds, and who its class teacher is."
         success="Class updated"
         onClose={() => setEditing(null)}
         onSaved={reload}
@@ -397,6 +563,8 @@ export default function ClassesPage() {
           name: row.name,
           code: row.code ?? '',
           numeric_order: String(row.numeric_order),
+          /* Seeded even when the picker is not offered: `EditDialog` sends only the fields it renders. */
+          class_teacher_id: row.class_teacher_id === null ? '' : String(row.class_teacher_id),
           capacity: row.capacity === null ? '' : String(row.capacity),
           is_active: row.is_active,
         })}
@@ -415,6 +583,7 @@ export default function ClassesPage() {
             min: 0,
             hint: 'Where this class sits in the sequence — 1 before 2. Promotion reads it.',
           },
+          ...(teacherField ? [teacherField] : []),
           {
             name: 'capacity',
             label: 'Capacity',
@@ -430,7 +599,18 @@ export default function ClassesPage() {
             hint: 'A retired class keeps its students and its history and stops being offered.',
           },
         ]}
-      />
+      >
+        {/* Why there is no teacher picker, when there is none. See `teacherField`. */}
+        {teacherField ? null : (
+          <Notice tone="info">
+            {!mayReadTeachers
+              ? 'The class teacher cannot be changed here: choosing one needs the “View teachers” permission, which this account does not hold.'
+              : teachers.state === 'loading'
+                ? 'Loading the teacher list — the class teacher can be changed once it arrives.'
+                : 'The teacher list could not be loaded, so the class teacher cannot be changed here. Reading it needs the “View teachers” permission and a plan that carries the Teachers module.'}
+          </Notice>
+        )}
+      </EditDialog>
 
       <Modal
         open={removing !== null}

@@ -56,14 +56,26 @@
  * `loadSectionOfClass()` do not test `is_active`, and a picker that dropped them would be enforcing
  * a rule the module does not have.
  *
+ * ## A closed session takes no new exam — the owner's decision D20
+ *
+ * `createExam()` calls `assertOpenForNew()` on the session named **and** on the class's own session,
+ * and refuses either when it is closed: 409 `SESSION_CLOSED`, naming the session. So a closed session
+ * is not offered in the session list, and a class of a closed session stays listed — it is still the
+ * school's class, and hiding it would read as "deleted" — but is disabled and says why. Both rest on
+ * the session list; a caller who cannot read it gets the API's refusal, which is put under the field
+ * it is about rather than in a banner: under the session when it is the one named, and under the
+ * class otherwise, since then it was the class's own session that was closed.
+ *
  * ## Three optional fields where blank has a specific meaning
  *
  *   * **Section** blank is NULL, which the column comment defines as *"all sections of the class sit
  *     the exam"* — a real answer, not an omission, which is why the empty option says it.
- *   * **Academic session** blank is NULL too. There is a `GET /sessions/current`, and `createExam`
- *     does **not** fall back to it, so blank leaves the exam tied to no session rather than to the
- *     current one. The current session is marked in the list; pre-selecting it here would post a
- *     value nobody chose.
+ *   * **Academic session** starts on the current one — D20's "forms default to the current session",
+ *     read from the profile (`school.current_session` on `/auth/me`) rather than from
+ *     `GET /sessions/current`, which needs the list's `sessions.view`. `createExam` does **not** fall
+ *     back to it itself, so the default is this form's, and it is a default, not a lock: choosing
+ *     "Not tied to a session" still posts NULL. A school with no current session starts blank. A
+ *     caller who cannot read the session list is offered the current session alone.
  *   * **Grade scale** blank stores the column default, the literal string `default`. This is the one
  *     that can bite: `grade_scale` is a `STRING(90)` matching `grades.scale_name` and **not** a
  *     foreign key, and `assertExamReferences()` only checks a scale that was actually sent. So a
@@ -193,12 +205,28 @@ const EMPTY_VALUES = {
 
 const FORM_FIELDS = new Set(Object.keys(EMPTY_VALUES));
 
+/** `ACADEMIC_SESSION_STATUS.CLOSED` — the one status D20 refuses a new exam in. */
+const CLOSED = 'closed';
+
 export default function NewExamPage() {
   const router = useRouter();
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
   const { success } = useToast();
 
+  /* D20's default, from the profile — see the header. */
+  const current = profile?.school?.current_session ?? null;
+  const currentId = current && current.status !== CLOSED ? String(current.id) : '';
+
   const [values, setValues] = useState(EMPTY_VALUES);
+
+  /*
+   * Only into an empty field, and only when the current session itself changes, so "Not tied to a
+   * session", once chosen, stays chosen.
+   */
+  useEffect(() => {
+    if (!currentId) return;
+    setValues((prev) => (prev.academic_session_id ? prev : { ...prev, academic_session_id: currentId }));
+  }, [currentId]);
 
   const [classes, setClasses] = useState<Loaded<ClassOption>>(NOT_LOADED);
   const [sessions, setSessions] = useState<Loaded<SessionOption>>(NOT_LOADED);
@@ -254,12 +282,31 @@ export default function NewExamPage() {
     };
   }, [can]);
 
+  /*
+   * The sessions the select offers: the list, with the current session added when it fell past the
+   * first page — it is the default, so it has to be an option — or the current session alone for a
+   * caller who cannot read the list.
+   */
+  const sessionOptions = useMemo<SessionOption[]>(() => {
+    const own = current ? { ...current, is_current: true } : null;
+    if (sessions.failed) return own ? [own] : [];
+    return own && !sessions.rows.some((row) => row.id === own.id) ? [own, ...sessions.rows] : sessions.rows;
+  }, [sessions, current]);
+
   /** Session names by id, for the label that tells two same-named classes apart. */
   const sessionNames = useMemo(() => {
     const byId = new Map<number, string>();
-    for (const session of sessions.rows) byId.set(session.id, session.name);
+    for (const session of sessionOptions) byId.set(session.id, session.name);
     return byId;
-  }, [sessions.rows]);
+  }, [sessionOptions]);
+
+  /** The sessions D20 refuses a new exam in — see the header. Empty when the list could not be read. */
+  const closedSessions = useMemo(
+    () => new Set(sessionOptions.filter((session) => session.status === CLOSED).map((session) => session.id)),
+    [sessionOptions]
+  );
+  const inClosedSession = (row: ClassOption) =>
+    row.academic_session_id !== null && closedSessions.has(row.academic_session_id);
 
   const sections = useMemo(() => {
     const chosen = classes.rows.find((row) => String(row.id) === values.class_id);
@@ -303,6 +350,19 @@ export default function NewExamPage() {
     } catch (caught) {
       if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
         setRefusal({ code: caught.code, message: caught.message });
+      } else if (caught instanceof ApiError && caught.code === 'SESSION_CLOSED') {
+        /*
+         * D20, under the field it is about — see the header. The refusal names the closed session;
+         * when that is not the one chosen here, it was the class's own.
+         */
+        const named = caught.context?.academic_session_id;
+        const onSession = values.academic_session_id !== '' && String(named) === values.academic_session_id;
+        setFieldErrors(
+          onSession
+            ? { academic_session_id: caught.message }
+            : { class_id: `${caught.message}. This class is in that session; choose a class of an open one.` }
+        );
+        focusFirstInvalidField();
       } else if (caught instanceof ApiError) {
         const perField: Record<string, string> = {};
         let rootMessage: string | null = null;
@@ -412,19 +472,28 @@ export default function NewExamPage() {
             hint={
               !loadingOptions && !classes.failed && classes.rows.length === 0
                 ? 'This school has no classes yet, and an exam has to belong to one. Create a class first.'
-                : classes.total > classes.rows.length
-                  ? `The first ${classes.rows.length} of ${classes.total} classes. A page cannot hold more.`
-                  : undefined
+                : [
+                    classes.total > classes.rows.length
+                      ? `The first ${classes.rows.length} of ${classes.total} classes. A page cannot hold more.`
+                      : null,
+                    classes.rows.some(inClosedSession)
+                      ? 'A class of a closed session is shown and cannot be chosen: a closed session takes no new exam.'
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' ') || undefined
             }
           >
             <option value="">{loadingOptions ? 'Loading…' : 'Choose a class'}</option>
             {classes.rows.map((row) => {
               const session = row.academic_session_id ? sessionNames.get(row.academic_session_id) : undefined;
+              const closed = inClosedSession(row);
               return (
-                <option key={row.id} value={row.id}>
+                <option key={row.id} value={row.id} disabled={closed}>
                   {row.name}
                   {row.code ? ` (${row.code})` : ''}
                   {session ? ` — ${session}` : ''}
+                  {closed ? ' (closed)' : ''}
                   {row.is_active ? '' : ' — inactive'}
                 </option>
               );
@@ -461,21 +530,27 @@ export default function NewExamPage() {
             label="Academic session"
             value={values.academic_session_id}
             onChange={set('academic_session_id')}
-            disabled={loadingOptions || sessions.failed}
+            /* Without the list, still the current session — see the header. */
+            disabled={loadingOptions || (sessions.failed && sessionOptions.length === 0)}
             error={fieldErrors.academic_session_id}
             hint={
               sessions.failed
-                ? 'The session list could not be loaded, so the exam will not be tied to a session. Viewing sessions is a separate permission from creating exams.'
-                : 'Left blank the exam belongs to no session at all — the server does not fall back to the current one.'
+                ? sessionOptions.length > 0
+                  ? 'The session list could not be loaded, so only the current session is offered. Viewing sessions is a separate permission from creating exams. Left blank, the exam belongs to no session at all.'
+                  : 'The session list could not be loaded, so the exam will not be tied to a session. Viewing sessions is a separate permission from creating exams.'
+                : 'Starts on the current session. Closed sessions are not offered — a closed session takes no new exam. Left blank, the exam belongs to no session at all; the server does not fall back to the current one.'
             }
           >
             <option value="">Not tied to a session</option>
-            {sessions.rows.map((session) => (
-              <option key={session.id} value={session.id}>
-                {session.name} — {session.status}
-                {session.is_current ? ' — current' : ''}
-              </option>
-            ))}
+            {/* D20: a closed session is not offered for a new exam — see the header. */}
+            {sessionOptions
+              .filter((session) => session.status !== CLOSED)
+              .map((session) => (
+                <option key={session.id} value={session.id}>
+                  {session.name} — {session.status}
+                  {session.is_current ? ' — current' : ''}
+                </option>
+              ))}
           </SelectField>
         </FormSection>
 

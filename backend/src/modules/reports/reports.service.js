@@ -73,7 +73,7 @@ const db = require('../../models');
 const ApiError = require('../../utils/ApiError');
 const money = require('../../utils/money');
 const dates = require('../../utils/dates');
-const { resolveSchool } = require('../../utils/schoolScope');
+const { resolveSchool, schoolBrand } = require('../../utils/schoolScope');
 const { renderTable } = require('../../utils/pdf');
 const attendanceService = require('../attendance/attendance.service');
 const financeService = require('../finance/finance.service');
@@ -126,9 +126,15 @@ function windowOn(column, query) {
  * Resolved unconditionally, exactly as `financeService.report()` does and for the same reason it
  * records: without it, `tenantWhere` would hand a platform caller every school's rows added together
  * and label the result as one school's report.
+ *
+ * Headed with the name the school uses — its `school_settings` display name when it has set one — as
+ * the owner's decision D35 has the school's name appear on its documents, and a report export is one.
+ * The reports read nothing else off the row.
  */
 async function schoolOf(req, query) {
-  return resolveSchool(req, query.school_id);
+  const school = await resolveSchool(req, query.school_id);
+  const brand = await schoolBrand(school.id);
+  return { id: school.id, name: brand ? brand.name : school.name };
 }
 
 /* ══════════════════════ 1. Student Report ══════════════════════ */
@@ -149,8 +155,18 @@ async function students(req, query) {
     db.Student.findAll({
       where,
       attributes: ['class_id', [fn('COUNT', col('Student.id')), 'count']],
-      include: [{ model: db.Class, as: 'class', attributes: ['name'] }],
-      group: ['class_id', 'class.id', 'class.name'],
+      /*
+       * The class's session as well as its name: every year has a Grade 1, so a school with two sessions
+       * open had two rows both called "Grade 1", and only the principal, who can read the session list,
+       * could tell them apart.
+       */
+      include: [{
+        model: db.Class,
+        as: 'class',
+        attributes: ['name'],
+        include: [{ model: db.AcademicSession, as: 'academicSession', attributes: ['id', 'name'] }],
+      }],
+      group: ['class_id', 'class.id', 'class.name', 'class->academicSession.id', 'class->academicSession.name'],
       raw: true,
       nest: true,
     }),
@@ -166,6 +182,8 @@ async function students(req, query) {
     by_class: classRows.map((r) => ({
       class_id: r.class_id,
       class_name: r.class ? r.class.name : null,
+      academic_session_id: r.class && r.class.academicSession ? r.class.academicSession.id : null,
+      session_name: r.class && r.class.academicSession ? r.class.academicSession.name : null,
       count: Number(r.count),
     })),
   };
@@ -331,9 +349,15 @@ async function teachers(req, query) {
   if (query.is_active !== undefined) where.is_active = query.is_active;
   Object.assign(where, windowOn('joining_date', query));
 
+  /*
+   * The active count respects an `is_active` filter rather than overriding it. `{ ...where,
+   * is_active: true }` replaced a `false` filter, so "inactive only" reported every active teacher as
+   * active and `inactive` came out negative — 3 inactive and 20 active read Active 20, Inactive −17.
+   */
+  const activeWhere = where.is_active === undefined ? { ...where, is_active: true } : where;
   const [total, active, byDesignation] = await Promise.all([
     db.Teacher.count({ where }),
-    db.Teacher.count({ where: { ...where, is_active: true } }),
+    where.is_active === false ? 0 : db.Teacher.count({ where: activeWhere }),
     countBy(db.Teacher, where, 'designation'),
   ]);
 
@@ -364,6 +388,13 @@ async function teachers(req, query) {
  */
 async function subscriptions(req, query) {
   const where = {};
+  /*
+   * A school scope narrows to the school, as `tenantWhere()` does, and it is applied beside the
+   * organization rather than instead of it. Only the organization was applied, so a school-scoped
+   * caller — reachable the moment a Super Admin grants a school role this key, which nothing prevents —
+   * read every school's subscriptions in its organization (§30 Rule 2).
+   */
+  if (req.tenant && req.tenant.schoolId) where.school_id = req.tenant.schoolId;
   if (req.tenant && req.tenant.organizationId) where.organization_id = req.tenant.organizationId;
   if (query.organization_id) {
     if (where.organization_id && Number(where.organization_id) !== Number(query.organization_id)) {
@@ -389,7 +420,13 @@ async function subscriptions(req, query) {
 
   return {
     type: REPORT_TYPES.SUBSCRIPTION,
-    scope: where.organization_id ? { organization_id: where.organization_id } : { platform: true },
+    /* The scope the figures were counted in — the school as well when the caller carries one. */
+    scope: where.organization_id || where.school_id
+      ? {
+        ...(where.organization_id ? { organization_id: where.organization_id } : {}),
+        ...(where.school_id ? { school_id: where.school_id } : {}),
+      }
+      : { platform: true },
     window: { from: dateOnly(query.from) || null, to: dateOnly(query.to) || null },
     total,
     by_state: byState,

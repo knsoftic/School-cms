@@ -35,6 +35,38 @@
  * route: the route is behind `students.view` and the token only ever travels in an `Authorization`
  * header, which a browser fetching an `<img>` does not send. The long note on the `stored` state has
  * the rest of it.
+ *
+ * ## A reader gets the record, not a refusal
+ *
+ * This screen used to refuse anybody without `students.manage`, and the list linked names only for
+ * those who held it. But everything it reads is served on `students.view` — the record, the photo, and
+ * the documents, which is the owner's decision D13 in so many words ("view on `students.view`"). So a
+ * class teacher, an accountant or a librarian could list a student and could not open the file.
+ *
+ * Without `students.manage` it is now the same screen, read-only — the line `subjects/[id]` draws:
+ * every field disabled, no Save and no Reason, and no upload for the photo or the documents; a
+ * document still downloads. There were never transition or delete controls here to hide — promote,
+ * transfer and leave are row actions on the list, behind `students.progression`, and D13 decided no
+ * removal of a document at all.
+ *
+ * A reader is the case the pickers' failures were written for. The class, section and session
+ * selects are named from `GET /classes`, `GET /classes/:id/sections` and `GET /sessions`, behind
+ * `classes.view` and `sessions.view` — and the Accountant and the Librarian hold neither. The two class
+ * reads are not made at all without `classes.view` (`useClassSections` is enabled on it, so the record's
+ * own class id is not sent to be refused); the session read is made and fails. A select whose value
+ * matches no option shows its first one, which here reads "Not placed" or "Not recorded" for a student
+ * who is placed, so each of the three keeps the stored value as an option of its own when the list
+ * cannot name it, and its hint says why the name is missing.
+ *
+ * ## The session follows the class
+ *
+ * The save sends the whole placement, `academic_session_id` included, and `resolvePlacement()` keeps a
+ * session the body names — it takes the destination class's session only for a class change that names
+ * none. So a class changed here used to be saved with the session the student already had: moved into
+ * next year's class, still in last year's session. Choosing a class now moves the Current session select
+ * to that class's session, which is what the server would have given it; returning to the class on
+ * record restores the session on record; a class with no session leaves the select as it is. The select
+ * can still be changed after that, and what it holds is what is saved.
  */
 
 import { useParams } from 'next/navigation';
@@ -180,6 +212,7 @@ export default function StudentDetailPage() {
   const { success, error: errorToast } = useToast();
 
   const studentId = params.id;
+  /* `students.manage` — what `PATCH` and both uploads are mounted behind. A reader gets the record read-only. */
   const canManage = can('students.manage');
 
   const [student, setStudent] = useState<Student | null>(null);
@@ -223,13 +256,20 @@ export default function StudentDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const { classes, sections } = useClassSections(values.class_id, canManage);
+  /*
+   * Loaded for a reader too: the selects are how the record names its placement, and a reader is
+   * still shown it. Only for somebody who can read classes, though — see the header on what happens
+   * when the grant for the list is missing.
+   */
+  const canViewClasses = can('classes.view');
+  const { classes, sections } = useClassSections(values.class_id, canViewClasses);
   const [sessions, setSessions] = useState<SessionOption[]>([]);
   const [sessionsFailed, setSessionsFailed] = useState(false);
 
   /*
-   * `GET /sessions` needs `sessions.view`, a separate grant from the `students.manage` that opens
-   * this screen — and the seeded Receptionist holds the second without the first.
+   * `GET /sessions` needs `sessions.view`, a separate grant from the `students.manage` or
+   * `students.view` that opens this screen — and the seeded Receptionist holds the second without
+   * the first, as do the Teacher, the Accountant and the Librarian.
    *
    * The failure used to be swallowed with a comment saying the selects "stay at what the record
    * holds". The *value* did — `values` still carried the id and the save still sent it — but a
@@ -238,7 +278,6 @@ export default function StudentDetailPage() {
    * the stored session as an option of its own whenever the list cannot show it.
    */
   useEffect(() => {
-    if (!canManage) return;
     const controller = new AbortController();
     (async () => {
       try {
@@ -255,7 +294,7 @@ export default function StudentDetailPage() {
       }
     })();
     return () => controller.abort();
-  }, [canManage]);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -320,11 +359,34 @@ export default function StudentDetailPage() {
   const set = (key: keyof typeof values) => (event: { target: { value: string } }) =>
     setValues((prev) => ({ ...prev, [key]: event.target.value }));
 
+  /*
+   * A change of class — see the header on why the session moves with it. The section is cleared: the
+   * old one is by definition not a section of the new class.
+   */
+  function onClassChange(event: { target: { value: string } }) {
+    const next = event.target.value;
+    const destination =
+      classes.state === 'ready' ? classes.rows.find((row) => String(row.id) === next) : undefined;
+    setValues((prev) => ({
+      ...prev,
+      class_id: next,
+      section_id: '',
+      academic_session_id:
+        student && next === num(student.class_id)
+          ? num(student.academic_session_id)
+          : destination?.academic_session_id
+            ? String(destination.academic_session_id)
+            : prev.academic_session_id,
+    }));
+  }
+
   /** `''` → `null` for a nullable column: clearing a field means clearing the value. */
   const orNull = (value: string) => (value.trim() ? value.trim() : null);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
+    /* Unreachable for a reader — no Save, every field disabled — and kept that way. See the header. */
+    if (!canManage) return;
     setSaving(true);
     setError(null);
     setFieldErrors({});
@@ -345,6 +407,7 @@ export default function StudentDetailPage() {
         admission_session_id: values.admission_session_id ? Number(values.admission_session_id) : null,
         class_id: values.class_id ? Number(values.class_id) : null,
         section_id: values.section_id ? Number(values.section_id) : null,
+        /* Named, so kept as named: a change of class has already moved it — see `onClassChange`. */
         academic_session_id: values.academic_session_id ? Number(values.academic_session_id) : null,
         roll_number: orNull(values.roll_number),
         /*
@@ -574,20 +637,6 @@ export default function StudentDetailPage() {
     }
   }
 
-  if (!canManage) {
-    return (
-      <div className="max-w-3xl">
-        <PageHeader title="Student" />
-        <RefusalNotice
-          refusal={{
-            code: 'INSUFFICIENT_PERMISSION',
-            message: 'Editing a student needs the students.manage permission.',
-          }}
-        />
-      </div>
-    );
-  }
-
   if (refusal) {
     return (
       <div className="max-w-3xl">
@@ -629,8 +678,47 @@ export default function StudentDetailPage() {
       <option value={stored}>The session already on record</option>
     ) : null;
 
-  const sessionsUnavailable =
-    'The session list could not be loaded — viewing sessions is a separate permission — so the session already on record is kept unless you clear it.';
+  /* A reader is told why the name is missing; an editor is also told what a save will do with it. */
+  const sessionsUnavailable = canManage
+    ? 'The session list could not be loaded — viewing sessions is a separate permission — so the session already on record is kept unless you clear it.'
+    : 'The session list could not be loaded — viewing sessions is a separate permission — so the session on record cannot be named here.';
+  /* The current session also moves with the class, so an editor is told that too. See the header. */
+  const currentSessionUnavailable = canManage
+    ? 'The session list could not be loaded — viewing sessions is a separate permission — so the session is shown without its name. It follows the class: choosing another class moves it to that class’s session; otherwise the one on record is kept unless you clear it.'
+    : sessionsUnavailable;
+
+  /*
+   * The class and the section, kept as options of their own on the same terms as the session — see
+   * the header. Only while the list has settled without them: during the first load the select says
+   * "Loading…", which is true, rather than naming a placeholder.
+   *
+   * The section's fallback is offered only while the class on the form is still the stored one. A
+   * change of class clears the section, and the old section is by definition not one of the new class.
+   */
+  /* Without `classes.view` neither class read is made — the list stays unasked rather than failed. */
+  const classesUnavailable = !canViewClasses || classes.state === 'failed';
+  const classMissing =
+    student.class_id !== null
+    && (classesUnavailable
+      || (classes.state === 'ready' && !classes.rows.some((row) => row.id === student.class_id)));
+  const sectionMissing =
+    student.section_id !== null
+    && values.class_id === num(student.class_id)
+    && (!canViewClasses
+      || sections.state === 'failed'
+      || (sections.state === 'ready' && !sections.rows.some((row) => row.id === student.section_id)));
+  const placementUnavailable =
+    'The class list cannot be read by this account — viewing classes is a separate permission — or could not be loaded, so the placement on record is shown without its name.';
+
+  /*
+   * A session the chosen class brought with it that the loaded list cannot name — the list failed, or
+   * the session is past its one page. Only `onClassChange` can put such a value in the select, so it is
+   * named for where it came from.
+   */
+  const classSessionMissing =
+    values.academic_session_id !== ''
+    && values.academic_session_id !== num(student.academic_session_id)
+    && !sessions.some((row) => String(row.id) === values.academic_session_id);
 
   return (
     <div className="max-w-3xl">
@@ -659,6 +747,15 @@ export default function StudentDetailPage() {
       </p>
 
       {error ? <Notice tone="error">{error}</Notice> : null}
+      {/* Said once, so a disabled form does not read as a broken one. See the header. */}
+      {!canManage ? (
+        <div className="mb-6">
+          <Notice tone="info">
+            You can view this student but not change the record — editing students needs a permission
+            this account does not hold. Documents on file can still be downloaded below.
+          </Notice>
+        </div>
+      ) : null}
 
       <form onSubmit={onSubmit} className="space-y-8" noValidate>
         <FormSection
@@ -669,6 +766,7 @@ export default function StudentDetailPage() {
             id="first_name"
             label="First name"
             required
+            disabled={!canManage}
             maxLength={90}
             value={values.first_name}
             onChange={set('first_name')}
@@ -677,6 +775,7 @@ export default function StudentDetailPage() {
           <Field
             id="last_name"
             label="Last name"
+            disabled={!canManage}
             maxLength={90}
             value={values.last_name}
             onChange={set('last_name')}
@@ -692,6 +791,7 @@ export default function StudentDetailPage() {
             id="student_id"
             label="Student ID"
             required
+            disabled={!canManage}
             maxLength={60}
             value={values.student_id}
             onChange={set('student_id')}
@@ -703,6 +803,7 @@ export default function StudentDetailPage() {
             label="Admission date"
             type="date"
             required
+            disabled={!canManage}
             value={values.admission_date}
             onChange={set('admission_date')}
             error={fieldErrors.admission_date}
@@ -711,6 +812,7 @@ export default function StudentDetailPage() {
           <Field
             id="admission_number"
             label="Admission number"
+            disabled={!canManage}
             maxLength={60}
             value={values.admission_number}
             onChange={set('admission_number')}
@@ -720,6 +822,7 @@ export default function StudentDetailPage() {
           <SelectField
             id="admission_session_id"
             label="Admission session"
+            disabled={!canManage}
             value={values.admission_session_id}
             onChange={set('admission_session_id')}
             error={fieldErrors.admission_session_id}
@@ -748,13 +851,13 @@ export default function StudentDetailPage() {
             id="class_id"
             label="Class"
             value={values.class_id}
-            onChange={(event) => {
-              setValues((prev) => ({ ...prev, class_id: event.target.value, section_id: '' }));
-            }}
+            onChange={onClassChange}
             error={fieldErrors.class_id}
-            disabled={classes.state === 'loading'}
+            disabled={!canManage || !canViewClasses || classes.state === 'loading'}
+            hint={classMissing && classesUnavailable ? placementUnavailable : undefined}
           >
-            <option value="">{classes.state === 'loading' ? 'Loading…' : 'Not placed'}</option>
+            <option value="">{canViewClasses && classes.state === 'loading' ? 'Loading…' : 'Not placed'}</option>
+            {classMissing ? <option value={student.class_id ?? ''}>The class already on record</option> : null}
             {classes.state === 'ready'
               ? classes.rows.map((row) => (
                   <option key={row.id} value={row.id}>
@@ -771,10 +874,15 @@ export default function StudentDetailPage() {
             value={values.section_id}
             onChange={set('section_id')}
             error={fieldErrors.section_id}
-            disabled={!values.class_id || sections.state === 'loading'}
-            hint="Sections of the chosen class only, and cleared whenever that class changes."
+            disabled={!canManage || !canViewClasses || !values.class_id || sections.state === 'loading'}
+            hint={
+              sectionMissing && (!canViewClasses || sections.state === 'failed')
+                ? placementUnavailable
+                : 'Sections of the chosen class only, and cleared whenever that class changes.'
+            }
           >
             <option value="">No section</option>
+            {sectionMissing ? <option value={student.section_id ?? ''}>The section already on record</option> : null}
             {sections.state === 'ready'
               ? sections.rows.map((row) => (
                   <option key={row.id} value={row.id}>
@@ -787,13 +895,23 @@ export default function StudentDetailPage() {
           <SelectField
             id="academic_session_id"
             label="Current session"
+            disabled={!canManage}
             value={values.academic_session_id}
             onChange={set('academic_session_id')}
             error={fieldErrors.academic_session_id}
-            hint={sessionsFailed ? sessionsUnavailable : undefined}
+            hint={
+              sessionsFailed
+                ? currentSessionUnavailable
+                : canManage
+                  ? 'The session the student is in now. It follows the class — choosing another class sets that class’s session here, as a promotion does — and can be changed after that.'
+                  : undefined
+            }
           >
             <option value="">Not recorded</option>
             {storedSession(student.academic_session_id)}
+            {classSessionMissing ? (
+              <option value={values.academic_session_id}>The chosen class’s session</option>
+            ) : null}
             {sessions.map((row) => (
               <option key={row.id} value={row.id}>
                 {row.name}
@@ -804,6 +922,7 @@ export default function StudentDetailPage() {
           <Field
             id="roll_number"
             label="Roll number"
+            disabled={!canManage}
             maxLength={40}
             value={values.roll_number}
             onChange={set('roll_number')}
@@ -818,6 +937,7 @@ export default function StudentDetailPage() {
           <SelectField
             id="gender"
             label="Gender"
+            disabled={!canManage}
             value={values.gender}
             onChange={set('gender')}
             error={fieldErrors.gender}
@@ -835,6 +955,7 @@ export default function StudentDetailPage() {
             id="date_of_birth"
             label="Date of birth"
             type="date"
+            disabled={!canManage}
             value={values.date_of_birth}
             onChange={set('date_of_birth')}
             error={fieldErrors.date_of_birth}
@@ -842,6 +963,7 @@ export default function StudentDetailPage() {
           <Field
             id="blood_group"
             label="Blood group"
+            disabled={!canManage}
             maxLength={10}
             value={values.blood_group}
             onChange={set('blood_group')}
@@ -850,6 +972,7 @@ export default function StudentDetailPage() {
           <Field
             id="religion"
             label="Religion"
+            disabled={!canManage}
             maxLength={60}
             value={values.religion}
             onChange={set('religion')}
@@ -858,6 +981,7 @@ export default function StudentDetailPage() {
           <Field
             id="nationality"
             label="Nationality"
+            disabled={!canManage}
             maxLength={60}
             value={values.nationality}
             onChange={set('nationality')}
@@ -870,6 +994,7 @@ export default function StudentDetailPage() {
             id="email"
             label="Email"
             type="email"
+            disabled={!canManage}
             maxLength={180}
             value={values.email}
             onChange={set('email')}
@@ -878,6 +1003,7 @@ export default function StudentDetailPage() {
           <Field
             id="phone"
             label="Phone"
+            disabled={!canManage}
             maxLength={40}
             value={values.phone}
             onChange={set('phone')}
@@ -886,6 +1012,7 @@ export default function StudentDetailPage() {
           <Field
             id="address"
             label="Address"
+            disabled={!canManage}
             maxLength={255}
             value={values.address}
             onChange={set('address')}
@@ -894,6 +1021,7 @@ export default function StudentDetailPage() {
           <Field
             id="city"
             label="City"
+            disabled={!canManage}
             maxLength={90}
             value={values.city}
             onChange={set('city')}
@@ -908,6 +1036,7 @@ export default function StudentDetailPage() {
           <Field
             id="guardian_name"
             label="Guardian name"
+            disabled={!canManage}
             maxLength={160}
             value={values.guardian_name}
             onChange={set('guardian_name')}
@@ -916,6 +1045,7 @@ export default function StudentDetailPage() {
           <Field
             id="guardian_phone"
             label="Guardian phone"
+            disabled={!canManage}
             maxLength={40}
             value={values.guardian_phone}
             onChange={set('guardian_phone')}
@@ -924,6 +1054,7 @@ export default function StudentDetailPage() {
           <Field
             id="guardian_relation"
             label="Guardian relation"
+            disabled={!canManage}
             maxLength={60}
             value={values.guardian_relation}
             onChange={set('guardian_relation')}
@@ -932,6 +1063,7 @@ export default function StudentDetailPage() {
           <Field
             id="emergency_contact"
             label="Emergency contact"
+            disabled={!canManage}
             maxLength={40}
             value={values.emergency_contact}
             onChange={set('emergency_contact')}
@@ -946,6 +1078,7 @@ export default function StudentDetailPage() {
           <SelectField
             id="uses_transport"
             label="School transport"
+            disabled={!canManage}
             value={values.uses_transport}
             onChange={set('uses_transport')}
             error={fieldErrors.uses_transport}
@@ -959,27 +1092,33 @@ export default function StudentDetailPage() {
             id="notes"
             label="Notes"
             rows={3}
+            disabled={!canManage}
             maxLength={2000}
             value={values.notes}
             onChange={set('notes')}
             error={fieldErrors.notes}
             hint="Kept on the record and never shown to the student or their guardian."
           />
-          <Field
-            id="reason"
-            label="Reason"
-            maxLength={255}
-            value={values.reason}
-            onChange={set('reason')}
-            error={fieldErrors.reason}
-            hint="Recorded against this edit rather than on the student. Optional."
-          />
+          {/* A reason explains an edit, and a reader makes none. */}
+          {canManage ? (
+            <Field
+              id="reason"
+              label="Reason"
+              maxLength={255}
+              value={values.reason}
+              onChange={set('reason')}
+              error={fieldErrors.reason}
+              hint="Recorded against this edit rather than on the student. Optional."
+            />
+          ) : null}
         </FormSection>
 
         <FormActions cancelHref="/school/students" cancelLabel="Back to students">
-          <SubmitButton busy={saving} busyLabel="Saving…" fullWidth={false}>
-            Save changes
-          </SubmitButton>
+          {canManage ? (
+            <SubmitButton busy={saving} busyLabel="Saving…" fullWidth={false}>
+              Save changes
+            </SubmitButton>
+          ) : null}
         </FormActions>
       </form>
 
@@ -1031,28 +1170,31 @@ export default function StudentDetailPage() {
           </Notice>
         )}
 
-        <div className="mt-4 space-y-4">
-          <FileField
-            id="photo"
-            label={student.has_photo ? 'Replace the photo' : 'Add a photo'}
-            accept=".jpg,.jpeg,.png,.webp"
-            file={photo}
-            onChange={setPhoto}
-            busy={uploading}
-            error={photoError}
-            hint="The size ceiling is your plan's file upload limit, so it is not checked here."
-          />
+        {/* `POST /students/:id/photo` is behind `students.manage`; a reader looks and does not replace. */}
+        {canManage ? (
+          <div className="mt-4 space-y-4">
+            <FileField
+              id="photo"
+              label={student.has_photo ? 'Replace the photo' : 'Add a photo'}
+              accept=".jpg,.jpeg,.png,.webp"
+              file={photo}
+              onChange={setPhoto}
+              busy={uploading}
+              error={photoError}
+              hint="The size ceiling is your plan's file upload limit, so it is not checked here."
+            />
 
-          <button
-            type="button"
-            onClick={() => void uploadPhoto()}
-            disabled={!photo || uploading}
-            aria-busy={uploading}
-            className="btn btn-primary"
-          >
-            {uploading ? 'Storing…' : 'Store photo'}
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => void uploadPhoto()}
+              disabled={!photo || uploading}
+              aria-busy={uploading}
+              className="btn btn-primary"
+            >
+              {uploading ? 'Storing…' : 'Store photo'}
+            </button>
+          </div>
+        ) : null}
       </section>
 
       {/* ─────────────── the documents, outside the form ─────────────── */}
@@ -1106,34 +1248,37 @@ export default function StudentDetailPage() {
           </ul>
         )}
 
-        <div className="mt-6 max-w-2xl space-y-4">
-          <FileField
-            id="document"
-            label="Add a document"
-            file={docFile}
-            onChange={setDocFile}
-            busy={docUploading}
-            error={docError}
-            hint="PDFs, images and office documents. The size ceiling is your plan's file upload limit, so it is not checked here."
-          />
-          <Field
-            id="document-title"
-            label="Title"
-            maxLength={200}
-            value={docTitle}
-            onChange={(event) => setDocTitle(event.target.value)}
-            hint="Optional — left blank, the document is listed under its file name."
-          />
-          <button
-            type="button"
-            onClick={() => void uploadDocument()}
-            disabled={!docFile || docUploading}
-            aria-busy={docUploading}
-            className="btn btn-primary"
-          >
-            {docUploading ? 'Storing…' : 'Store document'}
-          </button>
-        </div>
+        {/* Upload is `students.manage` (D13); the list and the download above are `students.view`. */}
+        {canManage ? (
+          <div className="mt-6 max-w-2xl space-y-4">
+            <FileField
+              id="document"
+              label="Add a document"
+              file={docFile}
+              onChange={setDocFile}
+              busy={docUploading}
+              error={docError}
+              hint="PDFs, images and office documents. The size ceiling is your plan's file upload limit, so it is not checked here."
+            />
+            <Field
+              id="document-title"
+              label="Title"
+              maxLength={200}
+              value={docTitle}
+              onChange={(event) => setDocTitle(event.target.value)}
+              hint="Optional — left blank, the document is listed under its file name."
+            />
+            <button
+              type="button"
+              onClick={() => void uploadDocument()}
+              disabled={!docFile || docUploading}
+              aria-busy={docUploading}
+              className="btn btn-primary"
+            >
+              {docUploading ? 'Storing…' : 'Store document'}
+            </button>
+          </div>
+        ) : null}
       </section>
     </div>
   );

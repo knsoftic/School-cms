@@ -24,7 +24,7 @@
  */
 
 const { ROLES } = require('../../config/constants');
-const { DEFAULT_ROLE_PERMISSIONS, PERMISSION_KEYS } = require('../../config/permissions');
+const { DEFAULT_ROLE_PERMISSIONS, PERMISSION_KEYS, PREVIOUS_DEFAULTS } = require('../../config/permissions');
 const logger = require('../../config/logger');
 
 module.exports = {
@@ -69,7 +69,17 @@ module.exports = {
       const currentIds = grantsByRole.get(role.id) || new Set();
       const isSuperAdmin = slug === ROLES.SUPER_ADMIN;
 
-      if (currentIds.size && !isSuperAdmin) {
+      /*
+       * A role that still holds exactly an earlier version's defaults was never customised, so it is
+       * brought up to the current ones (`PREVIOUS_DEFAULTS` — the owner's decision D27 is the first
+       * change to a default). Any other difference is the Super Admin's configuration and is kept.
+       */
+      const onEarlierDefaults = (PREVIOUS_DEFAULTS[slug] || []).some((keys) => {
+        const ids = keys.map((key) => permissionIdByKey.get(key)).filter((id) => id !== undefined);
+        return ids.length === currentIds.size && ids.every((id) => currentIds.has(id));
+      });
+
+      if (currentIds.size && !isSuperAdmin && !onEarlierDefaults) {
         /* Existing grants are the Super Admin's business; only report the difference. */
         const missing = [...wantedIds].filter((id) => !currentIds.has(id)).length;
         const extra = [...currentIds].filter((id) => !wantedIds.has(id)).length;

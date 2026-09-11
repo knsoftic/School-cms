@@ -459,10 +459,21 @@ async function classView(req, classId, query) {
   return { class: klass, section_id: query.section_id || null, entries: rows };
 }
 
-/** The Teacher Timetable — the same rows, filtered by teacher instead of by class. */
+/** The teacher columns a timetable may show — the same four its entries carry (`INCLUDES`). */
+const TEACHER_HEADING = Object.freeze(['id', 'employee_id', 'first_name', 'last_name']);
+
+/**
+ * The Teacher Timetable — the same rows, filtered by teacher instead of by class.
+ *
+ * The teacher comes back as a heading and nothing more. `timetable.view` reaches Students, Parents,
+ * Receptionists and Staff, and this route returned the whole `teachers` row — salary, notes, date of
+ * birth, address, phone — to any of them for any teacher id in the school. `loadTeacherInSchool()` is a
+ * membership check, not a projection, so its row is used for the check and never returned.
+ */
 async function teacherView(req, teacherId, query) {
   const school = await resolveSchool(req, query.school_id);
-  const teacher = await loadTeacherInSchool(teacherId, school.id);
+  const found = await loadTeacherInSchool(teacherId, school.id);
+  const teacher = Object.fromEntries(TEACHER_HEADING.map((key) => [key, found.get(key)]));
 
   const where = { school_id: school.id, teacher_id: teacher.id };
   if (query.academic_session_id) where.academic_session_id = query.academic_session_id;

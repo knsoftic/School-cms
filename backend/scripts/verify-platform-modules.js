@@ -89,6 +89,8 @@ const {
   ORGANIZATION_STATUS,
   USAGE_LIMIT_KEYS,
   HEADCOUNT_LIMITS,
+  PAYMENT_METHODS,
+  PAYMENT_STATUS,
 } = require('../src/config/constants');
 
 const platformRoutes = require('../src/modules/platform/platform.routes');
@@ -426,6 +428,18 @@ function verifyPrincipalSchemas() {
     run(principalSchemas.list, { school_id: '4' }).value.school_id,
     4
   );
+
+  /*
+   * Which schools a caller may list. A school caller's tenant carries its organization as well
+   * (`resolveTenant` takes it from the school), and `scopeFor()` asked about the organization first —
+   * so a school user granted `schools.view`, which nothing prevents, listed every school in their
+   * organization with each principal's contact details. School first, as `tenantWhere()` does.
+   */
+  const schoolsService = require('../src/modules/schools/schools.service');
+  check('a school-scoped caller is scoped to their own school, not their organization — §30 Rule 2',
+    schoolsService.scopeFor({ isPlatform: false, organizationId: 7, schoolId: 3 }), { id: 3 });
+  check('  while an organization admin, with no school, sees their organization',
+    schoolsService.scopeFor({ isPlatform: false, organizationId: 7, schoolId: null }), { organization_id: 7 });
 }
 
 /* ═══════════════════════════ part 2 — the route tables ═══════════════════════════ */
@@ -1432,9 +1446,10 @@ async function verifyHttp() {
       'yearlyRevenue',
       'pendingPayments',
     ]);
-    check('followed by the three derived extras', Object.keys(metrics).slice(11), [
+    check('followed by the derived extras', Object.keys(metrics).slice(11), [
       'archivedSchools',
       'pendingPaymentsAmount',
+      'revenueByCurrency',
       'period',
       'scope',
     ]);
@@ -1473,6 +1488,55 @@ async function verifyHttp() {
       metrics.yearlyRevenue,
       metrics.pendingPaymentsAmount,
     ], [0, 0, 0]);
+
+    /*
+     * Revenue is what arrived, net of refunds, and is never added across currencies.
+     *
+     * It used to sum `amount` over `approved` alone — and any refund relabels a payment, so 1,000 with
+     * 10 refunded contributed 0 rather than 990 — and it summed every currency into one number. The rule
+     * is `invoices.applyPayment()`'s: approved, partially refunded and refunded, less `refunded_amount`.
+     */
+    const paidNow = new Date();
+    const mkPayment = (key, currency, amount, status, refunded = 0) => db.Payment.create({
+      payment_number: `VPM-PAY-${key}`, school_id: schoolAId, organization_id: orgAId,
+      method: PAYMENT_METHODS.CASH, currency, amount, status, refunded_amount: refunded, paid_at: paidNow,
+    });
+    await mkPayment('1', 'USD', 1000, PAYMENT_STATUS.PARTIALLY_REFUNDED, 10);
+    await mkPayment('2', 'USD', 500, PAYMENT_STATUS.APPROVED);
+    await mkPayment('3', 'USD', 200, PAYMENT_STATUS.REFUNDED, 200);
+    await mkPayment('4', 'USD', 300, PAYMENT_STATUS.PENDING);
+    await mkPayment('5', 'USD', 70, PAYMENT_STATUS.REJECTED);
+    const oneCurrency = dataOf(await call('/platform/dashboard', { token: tokens.platform })).metrics;
+    check('revenue is received money net of refunds: 990 + 500 + 0 — a rejected payment is not revenue',
+      [oneCurrency.monthlyRevenue, oneCurrency.yearlyRevenue], [1490, 1490]);
+    check('  and a pending payment is money awaiting review, not revenue', oneCurrency.pendingPaymentsAmount, 300);
+
+    await mkPayment('6', 'PKR', 25000, PAYMENT_STATUS.APPROVED);
+    const mixed = dataOf(await call('/platform/dashboard', { token: tokens.platform })).metrics;
+    check('with a second currency there is no single figure — the total is null, never USD plus PKR',
+      [mixed.monthlyRevenue, mixed.yearlyRevenue], [null, null]);
+    check('  and each currency is its own line instead',
+      mixed.revenueByCurrency.month, [{ currency: 'PKR', amount: 25000 }, { currency: 'USD', amount: 1490 }]);
+    check('  while the pending amount, still in one currency, keeps its single figure',
+      [mixed.pendingPaymentsAmount, mixed.revenueByCurrency.pending], [300, [{ currency: 'USD', amount: 300 }]]);
+    await db.Payment.destroy({ where: { payment_number: { [db.Op.like]: 'VPM-PAY-%' } } });
+
+    /*
+     * D33 — a deleted school's rows leave the totals with it. School C was soft-deleted above, which
+     * removes the school row alone; a teacher and a student still pointing at it used to go on being
+     * counted in Total Teachers and Total Students after the school had left Total Schools.
+     */
+    const ghostTeacher = await db.Teacher.create({
+      school_id: schoolCId, organization_id: orgAId, employee_id: 'VPM-T-GHOST', first_name: 'Ghost', joining_date: '2025-01-01',
+    });
+    const ghostStudent = await db.Student.create({
+      school_id: schoolCId, organization_id: orgAId, student_id: 'VPM-S-GHOST', first_name: 'Ghost', admission_date: '2025-01-01',
+    });
+    const afterGhosts = dataOf(await call('/platform/dashboard', { token: tokens.platform })).metrics;
+    check('D33 — a deleted school\'s teacher and student are not counted in the platform totals',
+      [afterGhosts.totalTeachers - metrics.totalTeachers, afterGhosts.totalStudents - metrics.totalStudents], [0, 0]);
+    await ghostTeacher.destroy({ force: true });
+    await ghostStudent.destroy({ force: true });
 
     /* ─────────────────────────── tenant isolation ─────────────────────────── */
 

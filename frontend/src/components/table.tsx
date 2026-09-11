@@ -75,6 +75,13 @@ export function RefusalNotice({ refusal }: { refusal: Refusal }) {
       'This parent record has been made inactive, so its children are no longer shown. The school office can reactivate it.',
     TEACHER_PROFILE_MISSING:
       'This account is not yet linked to a teacher record, so there are no classes or subjects to show. The school office creates that link.',
+    /*
+     * The self views' own 404 (`services/selfScope.js`): the signed-in account has neither a student
+     * nor a parent record behind it — a student login never linked, or a teacher opening a
+     * student-or-parent view such as `GET /attendance/mine`.
+     */
+    SELF_PROFILE_MISSING:
+      'This account is not linked to a student or parent record, so there is nothing of its own to show here. The school office creates that link.',
   };
 
   const explanation =

@@ -32,12 +32,17 @@
  *   *"Approved AI-generated questions are stored in the Question Bank"* — the approve transition is what
  *   stores them; there is nothing left to call.
  *
- * ## Exactly one route is metered, and it is the only one that could be
+ * ## Exactly one route is metered; three are checked
  *
- * `enforceLimit(LIMITS.AI_LIMIT)` sits on `POST /banks/:id/generate` and nowhere else, and the service
- * calls `usageService.recordUsage` there and nowhere else. §21's example is *"Plan: 1000 AI Requests"*;
- * if extract and analyze were counted too, that plan would buy 333 question sets. The service header
- * explains where the increment sits relative to the commit and why it is neither swallowed nor early.
+ * The service consumes the AI allowance on `POST /banks/:id/generate` and nowhere else. §21's example is
+ * *"Plan: 1000 AI Requests"*; if extract and analyze were counted too, that plan would buy 333 question
+ * sets. The service header explains where the increment sits relative to the commit and why it is
+ * neither swallowed nor early.
+ *
+ * `enforceLimit(LIMITS.AI_LIMIT)` — which checks and never records — sits on the extract and analyze
+ * routes as well as the generation: the owner's decision D32. Those are the steps that call the model,
+ * and at the cap they are refused, not only the one that is counted. The upload is not among them: it
+ * stores the teacher's source and calls nothing, and D32 named extraction and analysis.
  *
  * **`aiLimiter` guards the three driver routes.** It has existed in `rateLimit.js` since that file was
  * written and been mounted nowhere; these are its first callers. It answers a different question from
@@ -108,7 +113,18 @@ router.get(
   asyncHandler(controller.listBanks)
 );
 
-/* FR-AI-001 step 1 — "Teacher uploads a PDF, Image, or Syllabus". */
+/*
+ * The owner's decision D32: at the AI limit, extraction and topic analysis are refused too.
+ *
+ * FR-AI-002 "prevents further AI usage beyond the limit" (SRS:1172), and with the real Anthropic driver
+ * extraction from an image and topic analysis are calls to the model as much as generation is. They
+ * are *checked* against the limit — refused once the allowance is spent — and not *counted*: only the
+ * generation consumes it (`reserveUsage` in the service), so a plan's N requests still buy N question
+ * sets. `enforceLimit` never records usage itself, which is what makes it the check-only guard.
+ */
+const atAiLimit = enforceLimit(LIMITS.AI_LIMIT);
+
+/* FR-AI-001 step 1 — "Teacher uploads a PDF, Image, or Syllabus". Calls no model, so no limit (D32). */
 router.post(
   '/banks',
   requirePermission('ai.generate'),
@@ -131,6 +147,7 @@ router.post(
   requirePermission('ai.generate'),
   aiLimiter,
   validate({ params: schemas.idParam, body: schemas.stageOnly }),
+  atAiLimit,
   logActivity({ action: 'update', entityType: 'question_banks', onlyOnSuccess: true }),
   asyncHandler(controller.extract)
 );
@@ -141,20 +158,22 @@ router.post(
   requirePermission('ai.generate'),
   aiLimiter,
   validate({ params: schemas.idParam, body: schemas.stageOnly }),
+  atAiLimit,
   logActivity({ action: 'update', entityType: 'question_banks', onlyOnSuccess: true }),
   asyncHandler(controller.analyze)
 );
 
 /*
- * Steps 4 and 5 — the MCQs and their answers. THE metered AI request: the only route in the
- * application carrying `enforceLimit(LIMITS.AI_LIMIT)`, and the only caller of `recordUsage`.
+ * Steps 4 and 5 — the MCQs and their answers. THE metered AI request: the one step that consumes the
+ * AI allowance (the service reserves one unit per generation); the three above are only checked
+ * against it (D32).
  */
 router.post(
   '/banks/:id/generate',
   requirePermission('ai.generate'),
   aiLimiter,
   validate({ params: schemas.idParam, body: schemas.generate }),
-  enforceLimit(LIMITS.AI_LIMIT),
+  atAiLimit,
   logActivity({ action: 'update', entityType: 'question_banks', onlyOnSuccess: true }),
   asyncHandler(controller.generate)
 );

@@ -160,27 +160,73 @@ async function assertReferences(payload, schoolId, existing = null) {
       ]);
     }
   }
+  await assertOnCurriculum(payload, schoolId, existing);
 }
 
 /**
- * The classes a self-service caller may see homework for, or `null` for a caller who is neither a
- * student nor a parent and therefore sees the whole school.
+ * FR-HW-001's precondition, "Class/subject assignment exists" (SRS:1099) — the owner's decision D30.
+ *
+ * The subject stays optional; when one is named it must be on the class's curriculum, which §14.4 keeps
+ * in `class_subjects`. Re-checked whenever either half of the pair moves, so moving homework to a class
+ * that does not teach its subject is refused like naming the wrong subject. Teachers are not narrowed to
+ * their own classes — D30 decided that too. Shared with `assignments.service`, whose FR-ASG-001 carries
+ * the same precondition (SRS:1108).
+ *
+ * The section counts. A `class_subjects` row with a section is that section's curriculum only
+ * (`models/academic.js`), so work set for a section may name a subject of the whole class or of that
+ * section, and work set for the whole class a subject of the whole class.
+ */
+async function assertOnCurriculum(payload, schoolId, existing = null) {
+  if (payload.subject_id === undefined && payload.class_id === undefined && payload.section_id === undefined) return;
+  const classId = payload.class_id !== undefined ? payload.class_id : existing && existing.class_id;
+  const subjectId = payload.subject_id !== undefined ? payload.subject_id : existing && existing.subject_id;
+  const sectionId = payload.section_id !== undefined ? payload.section_id : existing && existing.section_id;
+  if (!classId || !subjectId) return;
+  const onCurriculum = await db.ClassSubject.count({
+    where: {
+      school_id: schoolId,
+      class_id: classId,
+      subject_id: subjectId,
+      is_active: true,
+      [Op.or]: [{ section_id: null }, ...(sectionId ? [{ section_id: sectionId }] : [])],
+    },
+  });
+  if (!onCurriculum) {
+    throw ApiError.validation('That subject is not taught in this class', [
+      { field: 'subject_id', message: "Name a subject on this class's curriculum (its class subjects)" },
+    ]);
+  }
+}
+
+/**
+ * The placements — class, and section where the student has one — a self-service caller may see
+ * homework for, or `null` for a caller who is neither a student nor a parent and therefore sees the
+ * whole school.
  *
  * Both profiles are consulted rather than the first one found — one account can be both a student and a
  * parent, and resolving only the student half would silently hide their children's homework. That was a
  * real defect in §19's `myResults()` (§5a session 19), and repeating it here would be repeating a
  * mistake this project has already paid for.
+ *
+ * The section is part of the placement because homework can be set for one section: §20.2's "the
+ * relevant class/students", and the form's own promise that naming a section confines the homework to
+ * it. Narrowing by class alone showed a section's homework to every other section of the class.
  */
-async function selfScopeClasses(req) {
+async function selfScopePlacements(req) {
   if (!req.user || !req.user.id) return null;
 
-  const classIds = new Set();
+  const placements = [];
   let isSelfCaller = false;
+  const place = (student) => {
+    if (student.class_id) {
+      placements.push({ classId: Number(student.class_id), sectionId: student.section_id ? Number(student.section_id) : null });
+    }
+  };
 
   const student = await db.Student.findOne({ where: tenantWhere(req.tenant, { user_id: req.user.id }) });
   if (student) {
     isSelfCaller = true;
-    if (student.class_id) classIds.add(Number(student.class_id));
+    place(student);
   }
 
   const parent = await db.Parent.findOne({ where: tenantWhere(req.tenant, { user_id: req.user.id }) });
@@ -194,14 +240,31 @@ async function selfScopeClasses(req) {
       if (links.length) {
         const children = await db.Student.findAll({
           where: { id: { [Op.in]: links.map((l) => l.student_id) }, school_id: parent.school_id },
-          attributes: ['class_id'],
+          attributes: ['class_id', 'section_id'],
         });
-        for (const child of children) if (child.class_id) classIds.add(Number(child.class_id));
+        children.forEach(place);
       }
     }
   }
 
-  return isSelfCaller ? [...classIds] : null;
+  return isSelfCaller ? placements : null;
+}
+
+/** Whether a homework row is set for one of `placements`: its class, and either no section or theirs. */
+function reaches(placements, row) {
+  return placements.some((p) => p.classId === Number(row.class_id) &&
+    (!row.section_id || p.sectionId === Number(row.section_id)));
+}
+
+/** The same test as a `WHERE` fragment. An empty set resolves to nothing, never to the whole school. */
+function placementWhere(placements) {
+  if (!placements.length) return { class_id: { [Op.in]: [0] } };
+  return {
+    [Op.or]: placements.map((p) => ({
+      class_id: p.classId,
+      [Op.or]: [{ section_id: null }, ...(p.sectionId ? [{ section_id: p.sectionId }] : [])],
+    })),
+  };
 }
 
 async function findById(req, id, namedSchoolId = undefined) {
@@ -220,8 +283,8 @@ async function findById(req, id, namedSchoolId = undefined) {
    * narrowing would be a list-only courtesy that any caller could step around by guessing an id, and
    * an unpublished draft would be readable by the class it has not been set for yet.
    */
-  const own = await selfScopeClasses(req);
-  if (own !== null && (!own.includes(Number(row.class_id)) || !row.is_published)) {
+  const own = await selfScopePlacements(req);
+  if (own !== null && (!reaches(own, row) || !row.is_published)) {
     throw ApiError.notFound('Homework not found', { code: 'HOMEWORK_NOT_FOUND' });
   }
   return row;
@@ -249,10 +312,13 @@ async function list(req, query, pagination) {
     ];
   }
 
-  const own = await selfScopeClasses(req);
+  const own = await selfScopePlacements(req);
   if (own !== null) {
-    /* A student or parent with no class resolves to an empty set, never to the whole school. */
-    where.class_id = own.length ? { [Op.in]: own } : { [Op.in]: [0] };
+    /*
+     * A student or parent with no class resolves to an empty set, never to the whole school. Added
+     * beside the caller's own filters rather than over them, so `class_id=` or `q=` can only narrow.
+     */
+    where[Op.and] = [...(where[Op.and] || []), placementWhere(own)];
     /* Unpublished homework is a draft; §20.2 makes it "available" only once it is published. */
     where.is_published = true;
   }
@@ -342,7 +408,8 @@ module.exports = {
   create,
   update,
   present,
-  selfScopeClasses,
+  selfScopePlacements,
+  assertOnCurriculum,
   childScope,
   EDITABLE,
   SORTABLE,

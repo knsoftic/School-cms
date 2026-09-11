@@ -29,6 +29,36 @@ taken. Every question was put with a recommended option; every recommendation wa
 | D15 | **Teacher and Super Admin receive no notification** (finding 63) | **Both do.** Teachers: exam announcements and published results for the classes they teach. Super Admin: payment received, payment failed and subscription expiry, as platform notifications | Super Admin only; teachers only; no change |
 | D16 | **Custom Domain unlocks nothing** — serving a school on its own domain is hosting work outside this application | **Ship it switched off.** A new install seeds it inactive; the Super Admin can switch it on once hosting supports it | Leave it purchasable |
 
+## Second round — D17 to D37
+
+**Decided:** 2026-09-10, by the project owner, after a section-by-section re-audit of the SRS against
+the code (commit `7e26dce`) found 21 gaps the SRS does not settle. Each was put with a recommended
+option and the owner approved all 21 recommendations at once.
+
+| # | Gap | Decision | Not chosen |
+|---|---|---|---|
+| D17 | **A student "has access relevant to their own records"** (SRS:105) but can reach only results and homework; `students.self.view`, `attendance.self.view` and `fees.self.view` are granted and mounted nowhere | **Read-only self-service views.** A student sees their own attendance, fees, student profile and class timetable; a parent sees the same for each linked child — on the existing self-view keys | Results and homework only |
+| D18 | **No Organization Admin can be created** (SRS:97 — the role is seeded, its workflows "Not Specified") | **The Super Admin creates them**, under `users.manage`; the role keeps its seeded read-only grants | Leave it uncreatable |
+| D19 | **Deactivating a teacher, staff member or student leaves their login active** (only parents sync the two) | **Deactivating the profile suspends its login**, as parents already do | Keep the two separate |
+| D20 | **A closed academic session changes nothing** (SRS:753) | **A closed session refuses new classes, admissions, exams and fee structures**, and forms default to the current session | No effect |
+| D21 | **An add-on bought without a price bills 0.00** (Known Issues #18) | **Refuse the purchase** | Bill it at 0.00 |
+| D22 | **A plan change into another currency** | **Keep refusing it** — today's behaviour confirmed | Allow it |
+| D23 | **Billing events do not drive the subscription state** (SRS:577-578, FR-BILL-004) | **An overdue invoice makes the subscription Past Due; paying every overdue invoice returns it to Active; paying old debts never revives a Cancelled or Suspended subscription; trial days are not billed** — the first invoice starts when the trial ends | The period-end sweep stays the only driver |
+| D24 | **An add-on bought mid-period is billed late or never** (SRS:526) | **A prorated charge is invoiced at purchase**, as an upgrade is | Bill from the next period |
+| D25 | **SMS Credits sells an allowance nothing uses** — there is no SMS channel | **Ship it switched off**, as D16 did for Custom Domain | Build an SMS channel (a provider is needed) |
+| D26 | **Three of the five pricing models are one formula over a typed number** (§10.4 names them, defines none) | **Per-Student and Student-Based bill the school's live active-student count, re-counted at each renewal; Seat-Based keeps the typed quantity; a price row's unused overage rate is hidden** | The typed quantity for all three |
+| D27 | **A school has no billing screen** (FR-SUB-013/014/015, FR-BILL-003/005 name the school) and school leadership lacks the keys to pick a plan, an add-on or see a payment | **Build the school Billing screen** — subscription, invoices, paying with a transaction id or screenshot, applying a coupon, upgrading, buying add-ons — and **grant Principal and School Admin the existing `plans.view`, `addons.view` and `payments.view`** | A read-only screen with no grant change |
+| D28 | **§23's Fee Reminder never reaches a subscription invoice** (`reminderCandidates()` has no caller) | **It also reminds the school's billing roles** of a subscription invoice falling due | Student fees only |
+| D29 | **A fee structure's fine is stored and never applied** (SRS:909, 922) | **A daily job applies it** to a fee still unpaid after its due date plus the grace days: `fixed` a flat amount, `percentage` a share of the fee, `per_day` an amount per day late, growing until paid | Fines stay typed by hand |
+| D30 | **"Class/subject assignment exists"** (SRS:1099, 1108) is not enforced | **The subject stays optional; when named it must be on the class's curriculum** (`class_subjects`). Teachers are not restricted to their own classes | Also restrict teachers |
+| D31 | **A Result Card can snapshot an unpublished result** that the student can then read through documents | **Refused until the result is published** | Allowed, hidden from student and parent until published |
+| D32 | **At the AI limit, extraction and analysis still run** (SRS:1153, 1172) | **They are checked against the limit and refused at the cap, but not counted** — only generation consumes the allowance | Only generation is limited |
+| D33 | **A deleted school still counts** in the platform's student, teacher and subscription totals | **Its rows drop out of the totals** | Keep counting them |
+| D34 | **An Accountant or Receptionist cannot pick a teacher or an exam** to generate a Teacher ID Card or Result Card (FR-DOC-001 names both) | **Small pick-lists under `documents.generate`** | Grant them `teachers.view` and `exams.view` |
+| D35 | **FR-SCHOOL-001's settings are stored, not "applied"** | **The school's name, logo and currency appear on its screens and documents** | Also theme and timezone |
+| D36 | **§26's heavy reports run inside the request**, not through the queue — a queued report would need somewhere to be stored and fetched | **Keep reports synchronous, recorded** | Queue them into document storage |
+| D37 | **Online Exams, Laboratory, Transport and Hostel** can be sold and have no requirement behind them (no FR; §29 gives Online Exams a table and nowhere to store an attempt) | **Leave them unbuilt, recorded** | Build them, with table decisions |
+
 ## Where each is built
 
 All sixteen were built in session 28 (commit `826e19f`) and each is asserted by the suite named, so
@@ -51,11 +81,38 @@ a regression against a decision fails the loop rather than going unnoticed.
 | D15 | `notifications.service.js` teacher recipients and platform copies | `verify-notifications.js` |
 | D16 | `seeders/05-addons.js` `SEEDED_INACTIVE` | `verify-seed.js` (on the seed definitions — an existing install keeps its own `is_active`) |
 
+The second round was built in session 29, each again asserted by the suite named:
+
+| # | Code | Proven by |
+|---|---|---|
+| D17 | `GET /students/mine`, `/attendance/mine`, `/fees/mine` over `services/selfScope.js`, each projected to named columns; the student and parent portal screens (attendance, fees, record, timetable) and the teacher's own timetable | `verify-students.js`, `verify-attendance.js`, `verify-fees.js`, `verify-parents.js` |
+| D18 | `users.service.createOrganizationAdmin()`, `ORGANIZATION_ADMIN` in `users.validation.js` `CREATABLE_ROLES`; the Add admin action on the platform Organizations screen | `verify-users-roles.js` |
+| D19 | `users.service.followProfile()`, called by the teacher, staff and student deactivate and reactivate paths | `verify-users-roles.js` |
+| D20 | `utils/schoolScope.js` `assertSessionOpen()` / `assertOpenForNew()` on the four creates and on every move into a closed session (class session, student class or session, promotion); `/auth/me` `school.current_session` for the form defaults | `verify-school-setup.js`, `verify-students.js`, `verify-exams.js`, `verify-fees.js` |
+| D21 | `subscriptions.validation.js` `addon_price_id` required on a purchase | `verify-subscriptions.js` |
+| D22 | no change — today's refusal confirmed | the existing subscription suite |
+| D23 | `subscriptions.service.js` `pastDueForOverdueInvoices()`, `settleArrears()`, the trial re-base in the sweep, and `renew()`, which with an invoice overdue advances the period but keeps Past Due or Grace (grace end included), moves Active or Expiring into its configured grace period (Past Due when that is zero days), and refuses an Expired subscription (`SUBSCRIPTION_IN_ARREARS`); `jobs/tasks/invoiceOverdue.js` | `verify-subscriptions.js`, `verify-billing.js` |
+| D24 | `subscriptions.service.purchaseAddon()` invoices a prorated line when the period is already invoiced | `verify-billing.js` |
+| D25 | `seeders/05-addons.js` `SEEDED_INACTIVE` gains `sms_credits` | `verify-seed.js` |
+| D26 | `subscriptions.service.js` `COUNTED_MODELS`, `billedQuantity()`; a typed quantity refused on a counted price | `verify-subscriptions.js` |
+| D27 | `config/permissions.js` `D27_BILLING_KEYS` and the seeder's `PREVIOUS_DEFAULTS` upgrade rule; the school Billing screen | `verify-seed.js`, `verify-billing.js` |
+| D28 | `notifications.service.js` `sweepInvoiceReminders()` | `verify-notifications.js` |
+| D29 | `fees.service.applyFines()`, `jobs/tasks/feeFines.js` | `verify-fees.js`, `verify-jobs.js` |
+| D30 | `homework.service.assertOnCurriculum()`, shared with assignments; `GET /subjects?class_id=&section_id=` for the pickers | `verify-homework.js`, `verify-assignments.js`, `verify-school-setup.js` |
+| D31 | `documents.service.js` refuses a Result Card for an unpublished result | `verify-documents.js` |
+| D32 | `ai.routes.js` `enforceLimit(AI_LIMIT)` on extract, analyze and generate; only generation reserves | `verify-ai.js` |
+| D33 | `platform.service.js` `OF_LIVE_SCHOOL` joins | `verify-platform-modules.js` |
+| D34 | `GET /documents/pickers/teachers` and `/pickers/exams` under `documents.generate` | `verify-documents.js` |
+| D35 | `utils/schoolScope.js` `schoolBrand()`: `/auth/me` `school` for every school role, the currency default on fee structures and ledger entries, the display name on documents (snapshotted), result cards, the class-result PDF and report exports | `verify-fees.js`, `verify-finance.js`, `verify-reports.js`, `verify-documents.js`, `verify-exams.js` |
+| D36, D37 | no change — recorded | — |
+
 ## What these decisions do not change
 
 - **The catalogue.** No decision adds a table, a column, a permission, a role, a module key or a limit
   key. D1 uses `users.manage`, which the catalogue already grants to school leadership as "Create /
   edit users"; D13 uses `students.manage` and `students.view`; D9 uses the `premium_reports` feature
-  key the add-on already unlocks.
+  key the add-on already unlocks. **D27 is the one change to the default role grants**: it gives
+  Principal and School Admin three keys the catalogue already has (`plans.view`, `addons.view`,
+  `payments.view`) — seed data the owner decided, not a new key.
 - **Anything the SRS states.** D10, D11 and D14 confirm today's behaviour; they are recorded because
   the question was open, not because anything changed.

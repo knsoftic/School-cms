@@ -13,13 +13,16 @@
  * `tax` and `payments` on top of it, so the response is far larger than a list should render. The
  * seven kept are the ones an administrator scans a billing list *for*: which document, whose, on
  * what plan, how much was billed, how much is still owed, when it falls due, and where it stands.
- * Everything else is detail for a single-invoice screen, where there is room to lay out the
- * subtotal → discount → tax → total derivation in the order §13.1 states it.
+ * Everything else is detail for the single-invoice screen, `invoices/[id]`, which lays out every
+ * §13.1 field, the subtotal → discount → tax → total derivation in the order §13.1 states it, and
+ * the line items. Each row's invoice number links to it.
  *
- * `issue_date` is the one omission worth naming, because it is a §13.1 field. The service's
- * `DEFAULT_SORT` is `['issue_date', 'DESC']`, so the ordering of the table already carries it —
- * a column repeating the sort key earns less than the space it costs, and `due_date` is the date
- * that tells an administrator whether to act.
+ * `issue_date` is the one omission worth naming. It is not one of §13.1's eleven fields (SRS §13.1
+ * lists Invoice Number, School, Plan, Add-ons, Billing Period, Subtotal, Discount, Tax, Total, Due
+ * Date and Status) — this comment used to say it was — but it is the date an invoice is filed by.
+ * The service's `DEFAULT_SORT` is `['issue_date', 'DESC']`, so the ordering of the table already
+ * carries it — a column repeating the sort key earns less than the space it costs, and `due_date` is
+ * the date that tells an administrator whether to act. The single-invoice screen prints it.
  *
  * ## The search box sends `number`, not `q`
  *
@@ -47,15 +50,11 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 
-import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { formatCodeWithAmount } from '@/lib/money';
 import { useCollection } from '@/lib/useCollection';
 import { useSchoolNames } from '@/lib/useSchoolNames';
 import type { Query } from '@/lib/useCollection';
-import { Field, Notice, SubmitButton, TextAreaField } from '@/components/form';
-import { Modal } from '@/components/overlay';
-import { useToast } from '@/components/toast';
 import {
   SearchField,
   FilterBar,
@@ -73,6 +72,8 @@ import {
   StatusBadge,
 } from '@/components/table';
 
+import { actionsFor, useInvoiceActions } from './actions';
+
 /**
  * One row of `GET /invoices`, as `present()` actually returns it.
  *
@@ -85,17 +86,27 @@ import {
  *
  * `issue_date` and `due_date` are `DATEONLY`, which arrives as `YYYY-MM-DD` — a calendar date with
  * no instant behind it. `is_overdue` is not a column: the controller derives it per request from
- * `due_date` and the clock, because `markOverdue()` is a scheduled sweep and `src/jobs/` does not
- * exist yet, so an invoice can be genuinely past due while `status` still reads `unpaid`.
+ * `due_date` and the clock. `markOverdue()` is a scheduled sweep — `backend/src/jobs/cron.js` runs
+ * `tasks/invoiceOverdue.js` once a day (`20 2 * * *`, server time) where `ENABLE_CRON` is on — so
+ * between an invoice's due date passing and the next sweep it is genuinely past due while `status`
+ * still reads `unpaid`. (This used to say `src/jobs/` did not exist; it does.)
+ *
+ * `plan_id`, `subtotal`, `amount_paid` and `coupon_id` are read by `actionsFor()` and the coupon
+ * dialog in `./actions.tsx`, not rendered — `present()` spreads the whole row onto every list item,
+ * so they are here as on the single-invoice read.
  */
 interface Invoice {
   id: number;
   invoice_number: string;
   school_id: number;
+  plan_id: number | null;
   plan_name: string | null;
   currency: string;
+  subtotal: number;
   total: number;
+  amount_paid: number;
   amount_due: number;
+  coupon_id: number | null;
   due_date: string;
   status: string;
   is_overdue: boolean;
@@ -129,88 +140,14 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: 'refunded', label: 'Refunded' },
 ];
 
-
-/**
- * The four things that can be done to an invoice — SRS §13.1, FR-BILL-001, and §13.3's coupons.
- *
- * `POST /:id/finalise`, `POST /:id/cancel`, `POST /:id/coupon` and `DELETE /:id/coupon`, none of
- * which had a caller. The screen could list invoices and generate a run of them; it could not issue
- * one, void one, or apply the discount coupons exist to give.
- *
- * ## Finalise is the one that changes what the invoice *is*
- *
- * A draft is a working document; finalising issues it, which is what makes it payable and what the
- * §23 job notifies about. The copy says that rather than "are you sure", because an operator who
- * reads "finalise" as "save" will issue every draft they open.
- *
- * ## Cancel is not delete
- *
- * `invoices.status` moves to `cancelled` and the row stays — it is billing history, and §13 gives no
- * delete route at all. An invoice already paid cannot be cancelled; the API refuses that, and the
- * dialog says so before the button is pressed rather than after.
- *
- * ## The coupon is applied by **code**, not by picking from the catalogue
- *
- * `applyCoupon` takes `{ code }` and the service resolves it — checking that it exists, is active,
- * is inside its window, has redemptions left and applies to this invoice's plan. A picker built from
- * `GET /coupons` would offer codes that fail every one of those checks and would still have to send
- * the code. So the control is the field the API actually takes, and the refusal it can give is
- * rendered where the code was typed.
+/*
+ * The four write actions — finalise, cancel, apply and remove a coupon — their dialog, and
+ * `actionsFor()`, which decides which of them an invoice is offered, live in `./actions.tsx`, shared
+ * with the single-invoice screen so the two cannot offer different buttons on the same invoice.
  */
-const INVOICE_ACTIONS: Record<
-  string,
-  {
-    label: string;
-    title: string;
-    description: string;
-    confirm: string;
-    busy: string;
-    tone: 'primary' | 'danger';
-    /** True for the one action that carries a field of its own. */
-    code?: boolean;
-  }
-> = {
-  finalise: {
-    label: 'Finalise',
-    title: 'Issue this invoice?',
-    description:
-      'Finalising turns a draft into an issued invoice: it becomes payable, it counts towards what the school owes, and its number is fixed. A draft can still be replaced by regenerating; an issued invoice cannot.',
-    confirm: 'Finalise invoice',
-    busy: 'Finalising…',
-    tone: 'primary',
-  },
-  cancel: {
-    label: 'Cancel',
-    title: 'Cancel this invoice?',
-    description:
-      'The invoice stops being payable and is kept as billing history — nothing is deleted, and §13 provides no way to delete one. An invoice that has already been paid cannot be cancelled; the API refuses that.',
-    confirm: 'Cancel invoice',
-    busy: 'Cancelling…',
-    tone: 'danger',
-  },
-  coupon: {
-    label: 'Apply coupon',
-    title: 'Apply a coupon to this invoice?',
-    description:
-      'The discount is worked out by the API from the coupon’s own rules and applied to this invoice’s total. A coupon that has expired, run out of redemptions or does not apply to this plan is refused with the reason.',
-    confirm: 'Apply coupon',
-    busy: 'Applying…',
-    tone: 'primary',
-    code: true,
-  },
-  uncoupon: {
-    label: 'Remove coupon',
-    title: 'Remove the coupon from this invoice?',
-    description:
-      'The discount comes off and the total goes back up. The redemption is released, so the coupon can be used again elsewhere.',
-    confirm: 'Remove coupon',
-    busy: 'Removing…',
-    tone: 'danger',
-  },
-};
 
 export default function InvoicesPage() {
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
   const { nameFor, schools } = useSchoolNames();
 
   const [page, setPage] = useState(1);
@@ -251,131 +188,25 @@ export default function InvoicesPage() {
 
   const { rows, meta, loading, error, refusal, reload } = useCollection<Invoice>('/invoices', query);
 
-  /* ── the four write actions ── */
-
-  const { success } = useToast();
-  const [pending, setPending] = useState<{ action: string; invoice: Invoice } | null>(null);
-  const [couponCode, setCouponCode] = useState('');
-  const [reason, setReason] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-
-  /*
-   * The coupon preview — `POST /coupons/validate`, which had no caller anywhere.
-   *
-   * `docs/VERIFICATION.md` classified it as *deliberately* uncalled, "a checkout-time call and there
-   * is no checkout screen". That was right about the absence and wrong about the conclusion: this
-   * dialog **is** the checkout moment for an invoice, and it has every field the endpoint needs —
-   * the school, the amount and the currency all sit on the row. What it adds over simply applying
-   * the coupon is the figure: `POST /:id/coupon` answers with the invoice, so an operator who wants
-   * to know what a code is worth before committing has to commit to find out.
-   *
-   * `plan_id` is not sent. `GET /invoices` returns `plan_name` and not the id, so a coupon
-   * restricted to particular plans cannot be checked against this invoice's plan here — the preview
-   * would say it applies and `POST /:id/coupon` would then refuse it. The notice says so rather than
-   * letting the operator read a green tick as a guarantee.
-   */
-  const [preview, setPreview] = useState<{ discount: number; net: number; label: string } | null>(null);
-  const [checking, setChecking] = useState(false);
+  /* ── the four write actions — `./actions.tsx` ── */
 
   const canManage = can('invoices.manage');
-  const copy = pending ? INVOICE_ACTIONS[pending.action] : null;
-
-  function ask(action: string, invoice: Invoice) {
-    setPending({ action, invoice });
-    setCouponCode('');
-    setReason('');
-    setActionError(null);
-    setPreview(null);
-  }
-
-  /** Ask the API what a code is worth against this invoice, without applying it. */
-  async function checkCoupon() {
-    if (!pending || checking || couponCode.trim() === '') return;
-    setChecking(true);
-    setActionError(null);
-    setPreview(null);
-    try {
-      const result = await api.post<{
-        discount_amount: number;
-        net_amount: number;
-        coupon: { code: string; discount_type: string; discount_value: number };
-      }>('/coupons/validate', {
-        code: couponCode.trim(),
-        school_id: pending.invoice.school_id,
-        amount: pending.invoice.total,
-        currency: pending.invoice.currency,
-      });
-      setPreview({
-        discount: result.discount_amount,
-        net: result.net_amount,
-        label:
-          result.coupon.discount_type === 'percentage'
-            ? `${result.coupon.discount_value}% off`
-            : 'fixed amount off',
-      });
-    } catch (caught) {
-      setActionError(
-        caught instanceof ApiError
-          ? caught.message
-          : 'Could not reach the server. Check your connection and try again.'
-      );
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  async function run() {
-    if (!pending || busy) return;
-    setBusy(true);
-    setActionError(null);
-    const body = reason.trim() ? { reason: reason.trim() } : {};
-    const id = pending.invoice.id;
-    try {
-      /*
-       * Four calls written out rather than one path built from `pending.action`.
-       *
-       * `verify-frontend.js` collects `api.<method>(` followed immediately by a path literal, so a
-       * URL assembled from the action name is invisible to the very check that exists to catch a
-       * route with no caller — recorded in `subscriptions/[id]/lifecycle.tsx` after two drafts of
-       * this same mistake. `DELETE` also takes no body, which is a second reason these cannot be
-       * one call: `api.delete` has no body parameter at all.
-       */
-      if (pending.action === 'finalise') {
-        await api.post(`/invoices/${id}/finalise`, body);
-      } else if (pending.action === 'cancel') {
-        await api.post(`/invoices/${id}/cancel`, body);
-      } else if (pending.action === 'coupon') {
-        await api.post(`/invoices/${id}/coupon`, { code: couponCode.trim(), ...body });
-      } else {
-        await api.delete(`/invoices/${id}/coupon`);
-      }
-      success(`${copy?.label ?? 'Done'} — ${pending.invoice.invoice_number}`);
-      setPending(null);
-      reload();
-    } catch (caught) {
-      /*
-       * Shown inside the dialog rather than as a toast behind it. Every refusal these four can give
-       * is actionable where the operator is standing — a coupon that has expired, an invoice already
-       * paid, a draft that is already issued — and a message behind an open dialog is a message read
-       * through the thing that is covering it.
-       */
-      setActionError(
-        caught instanceof ApiError
-          ? caught.message
-          : 'Could not reach the server. Check your connection and try again.'
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
+  const { ask, dialog } = useInvoiceActions({ onDone: reload, nameFor });
 
   const columns = useMemo<Column<Invoice>[]>(
     () => [
       {
         key: 'invoice_number',
         header: 'Invoice',
-        cell: (row) => <span className="font-medium whitespace-nowrap">{row.invoice_number}</span>,
+        /* The way into `invoices/[id]`, where the rest of §13.1's fields and the lines are shown. */
+        cell: (row) => (
+          <Link
+            href={`/super-admin/invoices/${row.id}`}
+            className="font-medium whitespace-nowrap underline-offset-2 hover:underline focus-visible:underline"
+          >
+            {row.invoice_number}
+          </Link>
+        ),
       },
       {
         key: 'school',
@@ -450,25 +281,33 @@ export default function InvoicesPage() {
             {
               key: 'actions',
               header: 'Actions',
-              cell: (row: Invoice) => (
-                <div className="flex flex-wrap gap-1">
-                  {/*
-                    * Which actions a row is offered is decided from its stored status, and only to
-                    * hide the absurd — the API is the authority and refuses the rest. A draft is the
-                    * only thing that can be issued; a paid or already-cancelled invoice cannot be
-                    * cancelled; and a coupon can be applied to anything still open.
-                    */}
-                  {row.status === 'draft' ? (
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-primary"
-                      onClick={() => ask('finalise', row)}
-                    >
-                      Finalise
-                    </button>
-                  ) : null}
-                  {row.status !== 'paid' && row.status !== 'cancelled' ? (
-                    <>
+              cell: (row: Invoice) => {
+                /*
+                 * `actionsFor()` reads the service's own refusals off the row: a coupon only while the
+                 * invoice is a draft or unpaid with nothing paid, applied only when it carries none and
+                 * removed only when it carries one; a cancel only while nothing is paid. The list used
+                 * to offer both coupon buttons and Cancel on every invoice not paid or cancelled, so a
+                 * part-paid or refunded invoice carried three buttons that each ended in a 409, an
+                 * overdue one two, and every open invoice a Remove coupon whether it had a coupon or
+                 * not — on the premise that `GET /invoices` did not return `coupon_id`. It does:
+                 * `present()` spreads the whole row.
+                 */
+                const offered = actionsFor(row);
+                if (!offered.finalise && !offered.applyCoupon && !offered.removeCoupon && !offered.cancel) {
+                  return <span className="text-muted-soft">—</span>;
+                }
+                return (
+                  <div className="flex flex-wrap gap-1">
+                    {offered.finalise ? (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-primary"
+                        onClick={() => ask('finalise', row)}
+                      >
+                        Finalise
+                      </button>
+                    ) : null}
+                    {offered.applyCoupon ? (
                       <button
                         type="button"
                         className="btn btn-sm btn-secondary"
@@ -476,6 +315,17 @@ export default function InvoicesPage() {
                       >
                         Coupon
                       </button>
+                    ) : null}
+                    {offered.removeCoupon ? (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => ask('uncoupon', row)}
+                      >
+                        Remove coupon
+                      </button>
+                    ) : null}
+                    {offered.cancel ? (
                       <button
                         type="button"
                         className="btn btn-sm btn-danger-ghost"
@@ -483,40 +333,30 @@ export default function InvoicesPage() {
                       >
                         Cancel
                       </button>
-                    </>
-                  ) : null}
-                  {/*
-                    * Removing a coupon is offered on every open invoice rather than only on one the
-                    * list can see carries a coupon: `GET /invoices` does not return `coupon_id`, so
-                    * this screen cannot tell. Hiding it on a guess would hide it from the invoices
-                    * that have one; offering it means an invoice without one is refused by the API
-                    * with a message that says exactly that.
-                    */}
-                  {row.status !== 'paid' && row.status !== 'cancelled' ? (
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-ghost"
-                      onClick={() => ask('uncoupon', row)}
-                    >
-                      Remove coupon
-                    </button>
-                  ) : null}
-                </div>
-              ),
+                    ) : null}
+                  </div>
+                );
+              },
             } as Column<Invoice>,
           ]
         : []),
     ],
     /* `nameFor` must be listed: the school lookup resolves after the first render, and an empty
-       dependency array froze these columns around the version that still answered `School #12797`. */
-    [nameFor, canManage]
+       dependency array froze these columns around the version that still answered `School #12797`.
+       `ask` is stable — `useInvoiceActions` memoises it — and is listed because the cells call it. */
+    [nameFor, canManage, ask]
   );
 
   return (
     <div>
       <PageHeader
         title="Invoices"
-        description="Every invoice issued on the platform, newest first."
+        description={
+          /* An Organization Admin reads this list too, confined to their organization by `tenantWhere()`. */
+          profile?.tenant.isPlatform === false
+            ? 'Every invoice issued to your organization’s schools, newest first.'
+            : 'Every invoice issued on the platform, newest first.'
+        }
         action={
           /*
            * Hidden without the permission, as on every list — a courtesy, not a control. Here the
@@ -636,114 +476,7 @@ export default function InvoicesPage() {
         </>
       )}
 
-      <Modal
-        open={pending !== null}
-        onClose={() => {
-          if (!busy) setPending(null);
-        }}
-        title={copy?.title ?? ''}
-        description={copy?.description}
-        size="sm"
-        busy={busy}
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={busy}
-              onClick={() => setPending(null)}
-            >
-              {/* "Go back", not "Cancel", on the dialog whose action is itself a cancellation. */}
-              {pending?.action === 'cancel' ? 'Go back' : 'Cancel'}
-            </button>
-            <SubmitButton
-              form="invoice-action"
-              busy={busy}
-              busyLabel={copy?.busy ?? 'Working…'}
-              fullWidth={false}
-              disabled={pending?.action === 'coupon' && couponCode.trim() === ''}
-            >
-              {copy?.confirm ?? 'Apply'}
-            </SubmitButton>
-          </>
-        }
-      >
-        <form
-          id="invoice-action"
-          className="space-y-4"
-          noValidate
-          onSubmit={(event) => {
-            event.preventDefault();
-            void run();
-          }}
-        >
-          {actionError ? <Notice tone="error">{actionError}</Notice> : null}
-
-          {pending ? (
-            <p className="text-sm text-muted">
-              Invoice <strong>{pending.invoice.invoice_number}</strong> ·{' '}
-              {nameFor(pending.invoice.school_id)} ·{' '}
-              {formatCodeWithAmount(pending.invoice.currency, pending.invoice.total)}
-            </p>
-          ) : null}
-
-          {copy?.code ? (
-            <>
-              <Field
-                id="coupon-code"
-                label="Coupon code"
-                required
-                value={couponCode}
-                onChange={(event) => {
-                  setCouponCode(event.target.value);
-                  /* A preview belongs to the code it was fetched for, and this is a different one. */
-                  setPreview(null);
-                }}
-                hint="Exactly as issued. Whether it applies to this invoice is decided by the API from the coupon’s own rules."
-              />
-
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={checking || couponCode.trim() === ''}
-                aria-busy={checking}
-                onClick={() => void checkCoupon()}
-              >
-                {checking ? 'Checking…' : 'Check what it is worth'}
-              </button>
-
-              {preview && pending ? (
-                <Notice tone="success">
-                  {preview.label} —{' '}
-                  <strong>
-                    {formatCodeWithAmount(pending.invoice.currency, preview.discount)}
-                  </strong>{' '}
-                  off, bringing this invoice to{' '}
-                  {formatCodeWithAmount(pending.invoice.currency, preview.net)} before tax. A coupon
-                  restricted to particular plans is not checked here — this invoice’s plan id is not
-                  in the list response — so applying it can still be refused.
-                </Notice>
-              ) : null}
-            </>
-          ) : null}
-
-          {/*
-            * `DELETE /:id/coupon` validates a body but `api.delete` sends none, so the reason field
-            * is not offered on that one action — a box whose contents cannot be transmitted is worse
-            * than no box.
-            */}
-          {pending?.action === 'uncoupon' ? null : (
-            <TextAreaField
-              id="invoice-reason"
-              label="Reason"
-              rows={2}
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-              hint="Recorded in the audit trail."
-            />
-          )}
-        </form>
-      </Modal>
+      {dialog}
     </div>
   );
 }

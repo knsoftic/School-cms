@@ -352,7 +352,7 @@ async function verifyHttp() {
 
   try {
     const roles = {};
-    for (const slug of [ROLES.SUPER_ADMIN, ROLES.ORGANIZATION_ADMIN, ROLES.PRINCIPAL, ROLES.TEACHER]) {
+    for (const slug of [ROLES.SUPER_ADMIN, ROLES.ORGANIZATION_ADMIN, ROLES.PRINCIPAL, ROLES.TEACHER, ROLES.LIBRARIAN]) {
       // eslint-disable-next-line no-await-in-loop
       const role = await db.Role.findOne({ where: { slug } });
       if (!role) throw new Error(`seeded role missing: ${slug}`);
@@ -447,6 +447,8 @@ async function verifyHttp() {
        * sibling §15 suites have the same blind spot; this is the first to close it.
        */
       ['org-admin', ROLES.ORGANIZATION_ADMIN, 'Verify SF Org Admin', 'vsf_org', org.id, null],
+      /* Holds staff.view to lend to staff, and not staff.manage. */
+      ['librarian', ROLES.LIBRARIAN, 'Verify SF Librarian', 'vsf_librarian', org.id, schoolA.id],
     ];
     const userIdOf = {};
     for (const [key, slug, name, username, organization_id, school_id] of people) {
@@ -480,6 +482,7 @@ async function verifyHttp() {
     const principalD = await signIn(`principal-d@${DOMAIN}`);
     const teacher = await signIn(`teacher@${DOMAIN}`);
     const orgAdmin = await signIn(`org-admin@${DOMAIN}`);
+    const librarian = await signIn(`librarian@${DOMAIN}`);
     /* No sign-in assertion: `signIn` throws when no token comes back, so by this line six strings
        are guaranteed and a check would be dead weight. */
 
@@ -520,6 +523,20 @@ async function verifyHttp() {
     check('joining_date is stored as a plain date', first.joining_date, '2024-01-15');
     check('is_active defaults to true', first.is_active, true);
     check('the school comes from the tenant', Number(first.school_id), schoolA.id);
+
+    /* The directory, not the HR record, for a reader who cannot manage staff — as for teachers. */
+    await db.Staff.update(
+      { salary: 30000, date_of_birth: '1990-06-01', address: '4 Private Road', notes: 'Office only', metadata: { hr: 1 } },
+      { where: { id: first.id } }
+    );
+    const HR_ONLY = ['salary', 'date_of_birth', 'address', 'notes', 'metadata'];
+    const libraryRow = dataOf(await expectOk('/staff?limit=50', { token: librarian }, 200)).find((m) => m.id === first.id) || {};
+    const libraryRecord = dataOf(await expectOk(`/staff/${first.id}`, { token: librarian }, 200)).staff;
+    check('a reader without staff.manage sees the directory entry, and none of the HR record',
+      [libraryRow.employee_id, libraryRecord.designation, HR_ONLY.filter((k) => k in libraryRow), HR_ONLY.filter((k) => k in libraryRecord)],
+      ['VSF-1', 'Head Librarian', [], []]);
+    const principalRecord = dataOf(await expectOk(`/staff/${first.id}`, { token: principalA }, 200)).staff;
+    check('  while the Principal, who manages staff, keeps it', [Number(principalRecord.salary), principalRecord.address], [30000, '4 Private Road']);
 
     const dup = await call('/staff', {
       method: 'POST',

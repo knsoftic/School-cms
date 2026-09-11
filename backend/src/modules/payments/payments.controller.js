@@ -19,9 +19,10 @@ const { sendStoredFile } = require('../../utils/fileResponse');
  * could fall out of step with the refunds that decide it.
  *
  * @param {object} payment
+ * @param {object} [tenant]  `req.tenant`
  * @returns {object}
  */
-function present(payment) {
+function present(payment, tenant) {
   const json = payment.toJSON();
   const received = service.RECEIVED_STATUSES.includes(json.status);
   const refundable = received ? service.refundableAmount(json) : 0;
@@ -39,13 +40,33 @@ function present(payment) {
    * payload is a thing to be tempted by, and the point of the doctrine is that no caller should ever
    * hold one. Found by an adversarial review of this route's design.
    */
-  const { screenshot_path: screenshotPath, ...rest } = json;
-
   return {
-    ...rest,
-    has_screenshot: Boolean(screenshotPath),
+    ...withoutInternals(json, tenant),
     refundable_amount: refundable,
     is_refundable: money.toMinor(refundable) > 0,
+  };
+}
+
+/**
+ * A payment's plain values without what only the platform may hold — shared with the invoices
+ * controller, whose invoice reads carry their payments.
+ *
+ * `screenshot_path` for everyone (see `present()`), and `review_note` for anyone short of platform scope:
+ * the validation schema defines it as the reviewer's *"internal note … not shown to the school"*, and
+ * `rejection_reason` is the one written for the school. Both were spread whole, so every Principal,
+ * School Admin and Accountant read the reviewers' notes — and a gateway's decline text, which is now
+ * copied into `rejection_reason` where the school is meant to read it.
+ *
+ * @param {object} json    a payment's plain values
+ * @param {object} [tenant]
+ * @returns {object}
+ */
+function withoutInternals(json, tenant) {
+  const { screenshot_path: screenshotPath, review_note: reviewNote, ...rest } = json;
+  return {
+    ...rest,
+    ...(tenant && tenant.isPlatform ? { review_note: reviewNote } : {}),
+    has_screenshot: Boolean(screenshotPath),
   };
 }
 
@@ -56,7 +77,7 @@ async function list(req, res) {
 
   return ApiResponse.paginated(
     res,
-    { count: result.count, rows: result.rows.map(present) },
+    { count: result.count, rows: result.rows.map((row) => present(row, req.tenant)) },
     pagination
   );
 }
@@ -64,7 +85,7 @@ async function list(req, res) {
 /** GET /:id */
 async function show(req, res) {
   const payment = await service.findById(req.tenant, req.params.id);
-  return ApiResponse.ok(res, { payment: present(payment) });
+  return ApiResponse.ok(res, { payment: present(payment, req.tenant) });
 }
 
 /**
@@ -115,7 +136,7 @@ async function submit(req, res) {
 
   return ApiResponse.created(
     res,
-    { payment: present(payment) },
+    { payment: present(payment, req.tenant) },
     {
       message: `Payment ${payment.payment_number} submitted for ${money.format(payment.amount, payment.currency)} — pending review`,
     }
@@ -145,7 +166,7 @@ async function record(req, res) {
 
   return ApiResponse.created(
     res,
-    { payment: present(payment), settlement: settlement || null, gateway_failed: gatewayFailed },
+    { payment: present(payment, req.tenant), settlement: settlement || null, gateway_failed: gatewayFailed },
     { message }
   );
 }
@@ -167,7 +188,7 @@ async function approve(req, res) {
 
   return ApiResponse.ok(
     res,
-    { payment: present(payment), settlement: settlement || null },
+    { payment: present(payment, req.tenant), settlement: settlement || null },
     {
       message: `Payment ${payment.payment_number} approved${settlement ? ` — invoice now ${settlement.status}` : ''}`,
     }
@@ -189,7 +210,7 @@ async function reject(req, res) {
 
   return ApiResponse.ok(
     res,
-    { payment: present(payment) },
+    { payment: present(payment, req.tenant) },
     { message: `Payment ${payment.payment_number} rejected` }
   );
 }
@@ -237,4 +258,5 @@ module.exports = {
   createRefund,
   listRefunds,
   present,
+  withoutInternals,
 };

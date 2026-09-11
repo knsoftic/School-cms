@@ -130,7 +130,7 @@
 #
 #   msms-cron   node src/jobs/cron.js  `instances: 1, exec_mode: 'fork'` — ecosystem.config.js:426,
 #               :459-460. Two schedulers against one database double-notify and race renewals. It
-#               refuses to start unless ENABLE_CRON=true (cron.js:249-255); env.js:257 defaults it
+#               refuses to start unless ENABLE_CRON=true (cron.js:255-261); env.js:257 defaults it
 #               false and .env.example:116 ships it false, so ecosystem.config.js:501 sets it in
 #               that app's own `env` block. See `missingok` in stanza 1 if that block is removed.
 #
@@ -498,7 +498,7 @@
     #
     # One case it is NOT protecting against, despite an earlier draft saying so: a deployment with
     # ENABLE_CRON unset does not simply have no cron log. If msms-cron is started while ENABLE_CRON
-    # is not true, cron.js:249-255 prints its refusal and exits 1 on EVERY start, so this file is
+    # is not true, cron.js:255-261 prints its refusal and exits 1 on EVERY start, so this file is
     # present and filling with restart banners rather than absent. The shipped ecosystem file sets
     # ENABLE_CRON in that app's own env block (ecosystem.config.js:501) precisely so this does not
     # happen; if someone removes it, that is what a non-empty, fast-growing msms-cron-error.log

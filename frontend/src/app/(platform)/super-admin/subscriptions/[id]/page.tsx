@@ -79,7 +79,7 @@ import { AddonsPanel } from './addons';
 import { LifecycleBar } from './lifecycle';
 import { OverridesPanel } from './overrides';
 import { PlanChangePanel } from './planChange';
-import { formatDate, humanise, useSubscriptionDetail } from './detail';
+import { formatDate, humanise, isCountedModel, useSubscriptionDetail } from './detail';
 import type { SubscriptionDetail } from './detail';
 
 const TABS = [
@@ -104,6 +104,12 @@ const TABS = [
  * Everything else it refuses **by name** — `plan_id`, `state`, `currency`, `cycle_amount` and some
  * thirty more — each with a message saying where the value really comes from. None of them appears
  * here; a control for one would be a control whose only outcome is that message.
+ *
+ * The quantity is refused too, on a Per-Student or Student-Based subscription. Owner decision D26
+ * makes those bill the school's active-student count — counted when the subscription is created or
+ * changes plan, and again at every renewal — so `update()` answers a typed change with 409
+ * `SUBSCRIPTION_QUANTITY_COUNTED`, and the next count would overwrite it anyway. The box is not
+ * offered on one; the count is shown in its place, with where it comes from.
  */
 function ConfigurationForm({
   subscription,
@@ -124,6 +130,8 @@ function ConfigurationForm({
   const [graceDays, setGraceDays] = useState(String(subscription.grace_period_days));
   const [renewalMode, setRenewalMode] = useState(subscription.renewal_mode);
   const [quantity, setQuantity] = useState(String(subscription.quantity));
+  /* D26 — a student-counted price has no typed quantity to change. See the header. */
+  const counted = isCountedModel(subscription.pricing_model);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -153,7 +161,7 @@ function ConfigurationForm({
   if (trialDays !== String(subscription.trial_days)) changed.trial_days = trialDays;
   if (graceDays !== String(subscription.grace_period_days)) changed.grace_period_days = graceDays;
   if (renewalMode !== subscription.renewal_mode) changed.renewal_mode = renewalMode;
-  if (quantity !== String(subscription.quantity)) changed.quantity = quantity;
+  if (!counted && quantity !== String(subscription.quantity)) changed.quantity = quantity;
   const nothingChanged = Object.keys(changed).length === 0;
 
   async function save() {
@@ -174,7 +182,14 @@ function ConfigurationForm({
     } catch (caught) {
       if (caught instanceof ApiError) {
         setFieldErrors(caught.fieldErrors());
-        setError(caught.bannerFor(['trial_days', 'grace_period_days', 'renewal_mode', 'quantity']));
+        /* No quantity box on a counted price, so a message about it belongs in the banner. */
+        setError(
+          caught.bannerFor(
+            counted
+              ? ['trial_days', 'grace_period_days', 'renewal_mode']
+              : ['trial_days', 'grace_period_days', 'renewal_mode', 'quantity']
+          )
+        );
       } else {
         setError('Could not reach the server. Check your connection and try again.');
       }
@@ -195,7 +210,11 @@ function ConfigurationForm({
   return (
     <FormSection
       title="Configuration"
-      description="The trial and grace lengths, the renewal mode and the quantity — the four things that change on a live subscription without it being a plan change."
+      description={
+        counted
+          ? 'The trial and grace lengths and the renewal mode — what changes on a live subscription without it being a plan change. This price bills per student, so its quantity is counted, not set.'
+          : 'The trial and grace lengths, the renewal mode and the quantity — the four things that change on a live subscription without it being a plan change.'
+      }
     >
       <form
         className="space-y-4"
@@ -244,16 +263,36 @@ function ConfigurationForm({
           ))}
         </SelectField>
 
-        <Field
-          id="quantity"
-          label="Quantity"
-          type="number"
-          min={1}
-          value={quantity}
-          error={fieldErrors.quantity}
-          onChange={(event) => setQuantity(event.target.value)}
-          hint="Seats, or whatever the plan's price is per. Changing it re-evaluates the cycle amount from the same price row; flat-rate plans are unaffected."
-        />
+        {counted ? (
+          <div>
+            <p className="text-sm font-medium text-ink">Quantity</p>
+            <p className="mt-1 text-sm text-ink">
+              <span className="tabular-nums">{subscription.quantity.toLocaleString()}</span>{' '}
+              active student{subscription.quantity === 1 ? '' : 's'}
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              This is a {humanise(subscription.pricing_model)} price, so it bills the school’s live
+              active-student count: taken when the subscription was created or last changed plan, and
+              taken again at every renewal. It cannot be typed here — the API refuses a change, and
+              the next count would replace it.
+            </p>
+          </div>
+        ) : (
+          <Field
+            id="quantity"
+            label="Quantity"
+            type="number"
+            min={1}
+            value={quantity}
+            error={fieldErrors.quantity}
+            onChange={(event) => setQuantity(event.target.value)}
+            hint={
+              subscription.pricing_model === 'seat_based'
+                ? 'The seats this Seat-Based price bills. Changing it re-evaluates the cycle amount from the same price row.'
+                : `A ${humanise(subscription.pricing_model)} price is not multiplied by the quantity. Changing it still re-evaluates the cycle amount from the same price row.`
+            }
+          />
+        )}
 
         <TextAreaField
           id="update-reason"

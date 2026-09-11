@@ -209,7 +209,9 @@ function verifySchemas() {
 function verifyRouting() {
   console.log('\n── Part 2 — the router as declared ──\n');
 
-  check('the three routes', routesOf(documentRoutes), ['GET /', 'POST /', 'GET /:id']);
+  /* Five since D34 added the two pick-lists — above `GET /:id`, so the literal is never an id. */
+  check('the three routes and D34\'s two pick-lists', routesOf(documentRoutes),
+    ['GET /', 'POST /', 'GET /pickers/teachers', 'GET /pickers/exams', 'GET /:id']);
   check(
     'one router-level guard, mounted ahead of every route',
     [documentRoutes.stack.filter((l) => !l.route).length, documentRoutes.stack.findIndex((l) => !l.route)],
@@ -253,10 +255,11 @@ function verifyRouting() {
     handlerNames(documentRoutes, 'post', '/').includes('activityDeclaration'),
   ], [true, true]);
 
-  check('generation is guarded by documents.generate and reads by documents.view',
+  /* Generation and D34's two pick-lists on `documents.generate`; the two reads on `documents.view`. */
+  check('generation and its pick-lists are guarded by documents.generate, reads by documents.view',
     [(src.match(/requirePermission\('documents\.generate'\)/g) || []).length,
       (src.match(/requirePermission\('documents\.view'\)/g) || []).length],
-    [1, 2]);
+    [3, 2]);
 
   /* The catalogue is fixed by §29/§35, so these are assertions about it, not about this module. */
   const holders = (key) => Object.entries(DEFAULT_ROLE_PERMISSIONS)
@@ -419,6 +422,7 @@ async function verifyHttp() {
       await db.Section.destroy({ where: { school_id: created.schools }, force: true });
       await db.Class.destroy({ where: { school_id: created.schools }, force: true });
       await db.AcademicSession.destroy({ where: { school_id: created.schools }, force: true });
+      await db.SchoolSetting.destroy({ where: { school_id: created.schools } });
     }
     if (created.subscriptions.length) {
       await db.UsageRecord.destroy({ where: { subscription_id: created.subscriptions } });
@@ -612,6 +616,8 @@ async function verifyHttp() {
     });
     await db.Result.create({
       school_id: schoolA.id, organization_id: org.id, exam_id: exam.id, student_id: amina.id,
+      /* Published: a card needs a published result (D31), and the refusal is asserted on its own below. */
+      is_published: true, published_at: new Date(),
       /* §19's own column names — `total_marks`/`obtained_marks`/`grade` do not exist on this table. */
       total_full_marks: 200, total_marks_obtained: 176, percentage: 88,
       grade_name: 'A', grade_point: 4, outcome: 'pass',
@@ -681,6 +687,19 @@ async function verifyHttp() {
       ['A Grade 1', 'A']);
     check('  and the school it is issued under', idCard.generation_payload.school.name, 'Verify Documents A');
     check('  dated, so a reproduction is dated by itself', Boolean(idCard.generation_payload.generated_on), true);
+
+    /*
+     * The owner's decision D35: a document carries the name the school uses. With a display name set,
+     * the next document is issued under it. Removed at once, so every document below is issued under
+     * the platform name its own assertions expect; the PDFs are compared further down.
+     */
+    const displayName = await db.SchoolSetting.create({
+      school_id: schoolA.id, organization_id: org.id, name: 'Verify Documents Display Name',
+    });
+    const brandedCard = await gen({ document_type: DOCUMENT_TYPES.STUDENT_ID_CARD, owner_id: amina.id });
+    check('D35 — a document generated after the school sets a display name is issued under it',
+      brandedCard.generation_payload.school.name, 'Verify Documents Display Name');
+    await displayName.destroy();
 
     const teacherCard = await gen({ document_type: DOCUMENT_TYPES.TEACHER_ID_CARD, owner_id: teacherA.id });
     check('a teacher ID card is about a teacher', teacherCard.owner_type, DOCUMENT_OWNER_TYPES.TEACHER);
@@ -841,6 +860,21 @@ async function verifyHttp() {
      */
     check('  in the present tense, because §15.1 records this student as still active',
       [hasProse(charText, 'is enrolled at'), hasProse(charText, 'was enrolled at')], [true, false]);
+
+    /*
+     * D35 in the PDF, with the display name set again: the card issued under it is headed with it, and
+     * the card issued before keeps the name it was issued under — the snapshot, not today's setting.
+     */
+    const displayAgain = await db.SchoolSetting.create({
+      school_id: schoolA.id, organization_id: org.id, name: 'Verify Documents Display Name',
+    });
+    const brandedText = inflatePdf((await pdfOf(brandedCard.id)).buffer);
+    const earlierText = inflatePdf((await pdfOf(idCard.id)).buffer);
+    await displayAgain.destroy();
+    check('D35 — the PDF of a document issued under the display name is headed with it',
+      hasProse(brandedText, 'Verify Documents Display Name'), true);
+    check('  and one issued before keeps the name it was issued under, not today\'s',
+      [hasProse(earlierText, 'Verify Documents A'), hasProse(earlierText, 'Display Name')], [true, false]);
     check('  ending in a signature block, because it is a prepared form and not a judgement',
       charText.includes('Signature and seal of the issuing authority'), true);
     /*
@@ -960,6 +994,57 @@ async function verifyHttp() {
       body: { document_type: DOCUMENT_TYPES.RESULT_CARD, owner_id: amina.id, exam_id: 99999999 },
     });
     check('  and an exam that exists nowhere is refused the same way', missingExam.status, 422);
+    /*
+     * FR-DOC-001's precondition names the exam result itself (SRS:1133). Bilal sat no part of
+     * `exam` — only Amina has a result — and his card used to be generated anyway, reading "no
+     * published result for this exam".
+     */
+    const noResult = await call('/documents', {
+      method: 'POST', token: principalA,
+      body: { document_type: DOCUMENT_TYPES.RESULT_CARD, owner_id: bilal.id, exam_id: exam.id },
+    });
+    check('a result card for a student with no result in that exam is refused, naming the exam',
+      [noResult.status, ((noResult.body.error || {}).details || []).map((d) => d.field)],
+      [422, ['exam_id']]);
+    /*
+     * D31 — and a result that exists but is unpublished is refused too. A card is readable by the
+     * student and their parents through `GET /documents/:id`, so it would release the result early.
+     */
+    const draftExam = await db.Exam.create({
+      school_id: schoolA.id, organization_id: org.id, academic_session_id: A.session.id,
+      name: 'Unreleased Test', exam_type: 'quiz', class_id: A.klass.id,
+      start_date: '2026-03-01', end_date: '2026-03-02', status: EXAM_STATUS.COMPLETED,
+    });
+    await db.Result.create({
+      school_id: schoolA.id, organization_id: org.id, exam_id: draftExam.id, student_id: bilal.id,
+      total_full_marks: 100, total_marks_obtained: 51, percentage: 51, outcome: 'pass', is_published: false,
+    });
+    const unpublished = await call('/documents', {
+      method: 'POST', token: principalA,
+      body: { document_type: DOCUMENT_TYPES.RESULT_CARD, owner_id: bilal.id, exam_id: draftExam.id },
+    });
+    check('D31 — a result card for an unpublished result is refused until it is published',
+      [unpublished.status, codeOf(unpublished)], [409, 'RESULT_NOT_PUBLISHED']);
+
+    /*
+     * D34 — the pick-lists. FR-DOC-001 names the Accountant and the Receptionist, and neither holds
+     * `teachers.view` or `exams.view`, so the dialog could not offer them a teacher or an exam to
+     * generate a Teacher ID Card or a Result Card for. Two small lists on the key they do hold.
+     */
+    const accountantTeachers = await call('/teachers?limit=5', { token: accountant });
+    const pickedTeachers = await call('/documents/pickers/teachers', { token: accountant });
+    const pickedExams = await call('/documents/pickers/exams', { token: receptionist });
+    check('D34 — an Accountant who cannot list teachers can pick one to generate for, and a Receptionist an exam',
+      [accountantTeachers.status, pickedTeachers.status, (dataOf(pickedTeachers).teachers || []).some((t) => t.id === teacherA.id),
+        pickedExams.status, (dataOf(pickedExams).exams || []).some((e) => e.id === exam.id)],
+      [403, 200, true, 200, true]);
+    check('  confined to what a picker shows — no salary on a teacher',
+      (dataOf(pickedTeachers).teachers || []).some((t) => 'salary' in t), false);
+    check('  and a Teacher, who may look at documents but not generate them, gets no pick-list',
+      (await call('/documents/pickers/teachers', { token: teacherToken })).status, 403);
+    check('  the teacher pick-list finds a teacher by the whole name, as a person types it',
+      (dataOf(await expectOk(`/documents/pickers/teachers?q=${encodeURIComponent('Nadia Rahman')}`, { token: accountant }, 200))
+        .teachers || []).map((t) => t.id), [teacherA.id]);
 
     /* ── who may generate, and who may only look ── */
 
@@ -1015,6 +1100,18 @@ async function verifyHttp() {
     const byId = await call(`/documents/${teacherCard.id}`, { token: aminaToken });
     check('a document about somebody else cannot be read by guessing its id', byId.status, 404);
     check('  while their own can be', (await call(`/documents/${idCard.id}`, { token: aminaToken })).status, 200);
+
+    /*
+     * A student login with no student row behind it — a row soft-deleted with the login left active, say.
+     * Narrowing used to depend on a profile being found, so this caller was narrowed to nothing and read
+     * every document in the school, payloads with dates of birth and guardians included. It is narrowed
+     * by the permission it lacks (documents.generate), and owns nothing.
+     */
+    await mkUser('student-orphan', ROLES.STUDENT, org.id, schoolA.id);
+    const orphanToken = await signIn(`student-orphan@${DOMAIN}`);
+    check('a student login with no student profile sees no documents — not the school\'s',
+      [dataOf(await expectOk('/documents?limit=100', { token: orphanToken }, 200)).length,
+        (await call(`/documents/${idCard.id}`, { token: orphanToken })).status], [0, 404]);
 
     /*
      * ── an upload is not this module's to show — the owner's decision D13 ──

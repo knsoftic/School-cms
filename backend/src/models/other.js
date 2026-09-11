@@ -508,16 +508,13 @@ module.exports = (sequelize) => {
     {
       id: id(),
       /**
-       * Null school_id = a platform notification addressed to the Super Admin — **a shape that is
-       * defined and unused**, which triage finding 63 asked to be said here rather than implied.
+       * Null school_id = a platform notification addressed to the Super Admin.
        *
-       * The column is nullable and `notifications.service.js` honours it (`school_id: event.schoolId
-       * || null`), but all eight sweeps pass a `school_id` read off a school-scoped row, so nothing in
-       * the application has ever produced one. That is not an oversight to be fixed by writing a
-       * sweep: §23 binds none of its nine types to any of FR-NOTIF-001's five recipient classes —
-       * *"school, parent, student, teacher, or Super Admin **as applicable**"* is the whole of the
-       * rule — so which type should reach the Super Admin as a platform notification is a decision the
-       * source does not supply. Recorded as available and unreached rather than as coverage.
+       * §23 binds none of its nine types to any of FR-NOTIF-001's five recipient classes — *"school,
+       * parent, student, teacher, or Super Admin **as applicable**"* is the whole of the rule — so which
+       * types reach the Super Admin was the owner's decision D15: payment received, payment failed and
+       * subscription expiry. `notifications.service.js` writes the platform's copy of those with a null
+       * `school_id`; every school-facing sweep passes the `school_id` of the school-scoped row it read.
        */
       school_id: schoolId({ allowNull: true, onDelete: 'CASCADE' }),
       organization_id: organizationId({ allowNull: true, onDelete: 'CASCADE' }),

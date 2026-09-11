@@ -19,7 +19,8 @@ such in §5 — it said three when it was first written, and the third, frontend
 session 27. A fourth item was a body of frontend work that no queue in this repository had sized until
 it was measured for this document; it was the largest single thing outstanding and **it is closed**,
 at 149 of 150 write routes with a caller — **152 of 152** when re-measured at the end of session 28,
-after the owner's decisions added two routes and both screens that call them.
+after the owner's decisions added two routes and both screens that call them, and **152 of 152** again
+at the end of session 29, whose twenty-one decisions added reads and guards but no write route.
 
 ---
 
@@ -77,27 +78,29 @@ checklist row it belongs to rather than only in the triage file. **Then the owne
 the answers are in `docs/OWNER-DECISIONS.md` rather than in the code alone, so every behaviour built
 on one can point at who decided it.
 
-## 3. What was measured, on 2026-09-09, and again on 2026-09-10
+## 3. What was measured, on 2026-09-09, 2026-09-10 and 2026-09-11
 
 **Re-measured at the end of session 28, and the loop re-run from cold on 2026-09-10** — after a session restart that killed a run mid-suite and took MariaDB down with it. That run's leftover fixture rows broke the next two runs until `verify-finance.js` was given a sweep for its own residue; see `IMPLEMENTATION_PROGRESS.md` §7, steps 409–411. **Measured a third time later that day**, after Known Issues #34 made every suite recover from being killed (steps 413–430): the `npm test`, baseline and kill-recovery rows are from that run; `verify-frontend.js`, both lints, `tsc`, `next build`, the schema and the catalogue were re-run with it and did not move; the write-route count was not re-run. **Measured a fourth time at the end of session 28**, after the
 owner's decisions were built and the UI findings fixed (`IMPLEMENTATION_PROGRESS.md` steps 431–441):
-every row below was re-run then, the write-route count included. The figures below are the latest
-set; the earlier ones are kept beneath each where it differed, because a verification record that
+every row below was re-run then, the write-route count included. **Measured a fifth time at the end
+of session 29** (2026-09-11, `IMPLEMENTATION_PROGRESS.md` steps 442–455), after the second round of
+owner decisions (D17–D37) and the three screen reviews that followed them: every row below was re-run
+after the last code change. The figures below are the latest set; the earlier ones are kept beneath each where it differed, because a verification record that
 quietly overwrites its own numbers is the thing it exists to prevent.
 
 | Check | Result |
 |---|---|
-| `npm test` (backend) | **5,783 jest cases, 0 failures**, wrapping **40 suites / 5,573 assertions / 0 skips**, spawned serially against live MariaDB — twice, the second after the last change to `scripts/lib/residue.js`. *(5,705 / 5,495 after Known Issues #34; earlier on 2026-09-10 5,683 cases over 39 suites and 5,478 assertions, not updated when two later commits grew the loop; first recorded: 5,512 cases over 38 suites — see the correction below.)* |
-| Recorded baseline | **5,573 assertions across 40 suites** (`tests/baseline.json`), re-recorded by `scripts/record-baseline.js`, which refuses a run with any failure. *(5,495 / 40 before the owner's decisions and the fixes after them; 5,478 / 39 when this row was first written on 2026-09-10; 5,484 after `verify-deploy.js` part 7 asserted the `.gitignore` patterns; 5,495 / 40 with `verify-quotations.js`. Each read from `git show <commit>:backend/tests/baseline.json`. Before that, 5,312 / 38.)* |
-| Killed-run recovery | **39 of 40 suites SAFE** under `scripts/kill-test.js` — SIGKILLed partway (at 85% of their assertions, or 60% / 95% when that kill left nothing), rerun green, every non-log table back at its starting count. The fortieth, `verify-seed.js`, prints its assertions only at the end, so no kill lands inside it; its recovery was proved by planting the worst case. Re-measured after the last code change of session 28, in two parts (a session restart cut the full run off at 35 of 40). **That re-measurement first found two suites UNSAFE** — a dead run's platform notifications (owner decision D15) survived its rerun — and they were fixed before the figure above was taken. *(Before Known Issues #34: 11 of 40.)* |
-| `scripts/verify-frontend.js` | **284 assertions**, 43 deliberate regressions all caught. *(Was 170.)* |
-| Write routes with a frontend caller | **152 of 152** — the generated OpenAPI document against every `api.post/put/patch/delete` in `frontend/src`, template paths normalised; `POST /auth/refresh` counted through its raw `fetch`, as before. *(149 of 150 before D1 and D13 added two routes.)* — see §5 |
+| `npm test` (backend) | **6,002 jest cases, 0 failures**, wrapping **40 suites / 5,792 assertions / 0 skips**, spawned serially against live MariaDB, after the baseline was re-recorded. *(5,783 / 5,573 at the end of session 28, twice, the second after the last change to `scripts/lib/residue.js`; 5,705 / 5,495 after Known Issues #34; earlier on 2026-09-10 5,683 cases over 39 suites and 5,478 assertions, not updated when two later commits grew the loop; first recorded: 5,512 cases over 38 suites — see the correction below.)* |
+| Recorded baseline | **5,792 assertions across 40 suites** (`tests/baseline.json`), re-recorded by `scripts/record-baseline.js`, which refuses a run with any failure — twenty-eight suites grew, none shrank. *(5,573 / 40 at the end of session 28; 5,495 / 40 before the owner's decisions and the fixes after them; 5,478 / 39 when this row was first written on 2026-09-10; 5,484 after `verify-deploy.js` part 7 asserted the `.gitignore` patterns; 5,495 / 40 with `verify-quotations.js`. Each read from `git show <commit>:backend/tests/baseline.json`. Before that, 5,312 / 38.)* |
+| Killed-run recovery | **39 of 40 suites SAFE** under `scripts/kill-test.js` — SIGKILLed partway (at 85% of their assertions, or 60% / 95% when that kill left nothing), rerun green, every non-log table back at its starting count. The fortieth, `verify-seed.js`, prints its assertions only at the end, so no kill lands inside it; its recovery was proved by planting the worst case. **Re-measured in one full run after the last code change of session 29**, with `msms_test` clean afterwards. Before that, re-measured after the last code change of session 28, in two parts (a session restart cut the full run off at 35 of 40). **That re-measurement first found two suites UNSAFE** — a dead run's platform notifications (owner decision D15) survived its rerun — and they were fixed before the figure above was taken. *(Before Known Issues #34: 11 of 40.)* |
+| `scripts/verify-frontend.js` | **294 assertions**, 0 FAIL. *(284 at the end of session 28, when 43 deliberate regressions were all caught; 170 before that.)* |
+| Write routes with a frontend caller | **152 of 152** — the generated OpenAPI document against every `api.post/put/patch/delete` in `frontend/src`, template paths normalised; `POST /auth/refresh` counted through its raw `fetch`, as before. Re-measured at the end of session 29. *(149 of 150 before D1 and D13 added two routes.)* — see §5 |
 | `npm run lint` (backend) | exit 0 (`eslint src tests`). `scripts/`, outside that script, is **0 errors** too — it carried 46 until session 28 |
 | `npm run lint` (frontend) | **exit 0** — it failed when this document was first written; `eslint.config.mjs` was added in session 27 |
 | `tsc --noEmit` (frontend) | exit 0 |
-| `next build` | clean, **83 routes** in the build's route list (73 static, 10 dynamic), counted from its output — 43 when the create screens were missing, 63 at the end of session 27, 82 recorded before the owner's decisions. *(The source holds 84 `page`/`not-found` files, three more than before D15's notification screens; a route list and a file count are different measures, and the earlier 82 was not re-derived here.)* |
+| `next build` | clean, **103 routes** in the build's route list (89 static, 14 dynamic) at the end of session 29 — the 102 `page.tsx` files plus `/_not-found`, counted as the `┌ ├ └` lines of its output, not the glyphs, since the legend repeats `○`. 83 (73 static, 10 dynamic) at the end of session 28, which the same rule gives from that commit's 82 pages; 43 when the create screens were missing, 63 at the end of session 27, 82 recorded before the owner's decisions. *(The source holds 84 `page`/`not-found` files, three more than before D15's notification screens; a route list and a file count are different measures, and the earlier 82 was not re-derived here.)* |
 | Schema | **65 tables** — §29's 64 plus `sequelize_meta`, the migration ledger |
-| Permission catalogue | **109 permissions, 11 roles** |
+| Permission catalogue | **109 permissions, 11 roles, 359 default grants** — 353 until owner decision D27 gave Principal and School Admin three billing reads each |
 | Git | initialised 2026-09-09; 397 files in the first commit; no `.env` in history |
 
 **On the assertion counts differing:** the jest figure counts cases, the baseline counts suite
@@ -130,14 +133,19 @@ status is `docs/IMPLEMENTATION_CHECKLIST.md`; this document records only where t
 | Row | Status | What is outstanding |
 |---|---|---|
 | 5.2 | In Progress | The Anthropic adapter is exercised with the SDK replaced in `require.cache`, so prompt construction, `textOf()` and `parseJson()` all run and only the HTTP hop is substituted. **The live round trip has never happened** — it needs an API key this environment does not have. |
-| 7.13 | In Progress | This document. Cannot close while 5.2 is open, and **eleven** findings remain `real-blocked` — down from thirteen; findings 18 and 60 were closed in session 28 when the four screens beyond §33's seventeen were built and §33's list was ruled not to be a ceiling. |
+| 7.13 | In Progress | This document. Cannot close while 5.2 is open. No triage finding is `real-blocked` any more: findings 18 and 60 were closed in session 28 on the tree, and the owner answered the other eleven (D1–D16). |
 | 3.S.1 | Will not be built | Demo seed data. Optional, and §35 forbids inventing the plans, classes and students it would contain. It sat at `Pending` until session 28 while its own note said the work must not be done. |
-| FR-SUB-008 | In Progress | Six of the eight plan limits are enforced. `admin_limit` is counted and never blocks; `api_limit` is neither counted nor blocked, because §11.2 names "API Limit" without saying what it measures. *(Read `Tested` until session 28, which was wrong in the other direction — that status means unreachable, and `enforceLimit` has been mounted since session 16.)* |
-| FR-STUDENT-001 | In Progress | Admission, profile, photo, class/section, student ID and roll number are all delivered and reachable. **§15.1's "Documents" half has no code path at all** — `UPLOAD_PROFILES.STUDENT_DOCUMENT` cites the FR in its own rule and has never had a caller, and giving it one needs a `document_type` and a permission the fixed catalogue does not contain (triage finding 16). |
-| FR-BILL-001 | Implemented | All eleven §13.1 invoice fields are written and asserted — Add-ons included, each checked against the fixture rather than a literal. **The trigger is absent**: the requirement's actor is *System* and its precondition is *“a billing event occurs”*, a phrase that appears exactly once in the SRS and is never defined, so which events count, when to issue and what due date to set are decisions §35 forbids. A Super Admin issues invoices through `POST /invoices/generate` until then. |
 | 5.3 | Implemented | PDF extraction is verified end to end against a real pdfkit document. The image branch sends the file to the provider as an image block, so it waits on 5.2's key. |
 
-**Two rows left this table in session 28.** FR-SCHOOL-002 and FR-SCHOOL-003 are `Completed`:
+**Three more rows left this table in session 28, and this document did not follow until session 29.**
+FR-SUB-008 (D2: `admin_limit` blocks, `api_limit` stays unenforced by decision — and, found in session
+29, the storage limit had been counted as enforced when nothing charged it; `upload.js` does now),
+FR-STUDENT-001 (D13's student documents, D4's class at admission) and FR-BILL-001 (D6's System actor,
+`jobs/tasks/invoiceIssue.js`) are `Completed` in the checklist, each built and asserted. This table
+kept all three for a session after that, its rows describing gaps that no longer existed — the drift
+§1 warns a checklist can have, in the document written to catch it.
+
+**Two rows left this table earlier in session 28.** FR-SCHOOL-002 and FR-SCHOOL-003 are `Completed`:
 `school/settings` reaches session create, activate and close — the nine endpoints finding 18 recorded
 as having no caller — and the class and section screens cover FR-SCHOOL-003. Both were verified
 against the tree, and `verify-frontend.js` asserts five of the nine by method and path.
@@ -254,14 +262,14 @@ part 43 alongside the measurement above.
 `IMPLEMENTATION_PROGRESS.md` §5 is the register. **Session 28 closed every row a patch could close**
 — 17, 21, 31, 32, 33 and 34 — the last two found while re-measuring, and closed the same day.
 What was open then was six rows — 2, 11, 15, 18, 19 and 25 — none of them waiting on engineering.
-**Row 19 has since closed** on the owner's decision D5; five are open:
+**Row 19 has since closed** on the owner's decision D5, and **row 18** in session 29 on D21; four are open:
 
 | # | Issue | Note |
 |---|---|---|
 | ~~17~~ | ~~A school sees add-on prices restricted to plans it is not on~~ | **Closed.** `detailInclude()` now filters `addon_prices` to the unrestricted rows plus the school's own plan, using the write path's `ADDON_PRICE_PLAN_MISMATCH` refusal inverted into a filter rather than a rule of its own. Regressed both ways. |
 | ~~21~~ | ~~A limit check and the write it guards are not atomic~~ | **Closed, all four racing keys.** The three headcount limits take a `schools` row lock as their transaction's first statement (order is load-bearing: under REPEATABLE READ the first plain `SELECT` fixes the snapshot, not the lock). `ai_limit` could not use a lock — its critical section is a provider round trip — and takes the allowance ahead of the call in one conditional `UPDATE` instead, refunding when nothing is produced. **No 65th table was needed: the counter is the reservation.** `scripts/verify-concurrency.js` measures all four with eight concurrent calls each. |
 | ~~32~~ | ~~A student photo can be stored and never looked at~~ | **Closed.** `GET /students/:id/photo` on `students.view`, through the same tenant-scoped finder `GET /:id` uses; the detail screen renders it as a blob through the authenticated client. |
-| 18 | An unpriced add-on purchase records at zero | **Must not be "fixed" without an answer** — the SRS names no default `addon_prices` row. It was not among the sixteen questions, so it is the next one for the owner: waive, refuse, or keep the zero line. |
+| ~~18~~ | ~~An unpriced add-on purchase records at zero~~ | **Closed by owner decision D21** — a purchase must name its price, and one that does not is refused rather than recorded at zero, by the schema and over HTTP. Asserted in `verify-subscriptions.js`. |
 | ~~19~~ | ~~`wallet_balance` is never debited or credited~~ | **Closed by owner decision D5** — refunds credit it, invoices spend it, refused when short. Asserted in `verify-billing.js`. |
 | 2 | MySQL (XAMPP) does not survive this environment reliably | Environmental. The Aria recovery procedure is in the register, including the correction that logs must be quarantined *outside* the data directory. |
 | 11 | `SUPER_ADMIN_PASSWORD` in `backend/.env` is still the example value | The seeder hard-refuses it under `NODE_ENV=production`. |
@@ -280,10 +288,11 @@ What was open then was six rows — 2, 11, 15, 18, 19 and 25 — none of them wa
    override changes (39 → D7), whether a Principal's tenancy moves (10 → D3), whether a transaction id
    is required (52 → D8), who edits the timetable (47 → D14), who buys add-ons (53 → D10), how a
    student's documents are stored and read (16 → D13), and whether admission requires a class
-   (17 → D4). What remains in this item is Known Issues #18, which was not asked.
+   (17 → D4). Known Issues #18, which was not asked then, was answered in session 29 (D21), with
+   twenty other gaps the second re-audit found (D17–D37).
 
-Neither is engineering work. Both are decisions or credentials, and this document exists so that the
-distinction is on the record rather than inferred.
+Neither is engineering work: the first is a credential, and the second has been answered. This
+document exists so that the distinction is on the record rather than inferred.
 
 **Everything else that was outstanding when this document was first written has been done.** The
 ninety-nine uncalled write routes are 152 of 152 with a caller. The frontend has a lint. The three Known Issues rows

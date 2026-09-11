@@ -18,23 +18,64 @@
  * or scheduled price, or a quotation's): then it is switched to not offered instead, because deleting
  * it would blank the pointer on a live subscription. The response counts those as `retired`, and the
  * save toast says how many, since the row comes back on reload marked "Retired" and would otherwise
- * look like a removal that did not take. A subscription keeps the amount it was sold at either way —
- * renewal bills its own `cycle_amount`, not the price row's — until its quantity is changed, which
- * re-reads the row. `is_active`
+ * look like a removal that did not take.
+ *
+ * What a subscription already on a price pays after that price is edited depends on its model. A
+ * Fixed, Seat-Based or Custom subscription keeps the amount it was sold at — renewal bills its own
+ * `cycle_amount`, not the price row's — until its quantity is changed, which re-reads the row. A
+ * Per-Student or Student-Based one does not: owner decision D26 has `renew()` re-count the school's
+ * students and re-read the row at **every** renewal (`billedQuantity()`, `COUNTED_MODELS`), so an edit
+ * to its price — rates, units included — reaches it at its next renewal, retired or not. `is_active`
  * still exists as a control of its own — retiring a price on purpose while keeping its record is a
  * different act from removing it, and the two must not be the same button.
  *
- * ## The pricing model decides which amount matters
+ * ## The pricing model decides which amounts matter
  *
- * §10.4 has five models and each prices a different column: Fixed bills `base_amount`, the three
- * unit models bill `unit_amount`, Custom bills `custom_amount`. The validator makes the relevant one
- * `.required()` per row, so a form showing all three at once would offer two boxes that are, for
- * that row, decoration — and an operator who filled the wrong one would get a 422 naming a field
- * they had typed into. Each row therefore shows the amounts its own model uses.
+ * §10.4 has five models, and `computeCycleAmount()` in `subscriptions.service.js` is what each one
+ * bills: Fixed bills `base_amount`; the three unit models bill `base_amount` **plus** `unit_amount`
+ * for every unit beyond `included_units`; Custom bills `custom_amount`. The validator makes each
+ * model's own amount `.required()` per row — `base_amount` for Fixed, `unit_amount` for the unit
+ * models, `custom_amount` for Custom — so a form showing every amount at once would offer boxes that
+ * are, for that row, decoration, and an operator who filled the wrong one would get a 422 naming a
+ * field they had typed into. Each row therefore shows the amounts its own model bills.
  *
- * The tier band and the overage rate are shown for the unit models only, for the same reason:
- * `tier_min_units` / `tier_max_units` are §10.4's Student-Based bands, and they are meaningless on a
- * Fixed price.
+ * What a unit *is* differs, and D26 decided it. **Per-Student** and **Student-Based** count the
+ * school's active students — the live count `student_limit` measures, taken when the subscription is
+ * created or changes plan and taken again at every renewal — and never a typed number; the
+ * subscription screen does not offer them a quantity to edit. **Seat-Based** bills the quantity typed
+ * when subscribing, a seat being whatever the school buys. The hints on the unit boxes say which.
+ *
+ * The base amount on a unit model is optional, and this screen used to offer it on Fixed alone. The
+ * API accepts it on every model and the calculation adds it, so a per-student price with a fixed
+ * platform fee could not be set here — while the "Units included" hint described a base amount the
+ * row had no box for.
+ *
+ * The tier band is shown for the unit models only, and its hints say what it does, which is less
+ * than the name suggests: nothing reads `tier_min_units` / `tier_max_units` to choose or bill a price.
+ * The band is part of a price's identity — two prices on one cycle and model differ by it — and it is
+ * shown beside the price where one is chosen; the price billed is the price chosen, whatever the
+ * school's size.
+ *
+ * ## Blank boxes are sent as zero, not left out
+ *
+ * `setPrices()` updates a price something still uses **in place**, with `row.update({ ...price })`: a
+ * column the payload omits keeps its stored value there, while a new row takes the column default.
+ * So a box the hint says means "none" when blank has to send that none — `0` for the base amount on
+ * a unit model, the units included and the setup fee — or clearing it on a price in use would change
+ * nothing.
+ *
+ * ## The overage rate on a price is hidden — owner decision D26
+ *
+ * `plan_prices.overage_unit_amount` is validated, stored and copied by a plan duplicate, and read by
+ * nothing that bills. `computeCycleAmount()` says it is *"deliberately not used here"*, and the
+ * overage that is billed — `usageService` into `usage_records`, then §13's overage line — is priced
+ * from `plan_limits.overage_unit_amount`, set on the Plan limits screen. This screen offered a box for
+ * it with a hint saying it billed nothing; D26 hid it instead.
+ *
+ * Hidden, not cleared. A row loaded with a stored rate sends that value back unchanged, and a row
+ * without one sends nothing. Leaving the field out altogether would keep a stored rate only on the
+ * in-place path above: every price nothing references is deleted and re-created by `setPrices()`, so
+ * an omitted rate would come back as the column default — null — on a save that never touched it.
  *
  * ## Per-row errors
  *
@@ -67,6 +108,12 @@ import { useToast } from '@/components/toast';
 
 /** `PRICING_MODELS` in `config/constants.js`, and which amount each one bills. */
 const UNIT_MODELS = new Set(['student_based', 'seat_based', 'per_student']);
+
+/**
+ * `COUNTED_MODELS` in `subscriptions.service.js` — the unit models whose unit is the school's live
+ * active-student count rather than a typed quantity (owner decision D26).
+ */
+const COUNTED_MODELS = new Set(['per_student', 'student_based']);
 
 /** `plans.validation.js` caps the set at 100 rows. */
 const MAX_PRICES = 100;
@@ -188,9 +235,9 @@ function num(value: string): number | undefined {
 /**
  * One draft as a request item.
  *
- * Fields the row's own model does not use are left out rather than sent as null: `base_amount` is
- * `amount()` without `.allow(null)`, so a Student-Based row carrying `base_amount: null` is a 422 on
- * a field the operator never saw.
+ * Fields the row's own model does not use are left out rather than sent as null: `unit_amount` is
+ * `amount()` without `.allow(null)`, so a Fixed row carrying `unit_amount: null` is a 422 on a field
+ * the operator never saw.
  */
 function toPayload(draft: PriceDraft): Record<string, unknown> {
   const unitModel = UNIT_MODELS.has(draft.pricing_model);
@@ -207,18 +254,40 @@ function toPayload(draft: PriceDraft): Record<string, unknown> {
   if (draft.pricing_model === 'fixed') item.base_amount = num(draft.base_amount);
   if (unitModel) {
     item.unit_amount = num(draft.unit_amount);
-    if (num(draft.included_units) !== undefined) item.included_units = num(draft.included_units);
+    /*
+     * Optional here, and billed: `computeCycleAmount()` adds it to the per-unit charge every cycle.
+     * A blank box is sent as 0 rather than left out, because `setPrices()` updates a price that a
+     * subscription still uses **in place**, with `row.update({ ...price })` — a column the payload
+     * omits keeps its stored value there, while a new row takes the column default of 0. Sending 0
+     * makes a cleared box mean the same thing on both paths.
+     */
+    item.base_amount = num(draft.base_amount) ?? 0;
+    /*
+     * The same, for the same reason: `included_units` defaults to 0 on a new row and its hint says
+     * blank means none, but it used to be left out when blank — so clearing it on a price in use kept
+     * the stored count, and the rate went on starting above it.
+     */
+    item.included_units = num(draft.included_units) ?? 0;
     /* Null is meaningful on the band: an open-ended top tier has no maximum. */
     item.tier_min_units = num(draft.tier_min_units) ?? null;
     item.tier_max_units = num(draft.tier_max_units) ?? null;
-    item.overage_unit_amount = num(draft.overage_unit_amount) ?? null;
   }
   if (draft.pricing_model === 'custom') {
     item.custom_amount = num(draft.custom_amount);
     item.custom_notes = draft.custom_notes.trim() || null;
   }
 
-  if (num(draft.setup_fee) !== undefined) item.setup_fee = num(draft.setup_fee);
+  /*
+   * The overage rate has no box (owner decision D26 — see the header), so the draft holds only what
+   * was loaded. Sent back as it was when there is one, so the delete-and-re-create path keeps it too;
+   * left out when there is none, which both paths store as null.
+   */
+  if (num(draft.overage_unit_amount) !== undefined) {
+    item.overage_unit_amount = num(draft.overage_unit_amount);
+  }
+
+  /* Blank is none, sent as 0 on every model — the in-place path again; see the header. */
+  item.setup_fee = num(draft.setup_fee) ?? 0;
   if (num(draft.display_order) !== undefined) item.display_order = num(draft.display_order);
 
   return item;
@@ -370,6 +439,8 @@ export function PricingEditor({
         {drafts.map((draft, index) => {
           const errors = rowErrors.get(index) ?? {};
           const unitModel = UNIT_MODELS.has(draft.pricing_model);
+          /* Per-Student and Student-Based count the school's students; Seat-Based bills a typed quantity. */
+          const counted = COUNTED_MODELS.has(draft.pricing_model);
           const id = (field: string) => `price-${draft.key}-${field}`;
 
           return (
@@ -395,6 +466,12 @@ export function PricingEditor({
               </div>
 
               {errors._row ? <Notice tone="error">{errors._row}</Notice> : null}
+              {/* The overage rate has no box (D26), so a refusal of the stored value it carries shows here. */}
+              {errors.overage_unit_amount ? (
+                <Notice tone="error">
+                  {rowError(errors, 'overage_unit_amount', 'Stored overage rate')}
+                </Notice>
+              ) : null}
 
               <FormGrid>
                 <SelectField
@@ -440,7 +517,7 @@ export function PricingEditor({
                   value={draft.pricing_model}
                   onChange={(event) => update(draft.key, { pricing_model: event.target.value })}
                   error={rowError(errors, 'pricing_model', 'Pricing model')}
-                  hint="Decides which amount below is charged (SRS §10.4)."
+                  hint="Decides which amounts below are charged (SRS §10.4)."
                 >
                   {catalogue.pricingModels.map((model) => (
                     <option key={model} value={model}>
@@ -478,6 +555,25 @@ export function PricingEditor({
 
                 {unitModel ? (
                   <>
+                    {/*
+                      * The hints on these three state `computeCycleAmount()` as it is: base amount +
+                      * rate per unit × (units − units included, never below zero). What the units are
+                      * is owner decision D26 — the school's active students, counted, for Per-Student
+                      * and Student-Based; the subscription's typed quantity for Seat-Based.
+                      */}
+                    <Field
+                      id={id('base_amount')}
+                      label="Base amount per cycle"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      disabled={!canEdit}
+                      value={draft.base_amount}
+                      onChange={(event) => update(draft.key, { base_amount: event.target.value })}
+                      error={rowError(errors, 'base_amount', 'Base amount per cycle')}
+                      hint="Charged every cycle, whatever the count, on top of the per-unit charge. Blank means none."
+                    />
+
                     <Field
                       id={id('unit_amount')}
                       label="Rate per unit"
@@ -489,7 +585,11 @@ export function PricingEditor({
                       value={draft.unit_amount}
                       onChange={(event) => update(draft.key, { unit_amount: event.target.value })}
                       error={rowError(errors, 'unit_amount', 'Rate per unit')}
-                      hint="Charged for each student or seat, depending on the model chosen above."
+                      hint={
+                        counted
+                          ? "Charged each cycle for every one of the school's active students beyond the units included. The count is taken when the school subscribes or changes plan, and again at every renewal — it is never typed."
+                          : 'Charged each cycle for every seat beyond the units included. The seats are the quantity typed when the school subscribes, changed on the subscription’s screen.'
+                      }
                     />
 
                     <Field
@@ -502,9 +602,16 @@ export function PricingEditor({
                       value={draft.included_units}
                       onChange={(event) => update(draft.key, { included_units: event.target.value })}
                       error={rowError(errors, 'included_units', 'Units included')}
-                      hint="Bundled into the base amount before the per-unit rate starts applying. Blank means none."
+                      hint={`Covered by the base amount: the rate per unit applies only to the ${
+                        counted ? 'students' : 'seats'
+                      } above this. Blank means none.`}
                     />
 
+                    {/*
+                      * The band is a label, not a selector — see the header. Its hints say so, because
+                      * "Band starts at" reads as a rule the API applies, and nothing reads the band to
+                      * choose or bill a price.
+                      */}
                     <Field
                       id={id('tier_min_units')}
                       label="Band starts at"
@@ -515,7 +622,9 @@ export function PricingEditor({
                       value={draft.tier_min_units}
                       onChange={(event) => update(draft.key, { tier_min_units: event.target.value })}
                       error={rowError(errors, 'tier_min_units', 'Band starts at')}
-                      hint="For §10.4's Student-Based bands. Leave both band boxes blank for a single rate at any size."
+                      hint={`The ${
+                        counted ? 'student' : 'seat'
+                      } range this price is meant for, shown beside it where a price is chosen. Nothing enforces it: the price billed is the price chosen, whatever the school's size. It is what lets two prices on one cycle and model differ. Leave both blank for no band.`}
                     />
 
                     <Field
@@ -528,22 +637,7 @@ export function PricingEditor({
                       value={draft.tier_max_units}
                       onChange={(event) => update(draft.key, { tier_max_units: event.target.value })}
                       error={rowError(errors, 'tier_max_units', 'Band ends at')}
-                      hint="Inclusive. Blank makes this the open-ended top band."
-                    />
-
-                    <Field
-                      id={id('overage_unit_amount')}
-                      label="Overage rate"
-                      type="number"
-                      min={0}
-                      step="0.01"
-                      disabled={!canEdit}
-                      value={draft.overage_unit_amount}
-                      onChange={(event) =>
-                        update(draft.key, { overage_unit_amount: event.target.value })
-                      }
-                      error={rowError(errors, 'overage_unit_amount', 'Overage rate')}
-                      hint="Charged per unit beyond what is included. Blank means the included count is a hard stop for this price."
+                      hint="Inclusive. Blank leaves the band open-ended at the top."
                     />
                   </>
                 ) : null}
@@ -666,7 +760,7 @@ export function PricingEditor({
           setRemoving(null);
         }}
         title="Remove this price?"
-        description="It disappears from the list now and is deleted from the plan when you save — unless a subscription or quotation still uses it. Then it is kept: if the prices you save include one with the same cycle, pricing model and tier band, that one takes its place and is updated in place; otherwise it is retired and shows again after the save as no longer offered. Either way, subscriptions already on it keep the amount they were sold at until their quantity is changed. To stop offering a price while keeping its record, untick “Offered for new subscriptions” instead."
+        description="It disappears from the list now and is deleted from the plan when you save — unless a subscription or quotation still uses it. Then it is kept: if the prices you save include one with the same cycle, pricing model and tier band, that one takes its place and is updated in place; otherwise it is retired and shows again after the save as no longer offered. Either way, subscriptions already on it stay on it: a Fixed, Seat-Based or Custom one keeps the amount it was sold at until its quantity is changed, and a Per-Student or Student-Based one is re-priced from this row, at the school’s student count, at every renewal. To stop offering a price while keeping its record, untick “Offered for new subscriptions” instead."
         confirmLabel="Remove price"
       />
     </form>

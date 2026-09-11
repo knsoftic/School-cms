@@ -153,7 +153,7 @@ function Blank() {
 }
 
 export default function SubscriptionsPage() {
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
   const { nameFor } = useSchoolNames();
 
   const [page, setPage] = useState(1);
@@ -305,7 +305,12 @@ export default function SubscriptionsPage() {
     <div>
       <PageHeader
         title="Subscriptions"
-        description="Every school’s plan, billing cycle and renewal, across all organizations."
+        description={
+          /* An Organization Admin reads this list too, confined to their organization by `tenantWhere()`. */
+          profile?.tenant.isPlatform === false
+            ? 'Every school’s plan, billing cycle and renewal, in your organization.'
+            : 'Every school’s plan, billing cycle and renewal, across all organizations.'
+        }
         action={
           /*
            * Hidden without the permission — a courtesy, not a control, exactly as on Schools.

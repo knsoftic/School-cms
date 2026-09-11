@@ -221,8 +221,15 @@ function verifyStack() {
    * were the first mounts below the boundary that are *not* platform-only; the 3.I routers are the
    * same kind: Principal / School Admin is the actor, so they rely on `resolveTenant`/`enforceTenant`
    * above and `resolveSchool()` / `tenantWhere()` inside rather than on a scope guard.
+   *
+   * Session 29 added `/logs` (SRS §26's two read routes, on `logs.view`) as the last mount, index 42 —
+   * below the boundary like every feature router, which the index proves.
    */
-  check('the whole /api/v1 stack is accounted for', api.length, 42);
+  check('the whole /api/v1 stack is accounted for', api.length, 43);
+  /* A middleware layer's regexp matches every path, so the router is the one that answers /logs alone. */
+  check('  and the newest mount, /logs, sits below the authentication chain',
+    api.findIndex((layer) => layer.name === 'router' && layer.regexp.test('/logs') && !layer.regexp.test('/students')) > 5,
+    true);
   check('the system routes are mounted first', systemLayer.name, 'router');
 
   /*

@@ -267,7 +267,7 @@ function verifyDocument(app, doc) {
   /* ── §28's Error Response, per route rather than uniform ── */
 
   check('403 lists every cause that applies to the route, not just the last one written',
-    [/FORBIDDEN/.test(desc(createStudent, 403)),
+    [/INSUFFICIENT_PERMISSION/.test(desc(createStudent, 403)),
       /PLAN_LIMIT_EXCEEDED/.test(desc(createStudent, 403))], [true, true]);
   check('  a route with a module guard names MODULE_NOT_SUBSCRIBED too',
     /MODULE_NOT_SUBSCRIBED/.test(desc(listBooks, 403)), true);
@@ -399,8 +399,9 @@ function verifyMetadata() {
   check('collectMeta merges a route\'s guards in mount order',
     attempt(() => collectMeta([requireModule('library'), requirePermission('schools.view'),
       enforceLimit('student_limit')]), null),
-    { permissions: ['schools.view'], permissionMode: 'all', roles: [], modules: ['library'],
-      moduleMode: 'all', limit: 'student_limit', schemas: {}, upload: null });
+    { permissions: ['schools.view'], permissionMode: 'all', roles: [], platformOnly: false,
+      modules: ['library'], moduleMode: 'all', features: [], subscription: false,
+      limit: 'student_limit', schemas: {}, upload: null, file: null, conditional: [] });
 
   check('an Express path becomes an OpenAPI path',
     [toOpenApiPath('/students/:id/marks'), toOpenApiPath('/:a/:b')],
@@ -410,6 +411,197 @@ function verifyMetadata() {
   check('stripPrefix removes the mount prefix and nothing else',
     [stripPrefix('/api/v1/students', '/api/v1'), stripPrefix('/api/v1', '/api/v1'),
       stripPrefix('/other', '/api/v1')], ['/students', '/', '/other']);
+}
+
+/* ═════════════ part 2c — the guards with no arguments, uploads, and files ═════════════ */
+
+/** Run a guard against a stand-in request and return the error it passes to `next`, or null. */
+async function refusalOf(guard, req) {
+  let passed = null;
+  await new Promise((resolve) => {
+    const next = (err) => { passed = err || null; resolve(); };
+    Promise.resolve(guard(req, {}, next)).then(() => setTimeout(resolve, 10), resolve);
+  });
+  return passed;
+}
+
+async function verifyGuardsUploadsFiles(app, doc) {
+  console.log('');
+  console.log('── Part 2c — the guards with no arguments, upload bodies, and file responses ──');
+  console.log('');
+
+  const fs = require('fs');
+  const path = require('path');
+  const { requirePermission, requireRole, requirePlatformScope } = require('../src/middlewares/authorize');
+  const { requireActiveSubscription, requireFeature } = require('../src/middlewares/entitlement');
+  const { uploadSingle } = require('../src/middlewares/upload');
+  const { UPLOAD_PROFILES, UPLOAD_RULES } = require('../src/config/constants');
+  const prefix = config.app.apiPrefix;
+  const ops = operations(doc);
+
+  /* ── the 403 codes, taken from the guards themselves rather than from memory ── */
+
+  const permissionCode = ((await refusalOf(requirePermission('users.view'), {
+    user: { id: 1 }, getPermissions: async () => new Set(),
+  })) || {}).code;
+  const roleCode = ((await refusalOf(requireRole('super_admin'), {
+    user: { id: 1, role: { slug: 'teacher' } }, getPermissions: async () => new Set(),
+  })) || {}).code;
+  const platformCode = ((await refusalOf(requirePlatformScope(), { tenant: { isPlatform: false } })) || {}).code;
+
+  const createStudent = op(doc, '/students', 'post');
+  check('a permission refusal is documented by the code requirePermission actually sends',
+    [permissionCode, new RegExp(`\`${permissionCode}\``).test(desc(createStudent, 403))],
+    ['INSUFFICIENT_PERMISSION', true]);
+  check('  and no route documents the generic FORBIDDEN, which no guard sends',
+    ops.filter((o) => /`FORBIDDEN`/.test(desc(o.operation, 403))).length, 0);
+  const roleRoutes = ops.filter((o) => /Restricted to role/.test(o.operation.description));
+  check('a role refusal is documented by the code requireRole sends, wherever a role guard is mounted',
+    [roleCode, roleRoutes.every((o) => desc(o.operation, 403).includes(`\`${roleCode}\``))],
+    ['INSUFFICIENT_ROLE', true]);
+
+  /* ── requirePlatformScope, requireActiveSubscription, requireFeature: annotated, and read ── */
+
+  check('requirePlatformScope() now says it is there — it takes no arguments, but it refuses',
+    (metaOf(requirePlatformScope()) || {}).platformOnly, true);
+  check('requireActiveSubscription() likewise', (metaOf(requireActiveSubscription()) || {}).subscription, true);
+  check('requireFeature() remembers its keys', (metaOf(requireFeature('premium_reports')) || {}).features,
+    ['premium_reports']);
+
+  const platformOps = ops.filter((o) => desc(o.operation, 403).includes(`\`${platformCode}\``));
+  check('platform-only routes document the refusal requirePlatformScope sends',
+    [platformCode, platformOps.length > 20], ['PLATFORM_SCOPE_REQUIRED', true]);
+  check('  and say so in their Authentication text',
+    platformOps.every((o) => /platform scope/.test(o.operation.description)), true);
+  check('  POST /schools is one of them', platformOps.some((o) => o.method === 'post' && o.path === '/schools'), true);
+
+  const walked = walk(app._router, '', false, [], []);
+  const guarded = (predicate) => walked
+    .filter((route) => route.handlers.some((h) => predicate(metaOf(h) || {})))
+    .flatMap((route) => route.methods.filter((m) => m !== 'head' && m !== 'options')
+      .map((m) => `${m} ${stripPrefix(route.path, prefix)}`));
+
+  const subscriptionRoutes = guarded((m) => m.subscription);
+  check('every route mounting requireActiveSubscription() documents the 402 it can send',
+    [subscriptionRoutes.length > 0,
+      subscriptionRoutes.filter((r) => { const [m, p] = r.split(' '); return !op(doc, p, m).responses[402]; })],
+    [true, []]);
+  const limitRoutes = guarded((m) => m.limit);
+  check('  as does every route mounting enforceLimit(), which asserts the subscription first',
+    limitRoutes.filter((r) => { const [m, p] = r.split(' '); return !op(doc, p, m).responses[402]; }), []);
+
+  const exportReport = op(doc, '/reports/students', 'get');
+  check('an export-only permission is documented, and only for the export',
+    /When format is not json, also requires permission `reports\.export`/.test(exportReport.description), true);
+  check('  and the Premium Reports feature beside it (the owner\'s decision D9)',
+    [/`premium_reports`/.test(exportReport.description), /FEATURE_NOT_SUBSCRIBED/.test(desc(exportReport, 403))],
+    [true, true]);
+  check('  which can also answer 402, since requireFeature() asserts the subscription',
+    Boolean(exportReport.responses[402]), true);
+  check('  while the Subscription Report, with no feature gate, states only the permission',
+    [/`reports\.export`/.test(op(doc, '/reports/subscriptions', 'get').description),
+      /premium_reports/.test(op(doc, '/reports/subscriptions', 'get').description)], [true, false]);
+
+  /* ── §28's Request Body for the upload routes: multipart, from the chain's own arguments ── */
+
+  check('the upload chain records its field, count and types for the document',
+    attempt(() => metaOf(uploadSingle(UPLOAD_PROFILES.PERSON_PHOTO, 'photo')[0]).upload, null),
+    { profile: 'person_photo', field: 'photo', maxCount: 1,
+      mimeTypes: UPLOAD_RULES[UPLOAD_PROFILES.PERSON_PHOTO].mimeTypes, billingSurface: false });
+
+  const uploadRoutes = walked.filter((route) => route.handlers.some((h) => (metaOf(h) || {}).upload));
+  const uploadOps = uploadRoutes.flatMap((route) => route.methods
+    .filter((m) => m !== 'head' && m !== 'options')
+    .map((m) => ({ key: `${m} ${stripPrefix(route.path, prefix)}`,
+      upload: route.handlers.map((h) => (metaOf(h) || {}).upload).find(Boolean),
+      operation: op(doc, stripPrefix(route.path, prefix), m) })));
+  check('every route that mounts the upload chain is found', uploadOps.length, 6);
+  check('  each documents a multipart/form-data body, and only that',
+    uploadOps.filter((u) => JSON.stringify(Object.keys((u.operation.requestBody || {}).content || {}))
+      !== '["multipart/form-data"]').map((u) => u.key), []);
+  check('  with its file field as binary, under the name the chain parses',
+    uploadOps.filter((u) => {
+      const schema = u.operation.requestBody.content['multipart/form-data'].schema;
+      const prop = schema.properties[u.upload.field];
+      const file = prop && (prop.type === 'array' ? prop.items : prop);
+      return !file || file.format !== 'binary';
+    }).map((u) => u.key), []);
+  check('  and a many-file surface as an array bounded by the chain\'s own count',
+    attempt(() => {
+      const docs = op(doc, '/students/{id}/documents', 'post').requestBody.content['multipart/form-data'].schema;
+      return [docs.properties.documents.type, docs.properties.documents.maxItems];
+    }, null), ['array', UPLOAD_RULES[UPLOAD_PROFILES.STUDENT_DOCUMENT].maxFiles]);
+  check('  beside the text fields validate() checks',
+    attempt(() => Object.keys(op(doc, '/homework', 'post').requestBody.content['multipart/form-data']
+      .schema.properties).includes('title'), false), true);
+  check('every upload route documents the refusals the chain adds: 400, 413 and 415',
+    uploadOps.filter((u) => !(u.operation.responses[400] && u.operation.responses[413]
+      && u.operation.responses[415])).map((u) => u.key), []);
+  check('  and the limits it charges against',
+    uploadOps.filter((u) => !/file_upload_limit/.test(desc(u.operation, 403))).map((u) => u.key), []);
+  check('the payment screenshot is the one billing surface: no 402, no storage charge',
+    [Boolean(op(doc, '/payments', 'post').responses[402]), /storage_limit/.test(desc(op(doc, '/payments', 'post'), 403))],
+    [false, false]);
+  check('  while every other upload route can answer 402 and is charged against storage',
+    uploadOps.filter((u) => u.key !== 'post /payments')
+      .filter((u) => !u.operation.responses[402] || !/storage_limit/.test(desc(u.operation, 403))).map((u) => u.key), []);
+
+  /* ── §28's Response for the routes that answer with a file ── */
+
+  const STORED = [
+    '/payments/{id}/screenshot', '/students/{id}/photo', '/students/{id}/documents/{documentId}',
+    '/homework/{id}/attachment', '/assignments/submissions/{id}/attachment',
+  ];
+  const BY_FORMAT = [
+    '/exams/results/{id}', '/exams/{id}/results', '/documents/{id}',
+    '/reports/students', '/reports/attendance', '/reports/fees', '/reports/expenses', '/reports/exams',
+    '/reports/teachers', '/reports/subscriptions',
+  ];
+  const contentOf = (p) => Object.keys((op(doc, p, 'get').responses[200] || {}).content || {});
+  const binaryOnly = (p) => contentOf(p).length > 0 && !contentOf(p).includes('application/json')
+    && contentOf(p).every((t) => op(doc, p, 'get').responses[200].content[t].schema.format === 'binary');
+
+  check('a stored upload is documented as the file, not the JSON envelope', STORED.filter((p) => !binaryOnly(p)), []);
+  check('  in the types its upload surface accepts',
+    contentOf('/students/{id}/photo'), UPLOAD_RULES[UPLOAD_PROFILES.PERSON_PHOTO].mimeTypes);
+  check('an export chosen by `format` offers both answers — the envelope, and the file',
+    BY_FORMAT.filter((p) => !(contentOf(p).includes('application/json') && contentOf(p).includes('application/pdf'))), []);
+  check('  with Excel beside PDF on the seven reports, read off the controller\'s own export table',
+    contentOf('/reports/fees').includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), true);
+  check('  and the query that selects the file named in the response',
+    /when `format=pdf`/.test(op(doc, '/exams/results/{id}', 'get').responses[200].description), true);
+  check('those fifteen are every file route the document has, and no JSON route claims a file',
+    ops.filter((o) => contentOf(o.path).some((t) => t !== 'application/json') && o.method === 'get')
+      .map((o) => o.path).sort(), [...STORED, ...BY_FORMAT].sort());
+
+  /*
+   * The drift guard for the one hand-stated fact. `respondsWithFile()` is written in the route file, so
+   * a new controller that streams a file could be mounted without it and the document would call it
+   * JSON. So the controllers are read for the two ways this application sends a file — `sendStoredFile(`
+   * and a hand-set `Content-Type` — and every route that mounts such a handler must carry the mark.
+   */
+  const modulesDir = path.join(__dirname, '..', 'src', 'modules');
+  const unmarked = [];
+  let fileHandlers = 0;
+  for (const moduleName of fs.readdirSync(modulesDir)) {
+    const controllerFile = path.join(modulesDir, moduleName, `${moduleName}.controller.js`);
+    const routesFile = path.join(modulesDir, moduleName, `${moduleName}.routes.js`);
+    if (!fs.existsSync(controllerFile) || !fs.existsSync(routesFile)) continue;
+    const source = fs.readFileSync(controllerFile, 'utf8');
+    const routes = fs.readFileSync(routesFile, 'utf8');
+    const blocks = source.split(/\n(?=(?:async )?function \w+\()/);
+    for (const block of blocks) {
+      const name = (block.match(/^(?:async )?function (\w+)\(/) || [])[1];
+      if (!name || !/sendStoredFile\(|setHeader\('Content-Type'/.test(block)) continue;
+      fileHandlers += 1;
+      const mounted = new RegExp(`controller\\.${name}\\b`);
+      const mounts = routes.split('\n').filter((line) => mounted.test(line));
+      for (const line of mounts) if (!line.includes('respondsWithFile(')) unmarked.push(`${moduleName}.${name}`);
+      if (!mounts.length) unmarked.push(`${moduleName}.${name} (not mounted?)`);
+    }
+  }
+  check('every controller that sends a file is found by reading the controllers', fileHandlers, 9);
+  check('  and every route mounting one carries respondsWithFile(), so none is documented as JSON', unmarked, []);
 }
 
 /* ═══════════════════════════ part 3 — real HTTP ═══════════════════════════ */
@@ -543,6 +735,7 @@ async function main() {
   const doc = buildDocument(app);
   verifyDocument(app, doc);
   verifyMetadata();
+  await verifyGuardsUploadsFiles(app, doc);
   await verifyHttp(app);
 }
 

@@ -102,7 +102,7 @@ const { tenantWhere } = require('../../models');
 const ApiError = require('../../utils/ApiError');
 const money = require('../../utils/money');
 const dates = require('../../utils/dates');
-const { resolveSchool, loadTeacherInSchool, loadSessionInSchool } = require('../../utils/schoolScope');
+const { resolveSchool, loadTeacherInSchool, loadSessionInSchool, schoolBrand } = require('../../utils/schoolScope');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const { EXPENSE_CATEGORIES, INCOME_CATEGORIES } = require('../../config/constants');
@@ -205,8 +205,16 @@ function rethrow(err) {
     /*
      * `expenses` carries the model-level validator `salaryNeedsRecipient`: a `salaries` row must name a
      * teacher, a staff member or a `paid_to`. Surfaced as a 422 rather than escaping as a 500.
+     *
+     * Sequelize reports a model-level validator's error under the **validator's** name, so the field
+     * arrived as `salaryNeedsRecipient` — a name no form has an input for, which a form that shows
+     * field errors beside their inputs showed nowhere. It is reported against `paid_to`, the one of the
+     * three a person can type into.
      */
-    throw ApiError.validation(err.message, err.errors.map((e) => ({ field: e.path, message: e.message })));
+    throw ApiError.validation(err.message, err.errors.map((e) => ({
+      field: e.path === 'salaryNeedsRecipient' ? 'paid_to' : e.path,
+      message: e.message,
+    })));
   }
   if (err instanceof db.Sequelize.ForeignKeyConstraintError) {
     /*
@@ -327,6 +335,8 @@ async function listEntries(req, ledger, query, pagination) {
 async function createEntry(req, ledger, payload) {
   const school = await resolveSchool(req, payload.school_id);
   await assertReferencesInSchool(ledger, payload, school.id);
+  /* D35 — an amount entered without a currency is in the school's, not in the column's USD default. */
+  const currency = payload.currency ? null : (await schoolBrand(school.id) || {}).currency;
 
   let row;
   try {
@@ -334,6 +344,7 @@ async function createEntry(req, ledger, payload) {
       school_id: school.id,
       organization_id: school.organization_id,
       recorded_by: req.user ? req.user.id : null,
+      ...(currency ? { currency } : {}),
       ...normaliseDates(ledger, pick(ledger, payload)),
     });
   } catch (err) {

@@ -24,9 +24,11 @@
  * wider grant than §16 anywhere asks for. Widening it would mean editing the seeded catalogue, which
  * §35 does not license on an inference.
  *
- * `attendance.self.view` has **no endpoint**, deliberately: §16 names no self-service view, and
- * `students.self.view` was left the same way in §15 for the same reason. Both are recorded rather
- * than quietly mounted.
+ * `attendance.self.view` is mounted on `GET /mine` — the owner's decision D17. It had no endpoint
+ * while §16 was read as naming no self-service view; SRS:105 gives a student "access relevant to their
+ * own records", and D17 settled it: a student reads their own attendance and a parent each child's.
+ * A teacher also holds the key, and `GET /mine` answers a teacher that there is no student or parent
+ * profile here — the teacher's own record (FR-ATT-003) is not what D17 built.
  *
  * `GET /students/report` is declared **before** `GET /students` cannot matter — they are different
  * paths, not a literal-versus-parameter collision — but it is declared first anyway so the reading
@@ -58,6 +60,18 @@ const { schemas } = require('./attendance.validation');
 const router = createRouter();
 
 router.use(requireModule(MODULES.ATTENDANCE));
+
+/*
+ * The owner's decision D17 — a student's own attendance, or each linked child's for a parent, on
+ * `attendance.self.view`: the key the catalogue granted both (and every other staff member) and nothing
+ * mounted until now. See `service.mine()`.
+ */
+router.get(
+  '/mine',
+  requirePermission('attendance.self.view'),
+  validate({ query: schemas.mine }),
+  asyncHandler(controller.mine)
+);
 
 router.get(
   '/students/report',

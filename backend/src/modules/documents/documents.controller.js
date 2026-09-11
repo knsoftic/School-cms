@@ -3,9 +3,9 @@
 /**
  * Document controllers — SRS §20.5, FR-DOC-001.
  *
- * Every handler returns `service.present()`, so `file_path` cannot leak through a response — it is null
- * today and will not be once Phase 5.4 renders something, and suppressing it now means the response
- * shape does not change when that happens.
+ * Every handler returns `service.present()`, so `file_path` cannot leak through a response. It is null —
+ * a document is rendered on request and never stored — and suppressed anyway, so no future writer of
+ * the column could put a path in a response.
  *
  * The activity metadata records **which** document was generated and for whom, never the assembled
  * `generation_payload`: that payload carries a student's date of birth and guardian's name, and an
@@ -16,7 +16,7 @@ const service = require('./documents.service');
 const ApiResponse = require('../../utils/ApiResponse');
 const { getPagination } = require('../../utils/pagination');
 const { describeActivity } = require('../../middlewares/activityLog');
-const db = require('../../models');
+const { schoolBrand } = require('../../utils/schoolScope');
 const { REPORT_FORMATS } = require('../../config/constants');
 
 async function list(req, res) {
@@ -41,8 +41,15 @@ async function show(req, res) {
    * no file on disk, and persisting a document is a separate decision from rendering one.
    */
   if (req.query.format === REPORT_FORMATS.PDF) {
-    const school = row.school_id ? await db.School.findByPk(row.school_id, { attributes: ['name'] }) : null;
-    const buffer = await service.toPdf(row, { schoolName: school ? school.name : undefined });
+    /*
+     * Headed with the name the payload snapshotted — the school's display name when it was issued
+     * (D35) — rather than today's platform record, for the reason above. A document generated before
+     * the snapshot carried one falls back to the school's current name.
+     */
+    const payload = row.generation_payload || {};
+    const snapped = payload.school && payload.school.name;
+    const brand = snapped ? null : await schoolBrand(row.school_id);
+    const buffer = await service.toPdf(row, { schoolName: snapped || (brand ? brand.name : undefined) });
     describeActivity(req, {
       entityId: row.id,
       description: `Exported ${row.document_type} as PDF`,
@@ -77,4 +84,13 @@ async function generate(req, res) {
   return ApiResponse.created(res, { document: service.present(row) }, { message: 'Document generated' });
 }
 
-module.exports = { list, show, generate };
+/** GET /pickers/teachers and /pickers/exams — D34's pick-lists for the generate dialog. */
+async function pickTeachers(req, res) {
+  return ApiResponse.ok(res, { teachers: await service.pickTeachers(req, req.query) });
+}
+
+async function pickExams(req, res) {
+  return ApiResponse.ok(res, { exams: await service.pickExams(req, req.query) });
+}
+
+module.exports = { list, show, generate, pickTeachers, pickExams, PDF_MIME };

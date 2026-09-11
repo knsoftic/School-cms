@@ -11,6 +11,10 @@
  * that is copying four reasons it is written the way it is, and the copy is where they drift apart.
  *
  * The reasoning below is the create screen's, moved here with the code it explains.
+ *
+ * `useCurriculum` at the end is the one reader that is not a timetable list: the subjects a chosen class
+ * and section teach, which homework and assignments narrow their subject pickers to (D30). It hangs off
+ * the same class choice and reuses the same `Picker` states, so it sits with them.
  */
 
 import { useEffect, useState } from 'react';
@@ -24,13 +28,19 @@ export const OPTION_LIMIT = 100;
  * A class as `GET /classes` returns it.
  *
  * `classes.controller.js` has no `present()` — it hands `ApiResponse.paginated` the Sequelize rows
- * whole — so the row carries every column of the model; only the four these pickers read are
+ * whole — so the row carries every column of the model; only the five these pickers read are
  * declared.
  */
 export interface ClassOption {
   id: number;
   name: string;
   code: string | null;
+  /**
+   * The session the class belongs to. A class is unique per `(school, session, name)`, so "Grade 5"
+   * exists once a year and this is what tells two of them apart — see `sessionNames`. Nullable on the
+   * column even though `classes.create` requires it: the foreign key is `SET NULL` on session delete.
+   */
+  academic_session_id: number | null;
   is_active: boolean;
 }
 
@@ -85,6 +95,18 @@ export function dayLabel(day: string): string {
   return day.charAt(0).toUpperCase() + day.slice(1);
 }
 
+/**
+ * Session names by id, for the label that tells two same-named classes apart.
+ *
+ * `students/new` and `homework/new` already label each class option with its session this way; this
+ * is the same map for the screens that load their sessions through a `Picker`. Empty until the list
+ * is ready, and for a caller who cannot read it (`GET /sessions` needs `sessions.view`, which a
+ * teacher does not hold) — so an option falls back to the bare class name rather than to an id.
+ */
+export function sessionNames(sessions: Picker<SessionOption>): Map<number, string> {
+  return new Map(sessions.state === 'ready' ? sessions.rows.map((row) => [row.id, row.name]) : []);
+}
+
 export interface TimetablePickers {
   classes: Picker<ClassOption>;
   sections: Picker<SectionOption>;
@@ -104,8 +126,13 @@ export interface TimetablePickers {
  *
  * None of the calls sends `school_id`. `tenantWhere(req.tenant, …)` already pins every query to the
  * caller's school, and naming one here is how a request ends up `CROSS_SCHOOL_ACCESS`.
+ *
+ * Exported for a screen that needs one of these lists and not the other four — the classes list
+ * wants teachers and sessions, the assignment form wants subjects — so it gets the same four states
+ * without a fifth copy of the fetch. A picker that is never `enabled` stays `loading`; a caller that
+ * gates on a permission reads that as "not offered", not as a spinner.
  */
-function useList<T>(path: string, enabled: boolean): Picker<T> {
+export function useList<T>(path: string, enabled: boolean): Picker<T> {
   const [picker, setPicker] = useState<Picker<T>>({ state: 'loading' });
 
   useEffect(() => {
@@ -209,18 +236,23 @@ export function useClassSections(
   const [sections, setSections] = useState<Picker<SectionOption>>(NO_SECTIONS);
 
   /*
-   * Sections hang off the chosen class, so this effect is keyed on it.
+   * Sections hang off the chosen class, so this effect is keyed on it — and on `enabled`, which gates
+   * this fetch exactly as it gates the class list. A caller that is not enabled is given the settled
+   * empty list a caller with no class chosen is given, and nothing is requested for them.
    *
    * `GET /classes/:id/sections` is deliberately not a page — `listSections` answers
    * `{ sections: rows }` ordered by name, with no pagination to read — so there is no `total` to
    * compare and nothing here can be truncated.
    *
-   * It needs `classes.view`, the same grant as the class list, so a failure here is almost never a
-   * permission problem: by the time a class can be chosen, the grant has already been proved. What
-   * it does catch is a class deleted between the two calls, which is why the branch still exists.
+   * It needs `classes.view`, the same grant as the class list, and a failure here can be exactly that.
+   * A class id does not only arrive by being picked from the list: `students/[id]` opens on the class
+   * the record already names, and the Accountant and the Librarian read that record without holding
+   * `classes.view`. That is what `enabled` is for — a caller who cannot read classes passes false and
+   * is not sent to be refused. The failed branch still catches a class deleted between the two calls,
+   * and a caller that asked anyway.
    */
   useEffect(() => {
-    if (!classId) {
+    if (!classId || !enabled) {
       setSections(NO_SECTIONS);
       return;
     }
@@ -241,9 +273,69 @@ export function useClassSections(
     return () => {
       cancelled = true;
     };
-  }, [classId]);
+  }, [classId, enabled]);
 
   return { classes, sections };
+}
+
+/** The curriculum before a class is chosen: settled, and empty. */
+const NO_SUBJECTS: Picker<SubjectOption> = { state: 'ready', rows: [], total: 0 };
+
+/**
+ * The subjects one class teaches, for work set for the whole class or for one of its sections — the
+ * owner's decision D30.
+ *
+ * Homework and assignments refuse a subject that is not on the chosen class's curriculum
+ * (`homework.service.assertOnCurriculum()`, shared by `assignments.service`): an active `class_subjects`
+ * row of that class, whole-class or — when a section is named — that section's. `GET /subjects?class_id=`
+ * (with `section_id=` to narrow) answers exactly that set, by the same rule, so this is one read per
+ * class and section chosen. It needs `subjects.view`, the grant the subject list itself needs.
+ *
+ * This used to ask `GET /subjects/:id/classes` once for every subject in the school and fold the answers
+ * together — capped at fifty subjects, past which the pickers offered every subject and let the server
+ * refuse — because no read listed a class's subjects. The class filter is that read, so neither the
+ * cap nor the fallback is left.
+ *
+ * `total` is the server's count, so a curriculum longer than one page (`OPTION_LIMIT`) can say so.
+ * While the next class's read is in flight the answer is `loading`, never the previous class's subjects.
+ *
+ * @param classId    the chosen class, as the form holds it. `''` before one is chosen.
+ * @param sectionId  the chosen section, `''` for the whole class
+ * @param enabled    false for a caller who is about to be refused, or while the form is closed
+ */
+export function useCurriculum(classId: string, sectionId: string, enabled: boolean): Picker<SubjectOption> {
+  const key = enabled && classId ? `${classId}:${sectionId}` : '';
+  const [settled, setSettled] = useState<{ key: string; result: Picker<SubjectOption> } | null>(null);
+
+  useEffect(() => {
+    if (!key) return;
+    const [klass, section] = key.split(':');
+    let cancelled = false;
+
+    (async () => {
+      try {
+        /* `section_id` only beside a class, which the key guarantees: alone it is a 422. */
+        const page = await api.page<SubjectOption[]>('/subjects', {
+          query: { class_id: klass, section_id: section || undefined, limit: OPTION_LIMIT },
+        });
+        const rows = page.data ?? [];
+        if (!cancelled) {
+          setSettled({ key, result: { state: 'ready', rows, total: page.meta?.total ?? rows.length } });
+        }
+      } catch {
+        /* Which refusal it was does not change the remedy; each screen states its own. */
+        if (!cancelled) setSettled({ key, result: { state: 'failed' } });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+
+  if (!enabled) return { state: 'loading' };
+  if (!classId) return NO_SUBJECTS;
+  return settled && settled.key === key ? settled.result : { state: 'loading' };
 }
 
 /**

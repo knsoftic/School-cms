@@ -130,6 +130,8 @@ export interface SubscriptionDetail {
   billing_cycle: string;
   cycle_days: number | null;
   currency: string;
+  /** §10.4's model, copied from the price row by `pricingColumns()` — see `isCountedModel()`. */
+  pricing_model: string;
   cycle_amount: number | string;
   quantity: number;
   credit_balance: number | string;
@@ -285,6 +287,19 @@ export function useSubscriptionDetail(id: string | null): SubscriptionScope {
 }
 
 /* ───────────────────────────── shared formatting ───────────────────────────── */
+
+/**
+ * Whether a pricing model bills the school's live active-student count — owner decision D26.
+ *
+ * `COUNTED_MODELS` in `subscriptions.service.js`: Per-Student and Student-Based. For these the
+ * subscription's `quantity` is not typed by anyone. `billedQuantity()` counts the school's active
+ * students when the subscription is created or changes plan, and `renew()` counts them again at every
+ * renewal; `update()` refuses a typed change with `SUBSCRIPTION_QUANTITY_COUNTED`, and a plan change
+ * onto one of these ignores a typed quantity. Seat-Based is the one unit model still typed.
+ */
+export function isCountedModel(pricingModel: string | null | undefined): boolean {
+  return pricingModel === 'per_student' || pricingModel === 'student_based';
+}
 
 /** `pending` → `Pending`, `next_billing_cycle` → `Next billing cycle`. */
 export function humanise(value: string): string {

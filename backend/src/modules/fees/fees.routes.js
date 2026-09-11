@@ -25,9 +25,9 @@
  * rediscovered, and the suite asserts the receptionist's shape — `collect` **but not** `manage` — since
  * that is the one place the two lists genuinely differ.
  *
- * `fees.self.view` has **no endpoint**. §17 names no self-service view; `students.self.view` and
- * `attendance.self.view` were left the same way in §15 and §16, for the same reason. Recorded, not
- * quietly mounted.
+ * `fees.self.view` is mounted on `GET /mine` — the owner's decision D17, with `students.self.view` and
+ * `attendance.self.view` beside it in their own routers. It had no endpoint while §17 was read as
+ * naming no self-service view; SRS:105 and SRS:835 settled it once D17 was decided.
  *
  * ## Why `/assignments` exists
  *
@@ -72,6 +72,17 @@ const { schemas } = require('./fees.validation');
 const router = createRouter();
 
 router.use(requireModule(MODULES.FEES));
+
+/*
+ * The owner's decision D17 — a student's own fees, or each linked child's for a parent, on
+ * `fees.self.view` ("View own / child fees"), which the catalogue granted both and nothing mounted.
+ */
+router.get(
+  '/mine',
+  requirePermission('fees.self.view'),
+  validate({ query: schemas.mine }),
+  asyncHandler(controller.mine)
+);
 
 /* ── FR-FEE-001 ── */
 

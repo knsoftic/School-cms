@@ -51,10 +51,12 @@
  * disagree. The edge is chosen from the subscription's current state:
  *
  *  - `pending` or `trial`            → `activate`    (the first payment brings a new school online)
- *  - `suspended`/`expired`/`cancelled` → `reactivate` (paying off arrears revives a stopped subscription)
- *  - anything else                   → left alone    (already usable, or `paused`/`past_due`, which §12's
- *                                                     own sweep and the renewal path resolve — inventing
- *                                                     a `past_due → active` edge here would be §12's work)
+ *  - `past_due` or `grace_period`    → `settleArrears()` — back to Active once nothing is overdue and the
+ *                                      period is still running (the owner's decision D23)
+ *  - `expired`                       → `reactivate` (paying off arrears revives a lapsed subscription)
+ *  - anything else                   → left alone    (already usable, `paused`, or `suspended`/`cancelled`:
+ *                                                     D23 decided paying old debts never revives a
+ *                                                     subscription an administrator stopped)
  *
  * `transition()` runs its **own** transaction, so it is called only *after* the payment transaction has
  * committed. The money is recorded whether or not the lifecycle edge is valid: a race that makes the
@@ -123,15 +125,13 @@ const RECEIVED_STATUSES = Object.freeze([
 const GATEWAY_METHOD = PAYMENT_METHODS.ONLINE_GATEWAY;
 
 /**
- * Subscription states from which an approved, invoice-settling payment activates the subscription.
- * `reactivate` covers the rest of the stopped states; everything else is left to §12.
+ * Subscription states from which an approved, invoice-settling payment moves the subscription — see the
+ * header. `reactivate` is for a subscription that lapsed; one an administrator suspended or cancelled
+ * stays stopped whatever is paid (D23), because paying a debt is not a decision to resume service.
  */
 const ACTIVATE_FROM = Object.freeze([SUBSCRIPTION_STATES.PENDING, SUBSCRIPTION_STATES.TRIAL]);
-const REACTIVATE_FROM = Object.freeze([
-  SUBSCRIPTION_STATES.SUSPENDED,
-  SUBSCRIPTION_STATES.EXPIRED,
-  SUBSCRIPTION_STATES.CANCELLED,
-]);
+const SETTLE_FROM = Object.freeze([SUBSCRIPTION_STATES.PAST_DUE, SUBSCRIPTION_STATES.GRACE_PERIOD]);
+const REACTIVATE_FROM = Object.freeze([SUBSCRIPTION_STATES.EXPIRED]);
 
 /* ─────────────────────────────── Reads ─────────────────────────────── */
 
@@ -167,7 +167,18 @@ function detailInclude() {
 async function list(tenant, query, pagination, req) {
   const where = tenantWhere(tenant, {});
 
-  if (query.school_id) where.school_id = query.school_id;
+  /*
+   * A `school_id` filter narrows; it never widens a scope already pinned to a school. Assigning it over
+   * `tenantWhere()`'s result let the query name any school, with only the tenant middleware's own check
+   * standing between a school caller and another school's payments — and since the owner's decision D27
+   * school leadership holds `payments.view`. The service refuses it too, as `users.service.list()` does.
+   */
+  if (query.school_id) {
+    if (tenant && tenant.schoolId && Number(query.school_id) !== Number(tenant.schoolId)) {
+      throw ApiError.forbidden('That school is not yours', { code: 'CROSS_TENANT_ACCESS_DENIED' });
+    }
+    where.school_id = query.school_id;
+  }
   if (query.invoice_id) where.invoice_id = query.invoice_id;
   if (query.subscription_id) where.subscription_id = query.subscription_id;
   if (query.status) where.status = query.status;
@@ -460,6 +471,10 @@ async function transitionAfterSettlement(req, subscriptionId, reason) {
   const subscription = await db.Subscription.findByPk(subscriptionId);
   if (!subscription) return null;
 
+  if (SETTLE_FROM.includes(subscription.state)) {
+    return subscriptionsService.settleArrears(req, subscriptionId);
+  }
+
   let action = null;
   if (ACTIVATE_FROM.includes(subscription.state)) action = 'activate';
   else if (REACTIVATE_FROM.includes(subscription.state)) action = 'reactivate';
@@ -481,6 +496,29 @@ async function transitionAfterSettlement(req, subscriptionId, reason) {
     });
     return null;
   }
+}
+
+/**
+ * The currency a payment against `invoice` is in: the invoice's, and a different one is refused.
+ *
+ * The schemas accept a `currency` and the payment row stored whatever was sent — while settling adds
+ * approved amounts to the invoice's `amount_paid` as they are, with no conversion anywhere. An approved
+ * 100 GBP payment therefore counted as 100 against a USD invoice, and only a reviewer who happened to
+ * notice stood in the way. Refused rather than converted: there is no exchange rate in this system to
+ * convert with, and a school paying in another currency is a conversation, not a row.
+ *
+ * @param {{currency?: string}} spec
+ * @param {object} invoice
+ * @returns {string}
+ */
+function currencyFor(spec, invoice) {
+  if (spec.currency && spec.currency !== invoice.currency) {
+    throw new ApiError(422, `This invoice is in ${invoice.currency}; a payment against it must be too`, {
+      code: 'PAYMENT_CURRENCY_MISMATCH',
+      details: { invoice_currency: invoice.currency, currency: spec.currency },
+    });
+  }
+  return invoice.currency;
 }
 
 /* ────────────────── FR-BILL-003 — School submits a payment ────────────────── */
@@ -531,6 +569,7 @@ async function submit(req, spec) {
       () =>
         db.sequelize.transaction(async (transaction) => {
           const invoice = await loadInvoiceForPayment(tenant, spec.invoice_id, transaction);
+          const currency = currencyFor(spec, invoice);
 
           /*
            * A wallet payment the balance cannot cover is refused now rather than left pending for a
@@ -539,7 +578,7 @@ async function submit(req, spec) {
            */
           if (spec.method === PAYMENT_METHODS.WALLET) {
             const wallet = await lockWallet(invoice.subscription_id, transaction);
-            assertWalletCovers(wallet, spec.amount, spec.currency || invoice.currency);
+            assertWalletCovers(wallet, spec.amount, currency);
           }
 
           return createPaymentRow(
@@ -549,7 +588,7 @@ async function submit(req, spec) {
               invoice_id: invoice.id,
               subscription_id: invoice.subscription_id,
               method: spec.method,
-              currency: spec.currency || invoice.currency,
+              currency,
               amount: money.round(spec.amount),
               status: PAYMENT_STATUS.PENDING,
               transaction_id: spec.transaction_id || null,
@@ -610,7 +649,7 @@ async function record(req, spec) {
       db.sequelize.transaction(async (transaction) => {
         const invoice = await loadInvoiceForPayment(tenant, spec.invoice_id, transaction);
         const amount = money.round(spec.amount);
-        const currency = spec.currency || invoice.currency;
+        const currency = currencyFor(spec, invoice);
 
         const payment = await createPaymentRow(
           {
@@ -662,10 +701,16 @@ async function record(req, spec) {
           return { paymentId: payment.id, subscriptionId: invoice.subscription_id, settlement, gatewayFailed: false };
         }
 
+        /*
+         * The decline goes in both notes: `review_note` is the platform's and is withheld from schools
+         * (`payments.controller.present()`), so the school is told why its charge failed through
+         * `rejection_reason`, the one it is meant to read.
+         */
         payment.set({
           status: PAYMENT_STATUS.FAILED,
           gateway_key: gatewayKey,
           review_note: result.errorMessage || 'Gateway charge failed',
+          rejection_reason: result.errorMessage || 'Gateway charge failed',
         });
         await payment.save({ transaction });
         return { paymentId: payment.id, subscriptionId: null, settlement: null, gatewayFailed: true };

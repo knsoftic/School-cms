@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * File upload middleware — SRS §24 "File Upload security" (FR-SEC-004) and §11.2 `file_upload_limit`.
+ * File upload middleware — SRS §24 "File Upload security" (FR-SEC-004) and §11.2 `file_upload_limit`
+ * and `storage_limit` (the latter in `verifyStorage()`).
  *
  * ## What the SRS actually specifies
  *
@@ -62,6 +63,7 @@ const multer = require('multer');
 const { MulterError } = multer;
 
 const ApiError = require('../utils/ApiError');
+const { annotate } = require('../utils/routeMeta');
 const asyncHandler = require('./asyncHandler');
 const config = require('../config/env');
 const logger = require('../config/logger');
@@ -463,6 +465,102 @@ function verifyUploadedSize() {
 }
 
 /**
+ * SRS §11.2's Storage Limit, tracked and enforced on every upload.
+ *
+ * `storage_limit` is one of the eight per-plan limits and FR-SUB-008 has the system track usage
+ * against each configured limit and block at a Fixed one (SRS:517-518) — but no upload recorded what it
+ * stored and no route checked the allowance, so the limit counted nothing and the Extra Storage add-on
+ * raised an allowance nothing drew on. This is the one place every upload passes, so it is where both
+ * halves live rather than in six services.
+ *
+ * The request's files together, in whole megabytes **rounded up** (the limit's unit is the megabyte,
+ * and `usage_records.used_value` is an integer): rounding down would let a school of small files store
+ * without limit, and rounding up can only ever over-count by less than a megabyte a request.
+ *
+ * Charged through `usageService.reserveUsage()`, after multer and against the real byte count: one
+ * conditional `UPDATE`, so two uploads racing for the last megabyte cannot both be let through, and a
+ * refusal deletes what multer wrote. Measured over HTTP with eight parallel uploads against 1 MB: a
+ * check followed by a separate write admitted all eight and left the counter at 8; this admits one. A request that then fails — a validator, a missing student, a
+ * failed insert, a client that hung up — is refunded with `releaseUsage()`, so a school is charged for
+ * exactly the files it kept. Nothing in this application deletes a stored file after a successful
+ * upload (a replaced photo or attachment stays on disk; see `students.setPhoto`), so nothing else ever
+ * gives storage back. Generated documents store no bytes and are not charged (`documents.service`).
+ *
+ * Skipped for a platform caller (no school), and on a billing surface (`allowInactiveSubscription`):
+ * §13.3's payment screenshot is how a school pays — for Extra Storage among everything else — so a school
+ * at its storage cap must still be able to send one, the same deadlock `resolveUploadContext` avoids.
+ *
+ * @param {{allowInactiveSubscription?: boolean}} [options]
+ * @returns {import('express').RequestHandler}
+ */
+function verifyStorage(options = {}) {
+  const billingSurface = Boolean(options.allowInactiveSubscription);
+
+  return asyncHandler(async (req, res, next) => {
+    const files = uploadedFiles(req);
+    if (!files.length || req.tenant.isPlatform || billingSurface) return next();
+
+    const bytes = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+    const megabytes = Math.max(1, Math.ceil(bytes / MEGABYTE));
+    const schoolId = req.upload.schoolId;
+
+    try {
+      await usageService.reserveUsage(schoolId, LIMITS.STORAGE_LIMIT, megabytes);
+    } catch (err) {
+      await cleanupUploads(req);
+      throw err;
+    }
+
+    let settled = false;
+    const refund = () => {
+      if (settled) return;
+      settled = true;
+      usageService.releaseUsage(schoolId, LIMITS.STORAGE_LIMIT, megabytes).catch((err) => {
+        logger.error('An upload failed but its storage reservation could not be refunded', {
+          requestId: req.id,
+          schoolId,
+          megabytes,
+          error: err.message,
+        });
+      });
+    };
+    res.on('finish', () => {
+      if (res.statusCode >= 400) refund();
+      else settled = true;
+    });
+    /* `close` without `finish` is a response that never completed — the client went away. */
+    res.on('close', () => {
+      if (!res.writableFinished) refund();
+    });
+    return next();
+  });
+}
+
+/**
+ * Hang the upload's shape on the first link of the chain, for §28's "Request Body".
+ *
+ * An upload route's body is `multipart/form-data`, not the JSON its `validate({ body })` schema would
+ * otherwise be documented as — the schema describes only the text fields multer parses beside the
+ * file. The field name, how many files, and which types are the arguments this chain was built from,
+ * so they are recorded here rather than restated in a route comment. See utils/routeMeta.js.
+ *
+ * @param {Function} handler  `resolveUploadContext(...)`
+ * @param {{profile: string, rule: object, field: string, maxCount: number, options: object}} spec
+ * @returns {Function} `handler`
+ */
+function documentUpload(handler, { profile, rule, field, maxCount, options }) {
+  return annotate(handler, {
+    upload: {
+      profile,
+      field,
+      maxCount,
+      mimeTypes: [...rule.mimeTypes],
+      billingSurface: Boolean(options && options.allowInactiveSubscription),
+    },
+  });
+}
+
+/**
  * Accept one file on `field`.
  *
  * @param {string} profile  a value from `constants.UPLOAD_PROFILES`
@@ -478,7 +576,7 @@ function uploadSingle(profile, field, options = {}) {
   }
 
   return [
-    resolveUploadContext(profile, rule, options),
+    documentUpload(resolveUploadContext(profile, rule, options), { profile, rule, field, maxCount: 1, options }),
     runMulter((req, res, cb) => {
       multer({
         storage,
@@ -488,6 +586,7 @@ function uploadSingle(profile, field, options = {}) {
     }),
     sanitizeParsedBody,
     verifyUploadedSize(),
+    verifyStorage(options),
   ];
 }
 
@@ -516,7 +615,7 @@ function uploadArray(profile, field, maxCount, options = {}) {
   }
 
   return [
-    resolveUploadContext(profile, rule, options),
+    documentUpload(resolveUploadContext(profile, rule, options), { profile, rule, field, maxCount: count, options }),
     runMulter((req, res, cb) => {
       multer({
         storage,
@@ -526,6 +625,7 @@ function uploadArray(profile, field, maxCount, options = {}) {
     }),
     sanitizeParsedBody,
     verifyUploadedSize(),
+    verifyStorage(options),
   ];
 }
 

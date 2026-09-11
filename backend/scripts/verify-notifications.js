@@ -691,7 +691,7 @@ async function verifyHttp() {
     check('the sweep reports one pass per §23 type group, in order',
       Object.keys(report).filter((k) => k !== 'at' && k !== 'failed'),
       ['homework', 'examAnnouncements', 'results', 'resultsForTeachers', 'attendanceAlerts',
-        'feeReminders', 'feePaid', 'subscriptionExpiry', 'payments']);
+        'feeReminders', 'invoiceReminders', 'feePaid', 'subscriptionExpiry', 'payments']);
     check('  and nothing failed', report.failed, []);
 
     check('each pass notified exactly its candidates and left its negatives alone',
@@ -1133,6 +1133,99 @@ async function verifyHttp() {
     check('  and unread=true is narrower than the whole inbox',
       (dataOf(await call('/notifications?unread=true', { token: studentToken })) || []).length,
       (dataOf(studentInbox) || []).length);
+
+    /*
+     * ── a row nobody can be told about must not hold the pass either ──
+     *
+     * Result Published (both halves) and Fee Paid used to return `false` for a row with no reachable
+     * recipient and write nothing, so the row stayed a candidate. Candidates are taken oldest first
+     * across every school, `SWEEP_LIMIT` at a time, so once that many sat at the head of the queue every
+     * later run fetched the same ones and the pass stopped for the whole platform. `limit: 1`
+     * reproduces it with one row: an older one about a student with no login and no guardian, and a
+     * newer one about a student who can be told. Placed after the inbox checks above, which count
+     * exactly what the earlier sweeps wrote.
+     */
+    const toldAbout = async (type, referenceType, id) => (await db.Notification.findAll({
+      where: { type, reference_type: referenceType, reference_id: id, channel: NOTIFICATION_CHANNELS.IN_APP },
+    })).map((r) => r.user_id);
+    const mkReceipt = (student, key) => db.FeePayment.create({
+      school_id: schoolA.id, organization_id: org.id, student_fee_id: feePaid.id,
+      student_id: student.id, receipt_number: `${CODE_PREFIX}${key}`, currency: 'USD',
+      amount: 10, method: 'cash', paid_at: at, collected_by: accountantU.id,
+    });
+    const unreachableResult = await mkResult(leftStudent, true, 55);
+    const unreachableReceipt = await mkReceipt(leftStudent, 'RCP-UNREACH');
+    const reachableResult = await mkResult(student3, true, 72);
+    const reachableReceipt = await mkReceipt(student3, 'RCP-REACH');
+
+    const headOfQueue = await service.runNotificationSweep({ at, only: ['results', 'feePaid'], limit: 1 });
+    check('a result and a receipt nobody can be told about do not hold their passes: a sweep of ONE '
+      + 'passes over each to the newer row that has an audience',
+      [headOfQueue.results, headOfQueue.feePaid,
+        (await toldAbout(NOTIFICATION_TYPES.RESULT_PUBLISHED, 'result', reachableResult.id)).includes(studentU3.id),
+        (await toldAbout(NOTIFICATION_TYPES.FEE_PAID, 'fee_payment', reachableReceipt.id)).includes(studentU3.id)],
+      [1, 1, true, true]);
+    check('  and nothing is written for the unreachable pair',
+      [(await toldAbout(NOTIFICATION_TYPES.RESULT_PUBLISHED, 'result', unreachableResult.id)).length,
+        (await toldAbout(NOTIFICATION_TYPES.FEE_PAID, 'fee_payment', unreachableReceipt.id)).length],
+      [0, 0]);
+
+    /* Not lost, only deferred: once someone can be told, the same rows are candidates again. */
+    await db.ParentStudent.create({
+      school_id: schoolA.id, parent_id: parent2.id, student_id: leftStudent.id,
+      relation: 'father', is_primary_guardian: true,
+    });
+    const afterLink = await service.runNotificationSweep({ at, only: ['results', 'feePaid'], limit: 1 });
+    check('  and once a guardian is linked, each is a candidate again and the guardian is told',
+      [afterLink.results, afterLink.feePaid,
+        await toldAbout(NOTIFICATION_TYPES.RESULT_PUBLISHED, 'result', unreachableResult.id),
+        await toldAbout(NOTIFICATION_TYPES.FEE_PAID, 'fee_payment', unreachableReceipt.id)],
+      [1, 1, [parent2U.id], [parent2U.id]]);
+
+    /* The teachers' half: an exam in a class nobody teaches, then one in the class teacher's own class. */
+    const mkExamWithResult = async (name, cls, student) => {
+      const exam = await db.Exam.create({
+        school_id: schoolA.id, organization_id: org.id, academic_session_id: session.id,
+        name, exam_type: 'quiz', class_id: cls.id,
+        start_date: '2026-06-01', end_date: '2026-06-02', status: EXAM_STATUS.PUBLISHED,
+      });
+      await db.Result.create({
+        school_id: schoolA.id, organization_id: org.id, academic_session_id: session.id,
+        exam_id: exam.id, student_id: student.id, class_id: cls.id,
+        total_full_marks: 100, total_marks_obtained: 60, percentage: 60, grade_name: 'B', outcome: 'pass',
+        subjects_count: 1, subjects_failed: 0, is_published: true, published_at: at,
+      });
+      return exam;
+    };
+    const untaughtExam = await mkExamWithResult('Untaught Exam', other, outsider);
+    const taughtExam = await mkExamWithResult('Taught Exam', grade, student3);
+    const teacherPass = await service.runNotificationSweep({ at, only: ['resultsForTeachers'], limit: 1 });
+    /*
+     * D28 — §23's Fee Reminder reaches a school's subscription invoice too, sent to its billing roles.
+     * `invoices.reminderCandidates()` and `markReminderSent()` were written for this and had no caller.
+     * One invoice due inside the seven-day window, one outside it.
+     */
+    const mkInvoice = (key, dueInDays) => db.Invoice.create({
+      invoice_number: `${CODE_PREFIX}INV-${key}`, school_id: schoolA.id, organization_id: org.id, currency: 'USD',
+      subtotal: 120, total: 120, amount_due: 120, status: 'unpaid',
+      issue_date: dates.toDateOnly(at), due_date: dates.toDateOnly(dates.addDays(at, dueInDays)),
+    });
+    const invoiceDueSoon = await mkInvoice('SOON', 3);
+    const invoiceDueLater = await mkInvoice('LATER', 30);
+    const invoiceRun = await service.runNotificationSweep({ at, only: ['invoiceReminders'] });
+    await Promise.all([invoiceDueSoon.reload(), invoiceDueLater.reload()]);
+    check('D28 — an invoice falling due is reminded to the school\'s billing roles, once, and one due later is not',
+      [invoiceRun.invoiceReminders,
+        (await toldAbout(NOTIFICATION_TYPES.FEE_REMINDER, 'invoice', invoiceDueSoon.id)).includes(principalA.id),
+        invoiceDueSoon.reminder_sent_at !== null, invoiceDueLater.reminder_sent_at,
+        (await service.runNotificationSweep({ at, only: ['invoiceReminders'] })).invoiceReminders],
+      [1, true, true, null, 0]);
+
+    check('an exam whose class has no teacher with a login does not hold the teachers\' pass either',
+      [teacherPass.resultsForTeachers,
+        await toldAbout(NOTIFICATION_TYPES.RESULT_PUBLISHED, 'exam', taughtExam.id),
+        (await toldAbout(NOTIFICATION_TYPES.RESULT_PUBLISHED, 'exam', untaughtExam.id)).length],
+      [1, [teacherU.id], 0]);
 
     /* ── teardown ── */
 

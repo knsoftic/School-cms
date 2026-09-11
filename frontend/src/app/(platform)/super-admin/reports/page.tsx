@@ -195,7 +195,8 @@ interface PlanRow {
 
 interface SubscriptionReport {
   type: string;
-  scope: { platform?: boolean; organization_id?: number };
+  /** What the figures were counted over — the platform, or the caller's organization (or school). */
+  scope: { platform?: boolean; organization_id?: number; school_id?: number };
   window: { from: string | null; to: string | null };
   total: number;
   by_state: Record<string, number>;
@@ -226,17 +227,24 @@ interface FlatRow {
  * question three consumers had agreed on.
  */
 /**
- * Leaf keys whose value is money, and the section that contains nothing else.
+ * Which figures are money, per report — keyed by the payload's own `type`, matched on `section:key`.
  *
  * There is no schema anywhere saying which of a report's figures are amounts and which are counts,
- * so this is named rather than inferred — and named narrowly, from the two reports that carry money.
- * The Fee report's amounts are `billed`, `collected` and `outstanding`; the Expense report delegates
- * to `finance.report()`, whose amounts are `income.total`, `expense.total`, `net_balance` and every
- * leaf under `by_category`. Everything else — `assignments`, `by_status`, headcounts — is a count and
- * must not be decorated with cents.
+ * so this is named rather than inferred — and named narrowly, from the two reports that carry money
+ * (`reports.service.js`). The Fee report's amounts are its top-level `billed`, `collected` and
+ * `outstanding`; the Expense report delegates to `finance.report()`, whose amounts are `income.total`,
+ * `expense.total`, every leaf under their `by_category`, and `net_balance`. Everything else in all
+ * seven — `assignments`, `by_status`, `results`, percentages — is a count or a rate.
+ *
+ * It used to be a list of leaf key names shared by every report, and `total` was on it for the Expense
+ * report's sake. The Student and Teacher reports have a top-level `total` too — a headcount — so a
+ * school of 120 students read "120.00". Naming the report as well as the key is what tells the two
+ * `total`s apart.
  */
-const MONEY_KEYS = new Set(['billed', 'collected', 'outstanding', 'total', 'net_balance']);
-const MONEY_SECTIONS = ['by_category'];
+const MONEY_FIGURES: Record<string, RegExp> = {
+  fee: /^summary:(billed|collected|outstanding)$/,
+  expense: /^(summary:net_balance|(income|expense):(total|by_category\..+))$/,
+};
 
 /**
  * Flatten a report into Section / Key / Value, the walk `toExcel()` and `toPdf()` already share.
@@ -255,11 +263,9 @@ const MONEY_SECTIONS = ['by_category'];
 function toRows(report: AnyReport): FlatRow[] {
   const rows: FlatRow[] = [];
 
-  const isMoney = (section: string, key: string) => {
-    const leaf = key.split('.').pop() ?? key;
-    if (MONEY_KEYS.has(leaf)) return true;
-    return MONEY_SECTIONS.some((name) => key.startsWith(`${name}.`) || section === name);
-  };
+  /* The payload names its own report — the same discriminator the Subscription branch reads. */
+  const money = typeof report.type === 'string' ? MONEY_FIGURES[report.type] : undefined;
+  const isMoney = (section: string, key: string) => (money ? money.test(`${section}:${key}`) : false);
 
   const push = (section: string, key: string, value: unknown) => {
     /*
@@ -776,9 +782,20 @@ export default function ReportsPage() {
             <EmptyNotice>No subscriptions exist yet, so there is nothing to report on.</EmptyNotice>
           ) : (
             <>
+              {/*
+                * Worded from the payload's `scope`: `subscriptions()` narrows to the caller's
+                * organization — an Organization Admin holds `reports.subscription.view` — so "across
+                * the platform" is true only when the scope says `platform`.
+                */}
               <p className="mb-3 text-sm">
                 <strong className="tabular-nums">{subscription.total}</strong> subscription
-                {subscription.total === 1 ? '' : 's'} across the platform.
+                {subscription.total === 1 ? '' : 's'}{' '}
+                {subscription.scope.platform
+                  ? 'across the platform'
+                  : subscription.scope.school_id
+                    ? 'for this school'
+                    : 'across this organization'}
+                .
               </p>
 
               <div className="mb-4 flex flex-wrap gap-2">

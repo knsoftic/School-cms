@@ -51,10 +51,10 @@ export default function SchoolDashboard() {
     /*
      * School settings and academic sessions — FR-SCHOOL-001 and FR-SCHOOL-002.
      *
-     * Reached from here rather than from the sidebar, deliberately. §33 fixes the School nav at
-     * seventeen entries and `verify-frontend.js` asserts that count in both directions, so an
-     * eighteenth would be this product adding a screen to a list the source defines. The two
-     * requirements are real and their routes now have a caller; the nav is not the place to say so.
+     * Reached from here rather than from the sidebar. The School nav is §33's seventeen plus the
+     * entries `verify-frontend.js` allow-lists, each with the source that puts it there — Reports
+     * (§22), Billing (D27) and Logs (§26) — and settings is not among them. The two requirements are
+     * real and their routes have a caller; nothing yet names the sidebar as the place for them.
      */
     { href: '/school/settings', label: 'School settings', permission: 'school.settings.view', module: null },
     /*
@@ -67,8 +67,24 @@ export default function SchoolDashboard() {
     { href: '/school/notifications', label: 'Notifications', permission: 'notifications.view', module: null },
     /* §21's workflow. Module-gated as well as permission-gated, like every other AI route. */
     { href: '/school/ai', label: 'AI questions', permission: 'ai.generate', module: 'ai' },
+    /*
+     * §22's six school reports, for the actors FR-REPORT-001 names (SRS:1190). §33's School list has
+     * no Reports entry, and the only report screen was the platform one, whose school picker needs
+     * `schools.view`, which no school role holds. §22 is the source the School nav now names it from
+     * too, so it is in the sidebar as well as here, on the same pair of keys. Each report inside is
+     * gated again on its route's second key; `reports.view` is only the door.
+     */
+    { href: '/school/reports', label: 'Reports', permission: 'reports.view', module: 'reports' },
+    /*
+     * The owner's decision D27 — the school's own subscription, invoices and payments. On the
+     * subscription read, and module-free: billing is how a school keeps its modules, so a school whose
+     * plan has lapsed must still be able to reach it. In the sidebar too, on the same keys — and on
+     * `invoices.self.view` as well, which is how an Accountant, who pays the invoices, reaches it.
+     */
+    { href: '/school/billing', label: 'Billing', permission: 'subscriptions.self.view', module: null, alsoPermission: 'invoices.self.view' },
   ].filter(
-    (item) => can(item.permission) && (item.module === null || hasModule(item.module))
+    (item) => (can(item.permission) || Boolean(item.alsoPermission && can(item.alsoPermission)))
+      && (item.module === null || hasModule(item.module))
   );
 
   return (

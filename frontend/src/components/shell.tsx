@@ -19,6 +19,23 @@
  *
  * A rail on the leading edge plus a surface change, not colour alone — the same reason a status is
  * never only red or only green. `aria-current="page"` carries it for anyone not looking.
+ *
+ * ## The school's own name, logo and currency — the owner's decision D35
+ *
+ * FR-SCHOOL-001's settings were stored and applied nowhere; D35 has the school's name, logo and
+ * currency "appear on its screens and documents". The shell is where every school screen is framed,
+ * so it shows two of them: the top bar and the drawer carry the school's name and logo in place of the
+ * product's. `useSchoolBrand()` offers the same three to any screen that prints one — the school
+ * invoice's School field reads the name through it.
+ *
+ * They come from the profile — `school` on `GET /auth/me`, `SchoolProfile` in `lib/auth.tsx`. The
+ * shell used to read `GET /school-settings`, which answers to `school.settings.view`, held by the
+ * Principal and the School Admin alone, so an Accountant, a Receptionist, a Teacher or a Parent saw the
+ * product's name over their own school's screens. `/auth/me` carries the name, logo and currency to
+ * every school role; a caller with no school in scope has `school: null` and keeps the product's name.
+ * The settings screen reloads the profile after a save, so a name or logo just changed there is the
+ * one shown next. `logo_path` is an absolute http(s) URL (`settings.validation.js brandingUrl()`),
+ * rendered as a plain `<img>`; one that fails to load leaves the name standing.
  */
 
 import Link from 'next/link';
@@ -35,6 +52,87 @@ import { useAuth } from '@/lib/auth';
 import { useEntitlements } from '@/lib/entitlements';
 import { visibleNav, landingRouteFor } from '@/lib/nav';
 import type { NavSection } from '@/lib/nav';
+
+/** Each portal's dashboard route: every other route of that portal starts with it. See `NavList`. */
+const DASHBOARD_ROOTS = new Set(['/school', '/super-admin', '/teacher', '/parent', '/student']);
+
+/* ─────────────────────────── the school's own settings — D35 ─────────────────────────── */
+
+/** The three §14.1 settings D35 applies. Each is null when there is nothing to apply. */
+export interface SchoolBrand {
+  name: string | null;
+  logoUrl: string | null;
+  currency: string | null;
+}
+
+/**
+ * The school's name, logo and currency, from the profile — see D35 in the header.
+ *
+ * All three are null for a caller with no school in scope, and the currency is null for a school that
+ * has never saved its settings too, so a consumer treats null as "keep this screen's own default" and
+ * never as a value.
+ */
+export function useSchoolBrand(): SchoolBrand {
+  const { profile } = useAuth();
+  const school = profile?.school ?? null;
+  const name = school?.name?.trim() || null;
+  const logoUrl = school?.logo_path || null;
+  const currency = school?.currency?.trim() || null;
+  return useMemo(() => ({ name, logoUrl, currency }), [name, logoUrl, currency]);
+}
+
+/** The product's own name — what the top bar shows when there is no school name to show. */
+function ProductMark({ tagline }: { tagline?: boolean }) {
+  return (
+    <span className="flex min-w-0 items-baseline gap-2">
+      <span className="font-display text-lg font-semibold tracking-tight text-ink">MSMS</span>
+      {tagline ? (
+        <span className="hidden text-2xs font-semibold uppercase tracking-[0.16em] text-muted-soft sm:inline">
+          Multi-School
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * The school's logo and name, falling back to the name when there is no logo or it will not load,
+ * and to the product's name when the school has neither.
+ *
+ * Keyed by the logo's URL where it is used, so a new logo gets a fresh attempt rather than inheriting
+ * the last one's failure.
+ */
+function SchoolMark({ brand, tagline }: { brand: SchoolBrand; tagline?: boolean }) {
+  const [logoFailed, setLogoFailed] = useState(false);
+  const logo = brand.logoUrl && !logoFailed ? brand.logoUrl : null;
+
+  if (!brand.name && !logo) return <ProductMark tagline={tagline} />;
+
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      {logo ? (
+        /*
+         * A plain `<img>`: the URL is whatever host the school's logo lives on, and `next/image` would
+         * need every such host allow-listed in `next.config.mjs` before it rendered anything.
+         */
+        // eslint-disable-next-line @next/next/no-img-element -- a URL the school set, on a host this app cannot know
+        <img
+          src={logo}
+          /* Decorative when the name is written beside it — otherwise a screen reader says it twice. */
+          alt={brand.name ? '' : 'School logo'}
+          referrerPolicy="no-referrer"
+          onError={() => setLogoFailed(true)}
+          className="h-7 w-auto max-w-[7rem] shrink-0 object-contain"
+        />
+      ) : null}
+      {brand.name ? (
+        <span className="truncate font-display text-lg font-semibold tracking-tight text-ink">
+          {brand.name}
+        </span>
+      ) : null}
+    </span>
+  );
+}
 
 function SubscriptionNotice() {
   const { entitlements, isUsable } = useEntitlements();
@@ -96,15 +194,18 @@ function NavList({
           <ul className="space-y-px">
             {section.items.map((item) => {
               /*
-               * A parent must not light up for its children's routes, or `/school/classes` would
-               * appear current while the user is on `/school/classes/sections`. The two dashboards
-               * are excluded from prefix matching entirely, since every route starts with them.
+               * An item is current on its own route and on every route below it, so `/school/exams`
+               * stays lit on `/school/exams/12`. That includes a child that is a nav item of its
+               * own: on `/school/classes/sections` both Classes and Sections are lit, and on
+               * `/super-admin/plans/modules` both Plans and Modules. The dashboards are the one
+               * exception, excluded from prefix matching entirely, since every route in their portal
+               * starts with them — the teacher, parent and student portals now have screens of their
+               * own below their dashboards, so "My children" lit up beside "Results" on
+               * `/parent/results`.
                */
               const current =
                 pathname === item.href ||
-                (item.href !== '/school' &&
-                  item.href !== '/super-admin' &&
-                  pathname.startsWith(`${item.href}/`));
+                (!DASHBOARD_ROOTS.has(item.href) && pathname.startsWith(`${item.href}/`));
 
               return (
                 <li key={item.href}>
@@ -196,6 +297,9 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
 
   const sections = useMemo(() => visibleNav(nav, can, hasModule), [nav, can, hasModule]);
 
+  /* D35 — the school's name and logo, from the profile. See the header. */
+  const brand = useSchoolBrand();
+
   const signOut = useCallback(() => {
     logout().then(() => router.replace('/login'));
   }, [logout, router]);
@@ -264,11 +368,8 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
             <span className="sr-only">Open navigation</span>
           </button>
 
-          <Link href={home} className="flex min-w-0 items-baseline gap-2">
-            <span className="font-display text-lg font-semibold tracking-tight text-ink">MSMS</span>
-            <span className="hidden text-2xs font-semibold uppercase tracking-[0.16em] text-muted-soft sm:inline">
-              Multi-School
-            </span>
+          <Link href={home} className="flex min-w-0">
+            <SchoolMark key={brand.logoUrl ?? ''} brand={brand} tagline />
           </Link>
 
           <div className="ml-auto flex items-center gap-2">
@@ -363,8 +464,8 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
               aria-label="Main navigation"
               className="animate-slide-in absolute inset-y-0 left-0 flex w-[17rem] max-w-[85vw] flex-col overflow-y-auto border-r border-border bg-surface-1 shadow-xl"
             >
-              <div className="flex h-14 items-center justify-between border-b border-border-soft px-4">
-                <span className="font-display text-lg font-semibold text-ink">MSMS</span>
+              <div className="flex h-14 items-center justify-between gap-2 border-b border-border-soft px-4">
+                <SchoolMark key={brand.logoUrl ?? ''} brand={brand} />
                 <button
                   type="button"
                   onClick={() => setDrawerOpen(false)}

@@ -3,27 +3,23 @@
 /**
  * Student portal — SRS §5, checklist row 4.7.
  *
- * ## The smallest surface in the product, and every reason for that is external
+ * ## What a student's grants reach
  *
  * §5 gives the Student one sentence: they are the "subject of admission, class/section assignment,
  * attendance, fee, examination, result, timetable, homework, assignment, and library records" and
- * have "access relevant to their own records within their school."
+ * have "access relevant to their own records within their school" (SRS:105). §33's MVP list names no
+ * student screen, so every screen here rests on a grant in the `student` block of `permissions.js`:
  *
- * That reads like a large portal. It is not one, because of three facts that are all recorded
- * elsewhere rather than decided here:
- *
- *   1. **§33's MVP list names no student screen.** It enumerates sixteen Super Admin screens and
- *      seventeen School screens. There is no student section.
- *   2. **Four self-service permissions exist with no route behind them.** `students.self.view`,
- *      `attendance.self.view` and `fees.self.view` are in §29's fixed 109-key catalogue and are
- *      mounted nowhere — `attendance.routes.js:27` and `fees.routes.js:28` each record the reason in
- *      their own header: the SRS section describes no self-service view, so the permission was left
- *      unmounted rather than given an endpoint nobody asked for.
- *   3. **`results.self.view` is the one that *is* mounted**, on `GET /exams/my-results`, because
- *      §19.3 does describe a student seeing their result.
- *
- * So this screen shows published results, and says plainly what it does not show. Building the rest
- * would mean inventing four endpoints and the requirements to justify them.
+ *   1. **Results** — `results.self.view` on `GET /exams/my-results`, because §19.3 describes a student
+ *      seeing their result. This page.
+ *   2. **Homework** — `homework.view` on `GET /homework`, which `homework.service.js` narrows to the
+ *      student's own class and to published rows. `student/homework`.
+ *   3. **Attendance, fees and the record** — `attendance.self.view`, `fees.self.view` and
+ *      `students.self.view`. All three sat in §29's catalogue with no route until the owner's decision
+ *      D17 mounted `GET /attendance/mine`, `GET /fees/mine` and `GET /students/mine`. This page used to
+ *      tell a student the school office held those records; it now links to them.
+ *   4. **Timetable** — `timetable.view` on `GET /timetable/class/:classId`, the student's class read
+ *      from their own record. `student/timetable`.
  *
  * ## Only published results, and that is the backend's rule
  *
@@ -36,6 +32,7 @@ import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
 import { useAuth } from '@/lib/auth';
+import { useEntitlements } from '@/lib/entitlements';
 import { useCollection } from '@/lib/useCollection';
 import {
   Column,
@@ -94,9 +91,24 @@ function figure(value: number, digits?: number) {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(parsed);
 }
 
+/**
+ * The student's other records, each gated exactly as its `STUDENT_NAV` entry is — the permission and
+ * the module its router requires — so a card never leads to a refusal the nav would have spared.
+ */
+const RECORDS = [
+  { href: '/student/attendance', label: 'Attendance', description: 'Your register for a day, a month or a year, with the percentage.', permission: 'attendance.self.view', module: 'attendance' },
+  { href: '/student/fees', label: 'Fees', description: 'What is charged, paid and still pending, with your receipts.', permission: 'fees.self.view', module: 'fees' },
+  { href: '/student/timetable', label: 'Timetable', description: 'Your class’s week, period by period.', permission: 'timetable.view', module: 'timetable' },
+  { href: '/student/homework', label: 'Homework', description: 'Homework published for your class, latest due date first.', permission: 'homework.view', module: 'homework' },
+  { href: '/student/record', label: 'My record', description: 'What your school holds on file about you.', permission: 'students.self.view', module: 'students' },
+];
+
 export default function StudentPortal() {
   const { profile, can } = useAuth();
+  const { hasModule } = useEntitlements();
   const [page, setPage] = useState(1);
+
+  const records = RECORDS.filter((item) => can(item.permission) && hasModule(item.module));
 
   const query = useMemo(() => ({ page, limit: 20 }), [page]);
   const { rows, meta, loading, error, refusal, reload } = useCollection<MyResult>('/exams/my-results', query);
@@ -175,8 +187,11 @@ export default function StudentPortal() {
            * The two screens a student acts on and could not reach from here: the inbox §23 addresses
            * them in, and the assignments they hand work in to (`assignments.submit`). Links rather than
            * nav entries, as the School surface links its own extra screens.
+           *
+           * Homework used to be a button here too. It is one of the student's own records, so it now
+           * sits with the others in "Your records" below, which is what the nav's Records section lists.
            */
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Link href="/student/notifications" className="btn btn-secondary">
               Notifications
             </Link>
@@ -208,14 +223,33 @@ export default function StudentPortal() {
         </>
       )}
 
+      {records.length > 0 ? (
+        <section className="mt-8">
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">Your records</h2>
+          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {records.map((item) => (
+              <li key={item.href}>
+                <Link
+                  href={item.href}
+                  className="surface block p-4 transition-transform duration-200 hover:-translate-y-0.5 hover:border-teal"
+                >
+                  <span className="font-semibold text-ink">{item.label}</span>
+                  <p className="mt-1 text-xs text-muted">{item.description}</p>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       {/*
-        * Stated once rather than left as an absence to infer. A student looking for their attendance
-        * or fees should find out here that this account does not carry them, instead of concluding
-        * the page is broken.
+        * This footnote used to say that attendance, fees and timetable records were "held by the
+        * school office". That was true while their permissions had no route; D17 mounted them and they
+        * are linked above. What is still worth saying is that those records are read-only, and who to
+        * ask when one is wrong.
         */}
       <p className="mt-4 text-xs text-muted-soft">
-        This account shows published exam results. Attendance, fees and timetable records are held by
-        the school office.
+        Your records are read-only. If something in them looks wrong, speak to the school office.
       </p>
     </div>
   );

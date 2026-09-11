@@ -25,8 +25,8 @@
  * FR-AI-002 counts requests against `ai_limit`, and §21's example is *"Plan: 1000 AI Requests — Usage:
  * 750 / 1000"*. If extract, analyze and generate each counted, a 1000-request plan would buy 333
  * question sets and the number on the invoice would mean something no one wrote down. So
- * **`generate()` is the metered call** and the only one, and the route is the only one carrying
- * `enforceLimit(LIMITS.AI_LIMIT)`.
+ * **`generate()` is the metered call** and the only one. Its route carries `enforceLimit(LIMITS.AI_LIMIT)`,
+ * and since the owner's decision D32 so do extract and analyze — checked at the cap, never counted.
  *
  * ### Where the increment sits, and why that is not a detail
  *

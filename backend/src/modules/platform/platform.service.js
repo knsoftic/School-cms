@@ -13,11 +13,11 @@
  * | Total Schools          | `COUNT(schools)`, all three statuses                                        |
  * | Active Schools         | `COUNT(schools WHERE status='active')`                                      |
  * | Suspended Schools      | `COUNT(schools WHERE status='suspended')`                                   |
- * | Total Students         | `COUNT(students)`, every `STUDENT_STATUS`                                   |
- * | Total Teachers         | `COUNT(teachers)`, active and inactive                                      |
- * | Active Subscriptions   | `COUNT(subscriptions WHERE state='active')`                                 |
- * | Expired Subscriptions  | `COUNT(subscriptions WHERE state='expired')`                                |
- * | Monthly Revenue        | `SUM(payments.amount WHERE status='approved')` in the current calendar month |
+ * | Total Students         | `COUNT(students)`, every `STUDENT_STATUS`, of schools not deleted (D33)     |
+ * | Total Teachers         | `COUNT(teachers)`, active and inactive, of schools not deleted              |
+ * | Active Subscriptions   | `COUNT(subscriptions WHERE state='active')`, of schools not deleted         |
+ * | Expired Subscriptions  | `COUNT(subscriptions WHERE state='expired')`, of schools not deleted        |
+ * | Monthly Revenue        | money received in the current calendar month, net of refunds, per currency  |
  * | Yearly Revenue         | the same, current calendar year                                             |
  * | Pending Payments       | `COUNT(payments WHERE status='pending')`                                     |
  *
@@ -42,6 +42,20 @@
  *    decision — the actionable reading, since the operator's next step is to go and review them. The
  *    total amount awaiting review is returned alongside it as `pendingPaymentsAmount`, so nothing is
  *    lost by the choice.
+ *
+ * ## Revenue: received, net of refunds, and never added across currencies
+ *
+ * Revenue is the money that arrived less what was given back — the rule `invoices.applyPayment()`
+ * settles an invoice by: `amount` over approved, partially refunded and refunded payments, minus their
+ * `refunded_amount`. It used to count `approved` alone, and any refund relabels a payment, so a payment
+ * of 1,000 with 10 refunded contributed nothing rather than 990.
+ *
+ * And it is summed **per currency**. Plan prices accept any ISO code and payments carry their own, so
+ * one total over every payment added USD to PKR and presented the sum as a figure. The per-currency
+ * lines are returned as `revenueByCurrency`; `monthlyRevenue`, `yearlyRevenue` and
+ * `pendingPaymentsAmount` are that one total when every payment is in one currency (0 when there are
+ * none) and **null** when currencies mix, because no single figure exists then without an exchange rate
+ * the SRS does not supply.
  *
  * ## Dating a payment
  *
@@ -81,6 +95,23 @@ const {
 const { tenantWhere } = db;
 
 /**
+ * Counted only while their school exists — the owner's decision D33.
+ *
+ * Deleting a school soft-deletes the school row alone (`schools.service.remove()`), so its students,
+ * teachers and still-running subscription stayed in Total Students, Total Teachers and Active
+ * Subscriptions after it had left Total Schools. `School` is paranoid, so an inner join on it drops
+ * exactly those rows; an archived or suspended school still exists and still counts.
+ */
+const OF_LIVE_SCHOOL = Object.freeze({ model: db.School, as: 'school', attributes: [], required: true });
+
+/** A payment whose money arrived, whether or not some of it was later given back. See the header. */
+const RECEIVED = Object.freeze([
+  PAYMENT_STATUS.APPROVED,
+  PAYMENT_STATUS.PARTIALLY_REFUNDED,
+  PAYMENT_STATUS.REFUNDED,
+]);
+
+/**
  * `WHERE` for a payment that counts as revenue in `[from, to]`.
  *
  * @param {object} base  the tenant-scoped fragment to extend
@@ -90,28 +121,47 @@ const { tenantWhere } = db;
 function revenueWhere(base, range) {
   return {
     ...base,
-    status: PAYMENT_STATUS.APPROVED,
+    status: { [Op.in]: RECEIVED },
     [Op.or]: [
       { paid_at: { [Op.between]: [range.from, range.to] } },
-      /* Approved but never stamped — dated by when it was recorded. See the header. */
+      /* Received but never stamped — dated by when it was recorded. See the header. */
       { paid_at: null, created_at: { [Op.between]: [range.from, range.to] } },
     ],
   };
 }
 
 /**
- * `SUM(amount)` as a number.
+ * `SUM(amount − refunded_amount)` per currency, as numbers, sorted by currency code.
  *
- * `Model.sum()` returns `null` for an empty set, and MariaDB hands DECIMAL back to mysql2 as a string,
- * so both are normalised here rather than at each of the two call sites. Rounded to the currency scale
- * `utils/money` works in, so a summed column cannot surface a floating-point tail.
+ * MariaDB hands DECIMAL back to mysql2 as a string and `SUM()` of an empty group is null, so both are
+ * normalised here. Rounded to the currency scale `utils/money` works in, so a summed column cannot
+ * surface a floating-point tail. A pending payment has no refund, so the same query serves it.
  *
  * @param {object} where
- * @returns {Promise<number>}
+ * @returns {Promise<Array<{currency: string, amount: number}>>}
  */
-async function sumPayments(where) {
-  const total = await db.Payment.sum('amount', { where });
-  return money.round(money.toNumber(total));
+async function sumPaymentsByCurrency(where) {
+  const rows = await db.Payment.findAll({
+    where,
+    attributes: [
+      'currency',
+      [db.sequelize.fn('SUM', db.sequelize.col('amount')), 'gross'],
+      [db.sequelize.fn('SUM', db.sequelize.col('refunded_amount')), 'refunded'],
+    ],
+    group: ['currency'],
+    order: [['currency', 'ASC']],
+    raw: true,
+  });
+  return rows.map((row) => ({
+    currency: row.currency,
+    amount: money.round(money.subtract(money.toNumber(row.gross), money.toNumber(row.refunded))),
+  }));
+}
+
+/** The one total when there is one currency, 0 when there is none, null when they mix. See the header. */
+function singleCurrencyTotal(lines) {
+  if (!lines.length) return 0;
+  return lines.length === 1 ? lines[0].amount : null;
 }
 
 /**
@@ -148,10 +198,10 @@ async function getDashboard(tenant, reference) {
     totalTeachers,
     activeSubscriptions,
     expiredSubscriptions,
-    monthlyRevenue,
-    yearlyRevenue,
+    monthlyByCurrency,
+    yearlyByCurrency,
     pendingPayments,
-    pendingPaymentsAmount,
+    pendingByCurrency,
   ] = await Promise.all([
     db.Organization.count({ where: organizationScope }),
     db.School.count({ where: schoolScope }),
@@ -160,15 +210,18 @@ async function getDashboard(tenant, reference) {
     /* Not a §9.1 line. Included because Total minus Active minus Suspended is otherwise an unexplained
      * remainder on the screen, and `schools.status` has exactly three values. */
     db.School.count({ where: { ...schoolScope, status: SCHOOL_STATUS.ARCHIVED } }),
-    db.Student.count({ where: rowScope }),
-    db.Teacher.count({ where: rowScope }),
-    db.Subscription.count({ where: { ...rowScope, state: SUBSCRIPTION_STATES.ACTIVE } }),
-    db.Subscription.count({ where: { ...rowScope, state: SUBSCRIPTION_STATES.EXPIRED } }),
-    sumPayments(revenueWhere(rowScope, monthly)),
-    sumPayments(revenueWhere(rowScope, yearly)),
+    db.Student.count({ where: rowScope, include: [OF_LIVE_SCHOOL] }),
+    db.Teacher.count({ where: rowScope, include: [OF_LIVE_SCHOOL] }),
+    db.Subscription.count({ where: { ...rowScope, state: SUBSCRIPTION_STATES.ACTIVE }, include: [OF_LIVE_SCHOOL] }),
+    db.Subscription.count({ where: { ...rowScope, state: SUBSCRIPTION_STATES.EXPIRED }, include: [OF_LIVE_SCHOOL] }),
+    sumPaymentsByCurrency(revenueWhere(rowScope, monthly)),
+    sumPaymentsByCurrency(revenueWhere(rowScope, yearly)),
     db.Payment.count({ where: { ...rowScope, status: PAYMENT_STATUS.PENDING } }),
-    sumPayments({ ...rowScope, status: PAYMENT_STATUS.PENDING }),
+    sumPaymentsByCurrency({ ...rowScope, status: PAYMENT_STATUS.PENDING }),
   ]);
+  const monthlyRevenue = singleCurrencyTotal(monthlyByCurrency);
+  const yearlyRevenue = singleCurrencyTotal(yearlyByCurrency);
+  const pendingPaymentsAmount = singleCurrencyTotal(pendingByCurrency);
 
   return {
     /* The eleven, in the order SRS §9.1 lists them. */
@@ -187,6 +240,8 @@ async function getDashboard(tenant, reference) {
     /* Derived from the same queries; not part of §9.1's list. */
     archivedSchools,
     pendingPaymentsAmount,
+    /* The three money figures, one line per currency — what the scalars above cannot say when currencies mix. */
+    revenueByCurrency: { month: monthlyByCurrency, year: yearlyByCurrency, pending: pendingByCurrency },
 
     /*
      * The periods the two revenue figures cover, so the number on the screen is checkable and a client
@@ -204,4 +259,4 @@ async function getDashboard(tenant, reference) {
   };
 }
 
-module.exports = { getDashboard, revenueWhere, sumPayments };
+module.exports = { getDashboard, revenueWhere, sumPaymentsByCurrency, singleCurrencyTotal };

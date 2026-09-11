@@ -71,6 +71,18 @@
  * clears it and a second scheduled downgrade overwrites it, and neither says so in its response, so
  * the panel says it before the button is pressed. A one-time subscription has no next cycle for a
  * change to wait for: the API refuses a scheduled downgrade on one, and the timing is not offered.
+ *
+ * ## A student-counted price takes no quantity
+ *
+ * Owner decision D26: a Per-Student or Student-Based price bills the school's active-student count.
+ * `changePlan()` counts it when the change is made (`billedQuantity()`) and ignores a typed quantity,
+ * and a deferred change is counted again at the renewal it lands on. So the Quantity box is offered
+ * only when the chosen price bills a typed number, and nothing is sent in its place otherwise.
+ *
+ * Nor does a scheduled downgrade take one, whatever its price. The deferred path writes the
+ * `scheduled_*` group — plan, price, type, timing, date — and there is no quantity among them; the
+ * renewal it lands on bills the scheduled price at the subscription's own quantity. A number typed for
+ * it would be dropped, so the box is withheld while the timing is Next billing cycle and none is sent.
  */
 
 import Link from 'next/link';
@@ -91,7 +103,7 @@ import {
 } from '@/components/form';
 import { useToast } from '@/components/toast';
 
-import { cycleLabel, howToBringIntoUse, humanise, sameCycle } from './detail';
+import { cycleLabel, howToBringIntoUse, humanise, isCountedModel, sameCycle } from './detail';
 import type { SubscriptionCatalogue, SubscriptionDetail } from './detail';
 
 /**
@@ -301,6 +313,8 @@ export function PlanChangePanel({
   /* Every offered price is already in the subscription's currency; only the cycle can differ. */
   const noMatchingPrice = prices.length > 0 && !prices.some((price) => sameCycle(price, subscription));
   const cycleChanges = chosenPrice !== null && !sameCycle(chosenPrice, subscription);
+  /* D26 — the chosen price counts the school's students, so a typed quantity would be ignored. */
+  const countedPrice = chosenPrice !== null && isCountedModel(chosenPrice.pricing_model);
 
   /*
    * A price override on `cycle_amount` — owner decision D7. While it applies, invoices bill the plan
@@ -336,8 +350,12 @@ export function PlanChangePanel({
     try {
       const body: Record<string, unknown> = { plan_id: chosen.id, plan_price_id: chosenPrice.id };
       if (direction === 'downgrade') body.timing = timing;
-      /* Sent as typed, for the reason the create screen argues: `Number('')` is 0, not "unset". */
-      if (quantity.trim()) body.quantity = quantity.trim();
+      /*
+       * Sent as typed, for the reason the create screen argues: `Number('')` is 0, not "unset". Not sent
+       * at all onto a student-counted price, which ignores it, nor with a scheduled downgrade, which
+       * does not store it — see the header.
+       */
+      if (!countedPrice && !deferred && quantity.trim()) body.quantity = quantity.trim();
       if (reason.trim()) body.reason = reason.trim();
 
       /*
@@ -658,16 +676,30 @@ export function PlanChangePanel({
           </Notice>
         ) : null}
 
-        <Field
-          id="change-quantity"
-          label="Quantity"
-          type="number"
-          min={1}
-          value={quantity}
-          error={errorFor('quantity', 'Quantity')}
-          onChange={(event) => setQuantity(event.target.value)}
-          hint={`Leave blank to keep the current ${subscription.quantity}. Only per-unit pricing models bill from it.`}
-        />
+        {countedPrice && chosenPrice ? (
+          <p className="text-sm text-muted">
+            This is a {humanise(chosenPrice.pricing_model)} price: it bills the school’s active
+            students, counted {deferred ? 'at the renewal this downgrade waits for' : 'when the change is made'}{' '}
+            and again at every renewal, so there is no quantity to set.
+          </p>
+        ) : deferred ? (
+          <p className="text-sm text-muted">
+            A scheduled downgrade stores the new plan and price but no quantity, so there is none to
+            set: the renewal it waits for bills the subscription’s own quantity — {subscription.quantity}{' '}
+            today.
+          </p>
+        ) : (
+          <Field
+            id="change-quantity"
+            label="Quantity"
+            type="number"
+            min={1}
+            value={quantity}
+            error={errorFor('quantity', 'Quantity')}
+            onChange={(event) => setQuantity(event.target.value)}
+            hint={`Leave blank to keep the current ${subscription.quantity}. Only a Seat-Based price bills from it — a Per-Student or Student-Based one counts the school’s students instead.`}
+          />
+        )}
 
         <TextAreaField
           id="change-reason"

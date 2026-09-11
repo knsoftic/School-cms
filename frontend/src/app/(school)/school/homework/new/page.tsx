@@ -57,30 +57,33 @@
  * sent with, so a selection carried over from the previous class is a guaranteed 422 — and one the
  * user cannot see coming, because the dropdown that held it has already been repopulated.
  *
- * ## What is deliberately not narrowed
+ * ## The subject follows the class's curriculum, and nothing else is narrowed
  *
- * `assertReferences()` is the whole of the referential rule, and it checks four things independently:
- * the class is of this school, the section is of that class, the session is of this school, the
- * teacher is of this school, and the subject is of this school. Nothing requires any of them to agree
- * with each other, so:
+ * `assertReferences()` checks that the class, the session, the teacher and the subject are of this
+ * school and that the section is of the class. One pair must also agree: since the owner's decision
+ * D30, a named subject has to be on the chosen class's curriculum — an active `class_subjects` row of
+ * that class, either whole-class or, when a section is named, that section's
+ * (`assertOnCurriculum()`, a 422 on `subject_id` otherwise). So:
  *
- *   * The **subject** list is not filtered to the class's `class_subjects` rows. That table exists
- *     (§14.4's Subject Assignment) and the service does not consult it; hiding an unassigned subject
- *     here would enforce a rule the module does not have, and homework for a subject a class has just
- *     picked up would become uncreatable.
+ *   * The **subject** picker offers the chosen class's curriculum and nothing else, read through
+ *     `useCurriculum` — one `GET /subjects?class_id=&section_id=`, the server's own curriculum rule. It
+ *     waits for a class, is cleared whenever the class changes, and is cleared when a change of section
+ *     takes the chosen subject off the curriculum. If the curriculum cannot be read, no subject can be
+ *     named here, and the homework can still be set without one.
  *   * The **class** list is not filtered by the chosen session, and each class option names its own
  *     session instead — which is also what tells two identically-named classes from consecutive years
  *     apart.
  *   * Inactive classes, sections, subjects and teachers are annotated, never withheld: not one of the
- *     four loaders tests `is_active`.
+ *     four loaders tests `is_active`. A `class_subjects` row's own `is_active` does count — an inactive
+ *     row is not on the curriculum.
  *
  * ## Four lists, four separate grants, and `allSettled`
  *
- * `GET /classes` needs `classes.view`, `/subjects` needs `subjects.view`, `/sessions` needs
- * `sessions.view`, and `/teachers` needs `teachers.view` **plus** the Teachers module —
- * `teachers.routes.js` is the only one of the four that mounts `requireModule`. None of them is the
- * `homework.manage` that opened this screen, so any of the four can fail for a caller perfectly
- * entitled to set homework. `Promise.all` would let one refusal empty the other three dropdowns, so
+ * `GET /classes` needs `classes.view`, `/sessions` needs `sessions.view`, and `/teachers` needs
+ * `teachers.view` **plus** the Teachers module — `teachers.routes.js` is the only one that mounts
+ * `requireModule`. The fourth, the chosen class's subjects, is `GET /subjects` on `subjects.view`. None
+ * of them is the `homework.manage` that opened this screen, so any of them can fail for a caller
+ * perfectly entitled to set homework. `Promise.all` would let one refusal empty the other dropdowns, so
  * each settles on its own and each says its own remedy. Only the class list is fatal to the form.
  *
  * ## Blank has a specific meaning on four of the optional fields
@@ -137,6 +140,7 @@ import { useToast } from '@/components/toast';
 import { PageHeader, RefusalNotice } from '@/components/table';
 import { EXPLAINED_CODES } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
+import { useCurriculum } from '@/lib/useTimetablePickers';
 
 /** `PAGINATION.MAX_LIMIT` — the most `commonSchemas.pagination` accepts in one page. */
 const OPTION_LIMIT = 100;
@@ -178,14 +182,6 @@ interface ClassOption {
   academic_session_id: number | null;
   is_active: boolean;
   sections?: SectionOption[] | null;
-}
-
-/** `subjects.code` is NOT NULL and unique per school, which is what separates two "Mathematics". */
-interface SubjectOption {
-  id: number;
-  name: string;
-  code: string;
-  is_active: boolean;
 }
 
 /** A teacher as `GET /teachers` returns it. `last_name` is nullable on the model. */
@@ -290,7 +286,6 @@ export default function NewHomeworkPage() {
   const [file, setFile] = useState<File | null>(null);
 
   const [classes, setClasses] = useState<Loaded<ClassOption>>(NOT_LOADED);
-  const [subjects, setSubjects] = useState<Loaded<SubjectOption>>(NOT_LOADED);
   const [teachers, setTeachers] = useState<Loaded<TeacherOption>>(NOT_LOADED);
   const [sessions, setSessions] = useState<Loaded<SessionOption>>(NOT_LOADED);
   const [loadingOptions, setLoadingOptions] = useState(true);
@@ -305,7 +300,7 @@ export default function NewHomeworkPage() {
 
   useEffect(() => {
     /*
-     * The permission gate below is a `return` *after* the hooks, so without this all four lists would
+     * The permission gate below is a `return` *after* the hooks, so without this all three lists would
      * be fetched for a caller who is about to be told no. `can` is `useCallback`-memoized on the
      * profile in `AuthProvider`, so naming it in the deps does not re-run this on every render.
      */
@@ -317,19 +312,17 @@ export default function NewHomeworkPage() {
     let live = true;
 
     (async () => {
-      /* `allSettled`, not `all` — see the header on the four separate grants. No `school_id` on any
-         of them: `tenantWhere()` has already pinned every one to the caller's school. Each list is
-         read to its end rather than to one page — see `allPages()`. */
-      const [classResult, subjectResult, teacherResult, sessionResult] = await Promise.allSettled([
+      /* `allSettled`, not `all` — see the header on the separate grants. No `school_id` on any of
+         them: `tenantWhere()` has already pinned every one to the caller's school. Each list is read
+         to its end rather than to one page — see `allPages()`. The subjects are the class's, below. */
+      const [classResult, teacherResult, sessionResult] = await Promise.allSettled([
         allPages<ClassOption>('/classes'),
-        allPages<SubjectOption>('/subjects'),
         allPages<TeacherOption>('/teachers'),
         allPages<SessionOption>('/sessions'),
       ]);
       if (!live) return;
 
       setClasses(settle(classResult));
-      setSubjects(settle(subjectResult));
       setTeachers(settle(teacherResult));
       setSessions(settle(sessionResult));
       setLoadingOptions(false);
@@ -352,9 +345,28 @@ export default function NewHomeworkPage() {
     return chosen?.sections ?? [];
   }, [classes.rows, values.class_id]);
 
+  /* D30 — the chosen class's curriculum, narrowed to the chosen section. See the header. */
+  const curriculum = useCurriculum(values.class_id, values.section_id, can('homework.manage'));
+  const offeredSubjects = curriculum.state === 'ready' ? curriculum.rows : [];
+
   function onClassChange(event: { target: { value: string } }) {
-    setValues((prev) => ({ ...prev, class_id: event.target.value, section_id: '' }));
+    /* The section and the subject both go with the class: each is checked against the class it arrives with. */
+    setValues((prev) => ({ ...prev, class_id: event.target.value, section_id: '', subject_id: '' }));
   }
+
+  /*
+   * A subject of the whole class stays on the curriculum whichever section is named; one that is on it
+   * only for the section being left does not. The section's own curriculum is read afresh, so the test
+   * runs once it arrives: a chosen subject it does not hold is cleared rather than sent to be refused.
+   */
+  useEffect(() => {
+    if (curriculum.state !== 'ready') return;
+    setValues((prev) =>
+      prev.subject_id && !curriculum.rows.some((row) => String(row.id) === prev.subject_id)
+        ? { ...prev, subject_id: '' }
+        : prev
+    );
+  }, [curriculum]);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -516,6 +528,7 @@ export default function NewHomeworkPage() {
             id="section_id"
             label="Section"
             value={values.section_id}
+            /* The subject is re-tested against the section's curriculum once it arrives — see above. */
             onChange={set('section_id')}
             disabled={!values.class_id || sections.length === 0}
             error={fieldErrors.section_id}
@@ -542,26 +555,37 @@ export default function NewHomeworkPage() {
             label="Subject"
             value={values.subject_id}
             onChange={set('subject_id')}
-            disabled={loadingOptions || subjects.failed}
+            disabled={!values.class_id || curriculum.state !== 'ready'}
             error={fieldErrors.subject_id}
+            /* D30 — see the header. The server refuses a subject the chosen class does not teach. */
             hint={
-              subjects.failed
-                ? 'The subject list could not be loaded, so a subject cannot be chosen here. Reading it needs the separate “View subjects” permission. The homework can be set without one.'
-                : `Every subject of the school is offered, not only those assigned to the chosen class — the API checks the school and nothing else.${
-                    subjects.total > subjects.rows.length
-                      ? ` Showing the first ${subjects.rows.length} of ${subjects.total}.`
-                      : ''
-                  }`
+              curriculum.state === 'failed'
+                ? 'The class’s subjects could not be loaded, so a subject cannot be chosen here. Reading them needs the separate “View subjects” permission. The homework can be set without one.'
+                : values.class_id && curriculum.state === 'ready' && offeredSubjects.length === 0
+                  ? 'No subject is on this class’s curriculum yet, so none can be named. Subjects are added to a class on the subject’s own screen; the homework can be set without one.'
+                  : `Optional. Only subjects on the chosen class’s curriculum are offered — one added for a single section counts only when that section is named — because the server refuses any other.${
+                      curriculum.state === 'ready' && curriculum.total > curriculum.rows.length
+                        ? ` Showing the first ${curriculum.rows.length} of ${curriculum.total}.`
+                        : ''
+                    }`
             }
           >
             <option value="">
-              {loadingOptions ? 'Loading…' : subjects.failed ? 'Unavailable' : 'No subject'}
+              {!values.class_id
+                ? 'Choose a class first'
+                : curriculum.state === 'loading'
+                  ? 'Loading the class’s subjects…'
+                  : curriculum.state === 'failed'
+                    ? 'Unavailable'
+                    : 'No subject'}
             </option>
-            {subjects.rows.map((subject) => (
-              <option key={subject.id} value={subject.id}>
-                {subject.name} ({subject.code}){subject.is_active ? '' : ' — inactive'}
-              </option>
-            ))}
+            {values.class_id
+              ? offeredSubjects.map((subject) => (
+                  <option key={subject.id} value={subject.id}>
+                    {subject.name} ({subject.code}){subject.is_active ? '' : ' — inactive'}
+                  </option>
+                ))
+              : null}
           </SelectField>
 
           <SelectField

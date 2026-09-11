@@ -252,7 +252,9 @@ function verifyRouting() {
   console.log('\n── Part 2 — declared routes ──\n');
 
   const routes = routesOf(attendanceRoutes);
-  check('the five §16 routes are declared', routes, [
+  /* Six since the owner's decision D17 mounted the self-service view. */
+  check('the five §16 routes and the D17 self-service view are declared', routes, [
+    'GET /mine',
     'GET /students/report',
     'POST /students',
     'GET /students',
@@ -265,11 +267,15 @@ function verifyRouting() {
     routes.some((r) => r.startsWith('DELETE') || r.startsWith('PATCH')),
     false
   );
-  check(
-    'and no self-service view — §16 names none, so attendance.self.view stays unmounted',
-    routes.some((r) => r.includes('self') || r.includes('me')),
-    false
-  );
+  /* D17 — the self-service view is on the self-view key, and it is the only route that is. */
+  const { metaOf } = require('../src/utils/routeMeta');
+  const keysOf = (method, path) => {
+    const layer = attendanceRoutes.stack.find((l) => l.route && l.route.path === path && l.route.methods[method]);
+    const guard = layer && layer.route.stack.map((s) => metaOf(s.handle)).find((m) => m && m.permissions);
+    return guard ? guard.permissions : null;
+  };
+  check('D17 — GET /mine is guarded by attendance.self.view, the key the catalogue granted students and parents',
+    keysOf('get', '/mine'), ['attendance.self.view']);
 
   const writes = attendanceRoutes.stack
     .filter((l) => l.route && !l.route.methods.get)

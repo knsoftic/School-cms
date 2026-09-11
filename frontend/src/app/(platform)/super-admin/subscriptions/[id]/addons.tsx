@@ -37,6 +37,23 @@
  * recurred. `purchaseAddon()` now refuses the mismatch; the select does not offer it, and says how
  * many it left out so a price the operator expected is not simply missing.
  *
+ * ## A price is required
+ *
+ * The owner's decision D21 (closing Known Issues #18): a purchase must name its price. One that named
+ * none used to be recorded at 0.00 and printed as a zero line on every invoice — a billing figure
+ * nobody chose — and this form offered it as "No charge". The API now refuses it, and so does the form.
+ *
+ * ## A purchase into a period already invoiced is invoiced at once
+ *
+ * The owner's decision D24: a period's invoice is issued when the period starts, so an add-on bought
+ * after that was free until the next period — and a one-off one never billed. `purchaseAddon()` now
+ * issues an invoice of its own when the current period already has one: a recurring add-on prorated
+ * for the rest of the period, a one-off at its full amount. The response names it as `invoice` (null
+ * when nothing was issued — a period not yet invoiced carries the line on its own invoice), and the
+ * panel says which invoice and for how much, and keeps saying it after the form clears, as the plan
+ * change panel does for its proration invoice. A charge the school did not expect is the thing an
+ * operator is asked about, and the answer is that number.
+ *
  * ## Cancelling withdraws the units, and says how many
  *
  * `cancelAddon()` answers with `purchase.unitsWithdrawn`, which is what the school's allowance drops
@@ -104,6 +121,13 @@ interface AddonOption {
   readiness: { purchasable: boolean };
 }
 
+/** The invoice D24 issues at purchase — `purchaseAddon()` returns these three fields, or null. */
+interface PurchaseInvoice {
+  id: number;
+  invoice_number: string;
+  total: number | string;
+}
+
 interface PurchaseResponse {
   subscription: SubscriptionDetail;
   purchase: {
@@ -111,8 +135,12 @@ interface PurchaseResponse {
     quantity: number;
     unitsGranted: number;
     effectTarget: string;
+    /** The purchase's currency — the price's, which `purchaseAddon()` requires to be the subscription's. */
+    currency: string;
     addon: { name: string };
   };
+  /** Null when the period had no invoice yet; absent from an API that predates D24. */
+  invoice?: PurchaseInvoice | null;
 }
 
 interface CancelResponse {
@@ -151,6 +179,14 @@ export function AddonsPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  /* The last purchase's D24 invoice, kept on screen after the form clears — see the header. */
+  const [charged, setCharged] = useState<{
+    addon: string;
+    currency: string;
+    /** Read off the purchase row the response carries: a recurring one is prorated, a one-off is not. */
+    recurring: boolean;
+    invoice: PurchaseInvoice;
+  } | null>(null);
 
   const [cancelling, setCancelling] = useState<SubscriptionAddonRow | null>(null);
   const [cancelReason, setCancelReason] = useState('');
@@ -177,24 +213,11 @@ export function AddonsPanel({
   );
 
   /*
-   * Every add-on on sale, and not one of them priced.
+   * Every add-on on sale, and not one of them priced — so nothing can be bought here yet.
    *
-   * ## This block replaces a control that was stricter than the API, which is a defect
-   *
-   * Found by driving this screen against a database where no `addon_prices` row exists. The first
-   * version marked each add-on "(not purchasable)" and **disabled** it, from `readiness.purchasable`
-   * — which is `is_active` **and** at least one active price. That is the right test for the Add-ons
-   * catalogue screen, where "purchasable" means "a school could buy this", and the wrong one here.
-   *
-   * `subscriptions.service.purchaseAddon()` refuses exactly one thing about the add-on itself: that it
-   * is not `is_active`. Its other refusals are about a price the caller *named*. A price is
-   * **optional** — `addon_price_id` is nullable and `SET NULL` on purpose,
-   * because §11.3 add-ons are granted at no charge as part of a negotiation, and this screen's own
-   * price control says so two fields further down. So the first version forbade a supported
-   * operation, and forbade it for precisely the add-ons that need it.
-   *
-   * A screen may be looser than the API — the API is the guard. It may not be tighter, because
-   * nothing then tells the operator that the thing they cannot do is a thing the system does.
+   * Since D21 a purchase must name a price (see the header), so an add-on with no active price is
+   * something the operator has to price on the Add-ons screen first. Said once, above the form, rather
+   * than discovered as a refusal after choosing one.
    */
   const nothingPriced =
     !catalogue.loading &&
@@ -230,9 +253,10 @@ export function AddonsPanel({
     setBusy(true);
     setError(null);
     setFieldErrors({});
+    setCharged(null);
     try {
-      const body: Record<string, unknown> = { addon_id: chosen.id };
-      if (priceId) body.addon_price_id = Number(priceId);
+      /* Always sent — D21 makes it required, and an empty choice comes back as a 422 on this field. */
+      const body: Record<string, unknown> = { addon_id: chosen.id, addon_price_id: priceId ? Number(priceId) : null };
       if (quantity.trim()) body.quantity = quantity.trim();
       if (reason.trim()) body.reason = reason.trim();
 
@@ -241,11 +265,30 @@ export function AddonsPanel({
         body
       );
       onChanged(result.subscription);
-      success(
-        `${result.purchase.addon.name} purchased`,
+      const granted =
         result.purchase.unitsGranted > 0
           ? `${result.purchase.unitsGranted.toLocaleString()} added to ${limitLabel(vocabulary, result.purchase.effectTarget)}.`
-          : `${result.purchase.effectTarget} unlocked.`
+          : `${result.purchase.effectTarget} unlocked.`;
+      /* D24 — the period was already invoiced, so the purchase was charged on an invoice of its own. */
+      const invoice = result.invoice ?? null;
+      const currency = result.purchase.currency || subscription.currency;
+      success(
+        `${result.purchase.addon.name} purchased`,
+        invoice
+          ? `${granted} Invoiced at once as ${invoice.invoice_number} — ${formatCodeWithAmount(currency, invoice.total)}.`
+          : granted
+      );
+      const bought = result.subscription.addons.find((row) => row.id === result.purchase.id);
+      setCharged(
+        invoice
+          ? {
+              addon: result.purchase.addon.name,
+              currency,
+              /* `is_recurring` defaults to true, and this form does not send it. */
+              recurring: bought ? bought.is_recurring : true,
+              invoice,
+            }
+          : null
       );
       setAddonId('');
       setPriceId('');
@@ -407,6 +450,23 @@ export function AddonsPanel({
         />
       )}
 
+      {/* D24's charge for the last purchase — kept after the form clears; see the header. */}
+      {charged ? (
+        <Notice tone="success">
+          This period was already invoiced, so {charged.addon} was charged at purchase on invoice{' '}
+          <Link
+            href={`/super-admin/invoices/${charged.invoice.id}`}
+            className="font-medium underline underline-offset-2"
+          >
+            {charged.invoice.invoice_number}
+          </Link>{' '}
+          — {formatCodeWithAmount(charged.currency, charged.invoice.total)}
+          {charged.recurring
+            ? ', prorated for the rest of the current period. Later invoices carry its full line.'
+            : ', its full amount, once.'}
+        </Notice>
+      ) : null}
+
       {/*
         * `purchaseAddon()` refuses a subscription outside the usable states, so the form is not
         * offered on one — and the notice names the transition that would change that. Cancelling
@@ -448,17 +508,9 @@ export function AddonsPanel({
             ) : catalogue.error ? (
               <Notice tone="error">The add-on catalogue could not be loaded: {catalogue.error}</Notice>
             ) : null}
-            {/*
-              * "No charge" is not "not billed". A no-charge purchase still writes its
-              * `subscription_items` line at 0.00, and `generateForSubscription()` copies every item
-              * onto the invoice — so the line prints. This notice once said it "raises no invoice
-              * line", which the first invoice after such a purchase contradicted.
-              */}
             {nothingPriced ? (
               <Notice tone="info">
-                No add-on has a price set, so anything bought here is granted at no charge — it still
-                appears as a 0.00 line on the invoices this subscription is billed with. That is a
-                supported outcome, not a blocked one; if it should be billed, set a price on the{' '}
+                No add-on has a price set, and a purchase must name one — set a price on the{' '}
                 <Link href="/super-admin/addons" className="font-medium underline underline-offset-2">
                   Add-ons
                 </Link>{' '}
@@ -479,7 +531,7 @@ export function AddonsPanel({
               hint={
                 catalogue.loading
                   ? 'Loading the catalogue…'
-                  : 'Only add-ons currently on sale are listed — the API refuses one that has been taken off sale. "No price set" means it can still be granted, at no charge.'
+                  : 'Only add-ons currently on sale are listed — the API refuses one that has been taken off sale. One marked "no price set" cannot be bought until it is priced.'
               }
             >
               <option value="">Choose an add-on…</option>
@@ -499,6 +551,7 @@ export function AddonsPanel({
               <SelectField
                 id="addon-price"
                 label="Price"
+                required
                 value={priceId}
                 error={rowError(fieldErrors, 'addon_price_id', 'Price')}
                 onChange={(event) => setPriceId(event.target.value)}
@@ -508,15 +561,15 @@ export function AddonsPanel({
                         otherCycleCount > 0
                           ? `; ${otherCycleCount} on another cycle or currency cannot be used`
                           : ''
-                      }. Buying it without one grants the add-on at no charge.`
+                      }. Set one on the Add-ons screen before buying it.`
                     : `Only prices billing ${billing}, as this subscription does, are listed${
                         otherCycleCount > 0
                           ? ` — ${otherCycleCount} on another cycle or currency left out`
                           : ''
-                      }. Leave blank to grant the add-on at no charge.`
+                      }.`
                 }
               >
-                <option value="">No charge</option>
+                <option value="">Choose a price…</option>
                 {prices.map((price) => (
                   <option key={price.id} value={price.id}>
                     {`${formatCodeWithAmount(price.currency, price.unit_amount)} · ${cycleLabel(price)}${
@@ -554,10 +607,10 @@ export function AddonsPanel({
               value={reason}
               error={rowError(fieldErrors, 'reason', 'Reason')}
               onChange={(event) => setReason(event.target.value)}
-              hint="Up to 255 characters. Recorded in the audit trail — a negotiated grant is worth explaining."
+              hint="Up to 255 characters. Recorded in the audit trail."
             />
 
-            <SubmitButton busy={busy} busyLabel="Purchasing…" fullWidth={false} disabled={!chosen}>
+            <SubmitButton busy={busy} busyLabel="Purchasing…" fullWidth={false} disabled={!chosen || !priceId}>
               Purchase
             </SubmitButton>
           </form>

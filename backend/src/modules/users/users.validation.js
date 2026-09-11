@@ -65,7 +65,17 @@ const CREATABLE_ROLES = Object.freeze([
   ROLES.LIBRARIAN,
   ROLES.STAFF,
   ROLES.STUDENT,
+  /*
+   * The owner's decision D18: the Super Admin creates Organization Admins. SRS:97 places the role in
+   * the hierarchy and leaves its workflows "Not Specified", and nothing created one. It belongs to an
+   * organization rather than a school and links to no profile; `users.service.create()` refuses it to
+   * anyone but a platform caller.
+   */
+  ROLES.ORGANIZATION_ADMIN,
 ]);
+
+/** The two roles a login is created for without a profile — and so with a name of their own. */
+const PROFILELESS_ROLES = Object.freeze([ROLES.SCHOOL_ADMIN, ROLES.ORGANIZATION_ADMIN]);
 
 /**
  * The username character class.
@@ -152,18 +162,27 @@ const create = Joi.object({
     .messages({
       'any.only': `"role" must be one of ${CREATABLE_ROLES.join(', ')} — a Principal is created by the Super Admin and a Parent with their profile`,
     }),
-  school_id: Joi.number().integer().min(1),
+  school_id: Joi.number().integer().min(1).when('role', {
+    is: ROLES.ORGANIZATION_ADMIN,
+    then: Joi.forbidden().messages({ 'any.unknown': 'An Organization Admin belongs to an organization, not a school' }),
+  }),
+  /* D18 — the organization an Organization Admin administers; meaningless for any other role. */
+  organization_id: Joi.number().integer().min(1).when('role', {
+    is: ROLES.ORGANIZATION_ADMIN,
+    then: Joi.required().messages({ 'any.required': '"organization_id" names the organization this admin administers' }),
+    otherwise: Joi.forbidden(),
+  }),
   profile_id: Joi.number()
     .integer()
     .min(1)
     .when('role', {
-      is: ROLES.SCHOOL_ADMIN,
-      then: Joi.forbidden().messages({ 'any.unknown': 'A School Admin login is not linked to a profile' }),
+      is: Joi.valid(...PROFILELESS_ROLES),
+      then: Joi.forbidden().messages({ 'any.unknown': 'A School Admin or Organization Admin login is not linked to a profile' }),
       otherwise: Joi.required().messages({
         'any.required': '"profile_id" names the teacher, staff member or student this login is for',
       }),
     }),
-  name: fields.name.when('role', { is: ROLES.SCHOOL_ADMIN, then: Joi.required() }),
+  name: fields.name.when('role', { is: Joi.valid(...PROFILELESS_ROLES), then: Joi.required() }),
   email: email.required(),
   username: fields.username.required(),
   phone: fields.phone,

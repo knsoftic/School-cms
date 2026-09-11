@@ -123,8 +123,19 @@ const report = Joi.object({
   academic_session_id: fields.academic_session_id,
 });
 
+/**
+ * `GET /mine` — the report's own period and date, and at most a student to narrow to. No class, section
+ * or school: whose records these are is the caller's identity (`services/selfScope`).
+ */
+const mine = Joi.object({
+  period: Joi.string().valid('daily', 'monthly', 'yearly').default('monthly'),
+  date: fields.attendance_date.default(() => new Date().toISOString().slice(0, 10)),
+  student_id: fields.student_id,
+});
+
 module.exports = {
   schemas: {
+    mine,
     markStudents,
     markTeachers,
     listStudents,

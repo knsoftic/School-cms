@@ -491,6 +491,7 @@ async function verifyHttp() {
       await db.Staff.destroy({ where: { school_id: created.schools }, force: true });
       await db.Class.destroy({ where: { school_id: created.schools }, force: true });
       await db.AcademicSession.destroy({ where: { school_id: created.schools }, force: true });
+      await db.SchoolSetting.destroy({ where: { school_id: created.schools } });
     }
     if (created.subscriptions.length) {
       await db.UsageRecord.destroy({ where: { subscription_id: created.subscriptions } });
@@ -796,6 +797,19 @@ async function verifyHttp() {
     check('a fees income can be recorded by the human actor FR-FIN-001 names', feeIncome.category, INCOME_CATEGORIES.FEES);
     check('  and it may name the child the money came from', feeIncome.student_id, studentA.id);
 
+    /*
+     * The owner's decision D35: an amount recorded without a currency is in the school's. Every row above
+     * is USD because this school has set none — and so was every row of a school that had, before. Dated
+     * far outside every window below and removed at once, so no total in this suite sees a second currency.
+     */
+    const setting = await db.SchoolSetting.create({ school_id: schoolA.id, organization_id: org.id, currency: 'PKR' });
+    const inSchoolCurrency = await mkIncome({ title: 'D35 probe', amount: 10, income_date: '2001-01-01' });
+    const namedCurrency = await mkIncome({ title: 'D35 probe', amount: 10, income_date: '2001-01-01', currency: 'GBP' });
+    check('D35 — income recorded without a currency is in the school\'s; one that names a currency keeps it',
+      [inSchoolCurrency.currency, namedCurrency.currency], ['PKR', 'GBP']);
+    await db.Income.destroy({ where: { id: [inSchoolCurrency.id, namedCurrency.id] } });
+    await setting.destroy();
+
     const salaryStaff = await mkExpense({
       title: 'May salary — librarian',
       amount: 800,
@@ -830,6 +844,9 @@ async function verifyHttp() {
       body: { title: 'Mystery salary', amount: 500, expense_date: '2025-05-15', category: EXPENSE_CATEGORIES.SALARIES },
     });
     check('a salary that names nobody is refused by the model validator', noRecipient.status, 422);
+    /* Against a field a form can show it beside — not the validator's own name, `salaryNeedsRecipient`. */
+    check('  and the refusal names paid_to, the recipient field a person can fill in',
+      ((noRecipient.body.error || {}).details || []).map((d) => d.field), ['paid_to']);
 
     const foreignTeacherExpense = await call('/finance/expenses', {
       method: 'POST',

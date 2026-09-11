@@ -21,14 +21,14 @@
  * `invoices.routes.js` guards its reads with `requireAnyPermission('invoices.view', 'invoices.self.view')`
  * because the seed grants schools an `invoices.self.view` key for reading *their own* invoices. There is
  * **no equivalent `payments.self.view`** — `config/permissions.js` seeds exactly four payment keys
- * (`view`, `record`, `submit`, `approve`), and `payments.view` is granted only to `super_admin` and
- * `organization_admin`. So the read is a single `requirePermission('payments.view')`, and its confinement
- * is still the tenant layer's: `service.list()` and `findById()` start from `tenantWhere(req.tenant, …)`,
- * so an organization admin sees their organization's payments and nothing wider.
+ * (`view`, `record`, `submit`, `approve`). So the read is a single `requirePermission('payments.view')`,
+ * and its confinement is the tenant layer's: `service.list()` and `findById()` start from
+ * `tenantWhere(req.tenant, …)`, so an organization admin sees their organization's payments and a school
+ * its own, and nothing wider — `list()` also refuses a `school_id` filter naming another school.
  *
- * A school therefore *submits* a payment (below) but does not list payments through this API. That is what
- * the seed dictates, and inventing a fifth `payments.self.view` key to widen it would break the fixed
- * §29 permission count — the seed, not this router, is the place that decision would be made.
+ * `payments.view` was granted only to `super_admin` and `organization_admin`, so a school could submit a
+ * payment and never see what became of it. The owner's decision D27 — the school billing screen — gave
+ * Principal and School Admin the key, in the seed, which is where that decision belonged; no fifth key.
  *
  * ## `POST /` is the one write a school may make — FR-BILL-003
  *
@@ -91,7 +91,8 @@ const {
   requirePlatformScope,
   uploadSingle,
 } = require('../../middlewares');
-const { UPLOAD_PROFILES } = require('../../config/constants');
+const { UPLOAD_PROFILES, UPLOAD_RULES } = require('../../config/constants');
+const { respondsWithFile } = require('../../utils/routeMeta');
 
 const controller = require('./payments.controller');
 const { schemas } = require('./payments.validation');
@@ -140,7 +141,9 @@ router.get(
   requirePermission('payments.view'),
   validate({ params: schemas.idParam }),
   logActivity({ action: 'view', entityType: 'payment', onlyOnSuccess: true }),
-  asyncHandler(controller.screenshot)
+  respondsWithFile(asyncHandler(controller.screenshot), {
+    types: UPLOAD_RULES[UPLOAD_PROFILES.PAYMENT_PROOF].mimeTypes,
+  })
 );
 
 router.get(

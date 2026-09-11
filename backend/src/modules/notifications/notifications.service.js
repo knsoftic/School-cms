@@ -90,6 +90,8 @@ const ApiError = require('../../utils/ApiError');
 const dates = require('../../utils/dates');
 const logger = require('../../config/logger');
 const mailService = require('../../services/mailService');
+/* For D28's invoice reminders — the window and the marker are the invoice module's. No cycle: invoices requires nothing here. */
+const invoicesService = require('../invoices/invoices.service');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const {
   NOTIFICATION_TYPES,
@@ -516,6 +518,70 @@ function notYetNotified(type, referenceType) {
   };
 }
 
+/*
+ * ## …and only the candidates somebody can be told about
+ *
+ * The three reference-only passes whose audience can be empty — Result Published (both halves) and Fee
+ * Paid — returned `false` for a row nobody could receive and wrote nothing, so the row stayed a
+ * candidate. Candidates are taken oldest first across every school, `SWEEP_LIMIT` at a time, so once
+ * that many unreachable rows existed every run fetched the same ones and the pass stopped for the whole
+ * platform: the stall above, with a different trigger. Student logins are optional (D1), so one
+ * published exam in a school with no parent accounts was enough.
+ *
+ * So the candidate query asks the audience question too. These fragments are the SQL form of
+ * `recipientsForStudents()` + `recipientsForUsers()` and of `teacherUserIdsForClass()`, clause for
+ * clause, and a row that becomes reachable later — a parent linked, a login activated — is a candidate
+ * again on the next run, which is what returning `false` was for.
+ */
+const ACTIVE_LOGIN = `u.status = ${db.sequelize.escape(USER_STATUS.ACTIVE)} AND u.deleted_at IS NULL`;
+
+function assertTableName(table) {
+  if (!/^[a-z_]+$/.test(String(table))) throw new Error(`notifications: suspicious table name "${table}"`);
+}
+
+/**
+ * `id IN (…)`: rows of `table` whose `student_id` is a live student with an active login of their own or
+ * an active parent's. Live for both branches, as the JS is: `recipientsForStudents()` attaches parent
+ * links only to students its paranoid `findAll` returned.
+ */
+function withStudentRecipient(table) {
+  assertTableName(table);
+  return {
+    [Op.in]: db.sequelize.literal(
+      `(SELECT x.id FROM ${table} x WHERE` +
+        ' EXISTS (SELECT 1 FROM students s0 WHERE s0.id = x.student_id AND s0.deleted_at IS NULL) AND (' +
+        ' EXISTS (SELECT 1 FROM students s JOIN users u ON u.id = s.user_id' +
+        `   WHERE s.id = x.student_id AND s.deleted_at IS NULL AND ${ACTIVE_LOGIN})` +
+        ' OR EXISTS (SELECT 1 FROM parent_students ps' +
+        '   JOIN parents p ON p.id = ps.parent_id JOIN users u ON u.id = p.user_id' +
+        `   WHERE ps.student_id = x.student_id AND p.is_active = 1 AND p.deleted_at IS NULL AND ${ACTIVE_LOGIN})))`
+    ),
+  };
+}
+
+/** `id IN (…)`: exams whose class (or section) has an active teacher with an active login. */
+function withTeacherRecipient() {
+  /* The four link tables `teacherUserIdsForClass()` reads, each narrowed to the exam's section when it names one. */
+  const linked = (table, column) =>
+    `t.id IN (SELECT y.${column} FROM ${table} y` +
+    ' WHERE y.school_id = e.school_id AND y.class_id = e.class_id AND y.is_active = 1' +
+    (table === 'sections'
+      ? ' AND (e.section_id IS NULL OR y.id = e.section_id))'
+      : ' AND (e.section_id IS NULL OR y.section_id = e.section_id OR y.section_id IS NULL))');
+  return {
+    [Op.in]: db.sequelize.literal(
+      '(SELECT e.id FROM exams e WHERE e.class_id IS NOT NULL AND EXISTS (' +
+        ' SELECT 1 FROM teachers t JOIN users u ON u.id = t.user_id' +
+        ` WHERE t.school_id = e.school_id AND t.is_active = 1 AND t.deleted_at IS NULL AND ${ACTIVE_LOGIN}` +
+        ' AND (t.id IN (SELECT c.class_teacher_id FROM classes c WHERE c.id = e.class_id AND c.school_id = e.school_id)' +
+        ` OR ${linked('sections', 'class_teacher_id')}` +
+        ` OR ${linked('class_subjects', 'teacher_id')}` +
+        ` OR ${linked('teacher_subjects', 'teacher_id')}` +
+        ` OR ${linked('timetables', 'teacher_id')})))`
+    ),
+  };
+}
+
 async function alreadyNotified(type, referenceType, referenceIds) {
   if (!referenceIds.length) return new Set();
   const rows = await db.Notification.findAll({
@@ -664,8 +730,10 @@ async function retry(req, id) {
 
 /* ───────────────────────────────── The sweeps ───────────────────────────────── */
 /*
- * Nine types, eight passes — the two payment types share one, because they are one query over
- * `payments.status` and splitting them would read the table twice to answer the same question.
+ * Nine types, ten passes. The two payment types share one, because they are one query over
+ * `payments.status` and splitting them would read the table twice to answer the same question; and two
+ * types have two passes, one per audience — Result Published for students and parents, and for teachers
+ * (D15); Fee Reminder for a student's fees, and for a school's subscription invoices (D28).
  *
  * Every pass has the same shape, which is `runLifecycleSweep()`'s: take the candidates, notify, stamp
  * the marker, and count. A row that throws is logged and skipped rather than aborting the sweep —
@@ -769,7 +837,10 @@ async function sweepResults(report, options) {
   const pending = await db.Result.findAll({
     where: {
       is_published: true,
-      id: notYetNotified(NOTIFICATION_TYPES.RESULT_PUBLISHED, 'result'),
+      [Op.and]: [
+        { id: notYetNotified(NOTIFICATION_TYPES.RESULT_PUBLISHED, 'result') },
+        { id: withStudentRecipient('results') },
+      ],
     },
     order: [['id', 'ASC']],
     limit: options.limit,
@@ -812,6 +883,7 @@ async function sweepResultsForTeachers(report, options) {
       [Op.and]: [
         { id: { [Op.in]: db.sequelize.literal('(SELECT DISTINCT r.exam_id FROM results r WHERE r.is_published = 1)') } },
         { id: notYetNotified(NOTIFICATION_TYPES.RESULT_PUBLISHED, 'exam') },
+        { id: withTeacherRecipient() },
       ],
     },
     order: [['id', 'ASC']],
@@ -917,10 +989,51 @@ async function sweepFeeReminders(report, options) {
   });
 }
 
+/**
+ * §23 Fee Reminder for a subscription invoice — the owner's decision D28.
+ *
+ * §23 names one "Fee Reminder", and this module's header already read it as covering both the fees a
+ * school charges its students and the invoices the platform charges the school — but only the first
+ * half was built: `invoices.reminderCandidates()` and `markReminderSent()`, written for exactly this,
+ * had no caller. The window and the once-only rule are theirs (seven days ahead; `reminder_sent_at`
+ * null), and the audience is the school's billing roles, as for §23's two payment types. The marker is
+ * stamped whether or not anyone could be told, like every marker pass, so an unreachable invoice never
+ * holds the pass.
+ */
+async function sweepInvoiceReminders(report, options) {
+  const rows = (await invoicesService.reminderCandidates({ at: options.at, withinDays: options.withinDays }))
+    .slice(0, options.limit);
+
+  await forEachCandidate(rows, report, 'invoiceReminders', async (row) => {
+    const recipients = await recipientsForUsers(await schoolAdminUserIds(row.school_id));
+
+    await notify({
+      type: NOTIFICATION_TYPES.FEE_REMINDER,
+      recipients,
+      schoolId: row.school_id,
+      organizationId: row.organization_id,
+      title: `Invoice due: ${row.invoice_number}`,
+      message: `${row.currency} ${row.amount_due} is due on ${dates.toDateOnly(row.due_date)} for invoice ${row.invoice_number}.`,
+      actionUrl: `/invoices/${row.id}`,
+      referenceType: 'invoice',
+      referenceId: row.id,
+      metadata: { invoice_number: row.invoice_number, amount_due: row.amount_due, currency: row.currency },
+    });
+
+    await invoicesService.markReminderSent(row.id, { at: options.at });
+    return true;
+  });
+}
+
 /** §23 Fee Paid — a receipt nobody has been told about. No marker column; idempotent by reference. */
 async function sweepFeePaid(report, options) {
   const pending = await db.FeePayment.findAll({
-    where: { id: notYetNotified(NOTIFICATION_TYPES.FEE_PAID, 'fee_payment') },
+    where: {
+      [Op.and]: [
+        { id: notYetNotified(NOTIFICATION_TYPES.FEE_PAID, 'fee_payment') },
+        { id: withStudentRecipient('fee_payments') },
+      ],
+    },
     order: [['id', 'ASC']],
     limit: options.limit,
   });
@@ -1101,6 +1214,7 @@ async function runNotificationSweep(options = {}) {
     ['resultsForTeachers', sweepResultsForTeachers],
     ['attendanceAlerts', sweepAttendanceAlerts],
     ['feeReminders', sweepFeeReminders],
+    ['invoiceReminders', sweepInvoiceReminders],
     ['feePaid', sweepFeePaid],
     ['subscriptionExpiry', sweepSubscriptionExpiry],
     ['payments', sweepPayments],

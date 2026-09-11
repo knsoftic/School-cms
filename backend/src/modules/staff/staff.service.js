@@ -40,9 +40,11 @@ const { tenantWhere } = require('../../models');
 const ApiError = require('../../utils/ApiError');
 const dates = require('../../utils/dates');
 const { resolveSchool } = require('../../utils/schoolScope');
+const { canManage, withoutFields } = require('../../utils/recordView');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const usageService = require('../../services/usageService');
+const usersService = require('../users/users.service');
 const { LIMITS } = require('../../config/constants');
 
 const SORTABLE = Object.freeze([
@@ -169,8 +171,18 @@ async function findById(req, id, namedSchoolId = undefined) {
   return row;
 }
 
+/** The HR record a caller without `staff.manage` is not shown — as `teachers.service` `HR_ONLY`. */
+const HR_ONLY = Object.freeze(['salary', 'date_of_birth', 'address', 'notes', 'metadata']);
+
+/** `GET /:id` — the staff member as this caller may see them. */
+async function findForView(req, id) {
+  const row = await findById(req, id);
+  return (await canManage(req, 'staff.manage')) ? row : withoutFields(row, HR_ONLY);
+}
+
 async function list(req, query, pagination) {
   const where = tenantWhere(req.tenant, {});
+  const full = await canManage(req, 'staff.manage');
   if (query.school_id) {
     const school = await resolveSchool(req, query.school_id);
     where.school_id = school.id;
@@ -188,7 +200,13 @@ async function list(req, query, pagination) {
 
   return paginateQuery(
     db.Staff,
-    { where, order: getSort({ query }, SORTABLE, ['first_name', 'ASC']) },
+    {
+      where,
+      ...(full ? {} : { attributes: { exclude: [...HR_ONLY] } }),
+      /* The linked login's status, for the reason `teachers.service.list()` gives. */
+      include: [{ model: db.User, as: 'user', attributes: ['id', 'status'] }],
+      order: getSort({ query }, SORTABLE, ['first_name', 'ASC']),
+    },
     pagination
   );
 }
@@ -277,9 +295,19 @@ async function update(req, id, payload) {
     await usageService.assertWithinLimit(row.school_id, LIMITS.STAFF_LIMIT, 1);
   }
 
-  row.set(next);
+  /* D19 — the login moves with the profile; see `teachers.service.update()` for the linked-login rule. */
+  const linkedUserId = Object.prototype.hasOwnProperty.call(next, 'user_id') ? next.user_id : row.user_id;
+  const newlyLinked = Boolean(linkedUserId) && Number(linkedUserId) !== Number(row.user_id);
+  const activeAfter = Object.prototype.hasOwnProperty.call(next, 'is_active') ? Boolean(next.is_active) : Boolean(row.is_active);
+  let moved = null;
   try {
-    await row.save();
+    await db.sequelize.transaction(async (transaction) => {
+      if (activeChanged || (newlyLinked && !activeAfter)) {
+        moved = await usersService.followProfile(linkedUserId, activeAfter, transaction, 'Staff');
+      }
+      row.set(next);
+      await row.save({ transaction });
+    });
   } catch (err) {
     rethrow(err, payload);
   }
@@ -292,6 +320,7 @@ async function update(req, id, payload) {
     after: snapshot(row),
     reason: payload.reason || null,
   });
+  await usersService.auditFollowed(req, moved, `Staff member ${activeAfter ? 'reactivated' : 'deactivated'}`);
 
   /* Only when the flag the headcount counts actually moved — a name edit is not a usage event. */
   if (activeChanged) await syncStaffHeadcount(row.school_id);
@@ -317,4 +346,4 @@ async function syncStaffHeadcount(schoolId) {
   }
 }
 
-module.exports = { list, findById, create, update, EDITABLE };
+module.exports = { list, findById, findForView, create, update, EDITABLE, HR_ONLY };

@@ -979,6 +979,17 @@ async function verifyHttp() {
     check('and another student\'s loan cannot be read by guessing its id', otherById.status, 404);
     check('  while their own can be', (await call(`/library/transactions/${late.id}`, { token: aminaToken })).status, 200);
 
+    /* Their own loan, without what the library writes for itself: its remarks and which staff handled it. */
+    await db.LibraryTransaction.update({ remarks: 'Spine cracked on return' }, { where: { id: late.id }, validate: false });
+    const ownLoan = (dataOf(await expectOk('/library/transactions?limit=100', { token: aminaToken }, 200)) || [])
+      .find((r) => r.id === late.id) || {};
+    const ownLoanById = dataOf(await expectOk(`/library/transactions/${late.id}`, { token: aminaToken }, 200)).transaction;
+    const librarianLoan = dataOf(await expectOk(`/library/transactions/${late.id}`, { token: librarian }, 200)).transaction;
+    check('a student\'s own loan comes without the librarian\'s remarks or the staff who issued and received it',
+      [['remarks', 'issued_by', 'received_by'].filter((k) => k in ownLoan),
+        ['remarks', 'issued_by', 'received_by'].filter((k) => k in ownLoanById), librarianLoan.remarks],
+      [[], [], 'Spine cracked on return']);
+
     const librarianAll = await expectOk('/library/transactions?limit=100', { token: librarian }, 200);
     check('a librarian sees every borrower, so the narrowing is the student\'s and not the query\'s',
       [idsOf(librarianAll).includes(late.id), idsOf(librarianAll).includes(loan2.id),

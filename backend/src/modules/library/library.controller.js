@@ -64,8 +64,7 @@ async function listTransactions(req, res) {
 }
 
 async function showTransaction(req, res) {
-  const row = await service.findTransactionById(req, req.params.id);
-  return ApiResponse.ok(res, { transaction: service.presentTransaction(row) });
+  return ApiResponse.ok(res, { transaction: await service.viewTransaction(req, req.params.id) });
 }
 
 async function issue(req, res) {

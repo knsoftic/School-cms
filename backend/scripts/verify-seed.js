@@ -167,6 +167,39 @@ async function main() {
     `librarian back to ${librarianDefaults}`
   );
 
+  /*
+   * 5b. A role still on an earlier version's defaults is upgraded; a customised one is not.
+   *
+   * The owner's decision D27 is the first change to a default role grant — Principal and School Admin
+   * gain `plans.view`, `addons.view` and `payments.view`. A role with grants is otherwise left as the
+   * Super Admin configured it, which would have kept every existing install on the old defaults
+   * forever. `PREVIOUS_DEFAULTS` names the old set: a role holding exactly it was never customised.
+   */
+  const { DEFAULT_ROLE_PERMISSIONS } = require('../src/config/permissions');
+  const principalRole = await roleId('principal');
+  const d27Ids = await Promise.all(['plans.view', 'addons.view', 'payments.view'].map(permissionId));
+  await raw(`DELETE FROM role_permissions WHERE role_id = ${principalRole} AND permission_id IN (${d27Ids.join(',')})`);
+  await reseed();
+  check(
+    'a role on the pre-D27 defaults is brought up to the current ones (D27)',
+    (await grantCount(principalRole)) === DEFAULT_ROLE_PERMISSIONS.principal.length,
+    `principal holds ${await grantCount(principalRole)} of ${DEFAULT_ROLE_PERMISSIONS.principal.length}`
+  );
+  const logsView = await permissionId('logs.view');
+  await raw(
+    `DELETE FROM role_permissions WHERE role_id = ${principalRole} AND permission_id IN (${[...d27Ids, logsView].join(',')})`
+  );
+  const customisedTo = await grantCount(principalRole);
+  await reseed();
+  check(
+    'while a leadership role the Super Admin customised is left exactly as configured',
+    (await grantCount(principalRole)) === customisedTo,
+    `${customisedTo} grants, not upgraded`
+  );
+  /* Back to the defaults: an emptied role is re-bootstrapped (case 5). */
+  await raw(`DELETE FROM role_permissions WHERE role_id = ${principalRole}`);
+  await reseed();
+
   /* 6. The Super Admin account is created once and never rewritten. */
   const email = require('../src/config/env').superAdmin.email.toLowerCase();
   const original = await one(
@@ -273,18 +306,20 @@ async function main() {
   check('109 permissions', (await one('SELECT COUNT(*) n FROM permissions')).n === 109);
   check('7 add-ons', (await one('SELECT COUNT(*) n FROM addons')).n === 7);
   /*
-   * Owner decision D16: a new install seeds Custom Domain switched off, and only it. Read from the
-   * definitions the seeder inserts rather than from the table, because `is_active` is the operator's
-   * once a row exists (case 7) — this database's rows predate the decision.
+   * Owner decisions D16 and D25: a new install seeds Custom Domain and SMS Credits switched off, and
+   * only those two — neither has anything in this application to consume it. Read from the definitions
+   * the seeder inserts rather than from the table, because `is_active` is the operator's once a row
+   * exists (case 7) — this database's rows predate both decisions.
    */
   const { ADDON_DEFINITIONS } = require('../src/database/seeders/05-addons');
-  const seededInactive = ADDON_DEFINITIONS.filter((d) => !d.is_active).map((d) => d.key);
+  const seededInactive = ADDON_DEFINITIONS.filter((d) => !d.is_active).map((d) => d.key).sort();
   check(
-    'a new install seeds only custom_domain switched off (D16)',
-    seededInactive.length === 1 && seededInactive[0] === 'custom_domain',
+    'a new install seeds exactly custom_domain and sms_credits switched off (D16, D25)',
+    JSON.stringify(seededInactive) === JSON.stringify(['custom_domain', 'sms_credits']),
     `inactive = ${JSON.stringify(seededInactive)}`
   );
-  check('353 default grants', (await one('SELECT COUNT(*) n FROM role_permissions')).n === 353);
+  /* 359 since D27 gave Principal and School Admin three billing reads each (353 + 6). */
+  check('359 default grants', (await one('SELECT COUNT(*) n FROM role_permissions')).n === 359);
   check('1 user', (await one('SELECT COUNT(*) n FROM users')).n === 1);
 
   /* Every case restored what it damaged, so the journal is no longer owed. */

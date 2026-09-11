@@ -752,6 +752,14 @@ async function grantToPrincipal(key) {
   await permissionService.invalidateRole(roleId);
 }
 
+/** Withdraw one key from the seeded `principal` role, live — the seeded grants are restored at the end. */
+async function revokeFromPrincipal(key) {
+  const roleId = fixtures.roles[ROLES.PRINCIPAL].id;
+  const [permission] = await permissionService.findPermissionsByKeys([key]);
+  await db.RolePermission.destroy({ where: { role_id: roleId, permission_id: permission.id } });
+  await permissionService.invalidateRole(roleId);
+}
+
 /* ═══════════════════════════ part 3 — over HTTP ═══════════════════════════ */
 
 async function verifyHttp() {
@@ -805,22 +813,28 @@ async function verifyHttp() {
     /*
      * The behavioural assertion for `requirePermission`. The guard is `asyncHandler`-wrapped and
      * anonymous, so its presence cannot be checked by name in part 2 — only from its own 403 body.
-     * `DEFAULT_ROLE_PERMISSIONS` gives the principal role no `plans.*` key at all.
+     * `DEFAULT_ROLE_PERMISSIONS` gives the principal role `plans.view` and nothing else of `plans.*` —
+     * the owner's decision D27, so a school can see the plans it could move to — and the guard is
+     * proven by withdrawing that key live.
      */
-    console.log('\n--- permissions: no plans.* key reaches a school role by default ---');
+    console.log('\n--- permissions: school leadership reads the catalogue (D27), and only through plans.view ---');
     check(
-      'the seeded principal role holds no plans permission',
+      'the seeded principal role holds plans.view — the owner\'s decision D27 — and no other plans key',
       DEFAULT_ROLE_PERMISSIONS[ROLES.PRINCIPAL].filter((key) => key.startsWith('plans.')),
-      []
+      ['plans.view']
     );
+    check('so the principal reads the catalogue, to see what it could move to',
+      (await call('/plans', { token: principal })).status, 200);
+    await revokeFromPrincipal('plans.view');
     const deniedRead = await call('/plans', { token: principal });
-    check('so the principal cannot read the catalogue', deniedRead.status, 403);
+    check('withdraw the key and the same principal is refused', deniedRead.status, 403);
     check('and the guard says which key was missing', codeOf(deniedRead), 'INSUFFICIENT_PERMISSION');
     check(
       'naming plans.view',
-      deniedRead.body.error.details.missing,
+      deniedRead.body && deniedRead.body.error && deniedRead.body.error.details.missing,
       ['plans.view']
     );
+    await grantToPrincipal('plans.view');
 
     /* ───────────────────────── FR-SUB-001 — Create Plan ───────────────────────── */
 

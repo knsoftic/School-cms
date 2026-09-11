@@ -38,13 +38,17 @@
  * each of those three to their own documents — three self-audiences rather than §20.2's two, because a
  * teacher is an **owner** here as well as a reader.
  *
- * ## No DELETE, and no bytes
+ * ## No DELETE, and no stored bytes
  *
- * §20.5 names neither. Rendering is checklist row 5.4 (Phase 5.4), so `file_path`, `file_name`,
- * `mime_type` and `file_size_bytes` stay null, `storage_limit` is not incremented — mounting
- * `enforceLimit(LIMITS.STORAGE_LIMIT)` here would be a guard that could never fire — and there is still
- * no download route anywhere in this application. What §20.5 delivers is the record: which document was
- * generated, for whom, by whom, when, and the assembled `generation_payload` that reproduces it.
+ * §20.5 names neither. `GET /:id?format=pdf` renders the document from its `generation_payload` and
+ * streams it; nothing is written to disk, so `file_path`, `file_name`, `mime_type` and `file_size_bytes`
+ * stay null and `storage_limit` is not charged — it is charged by the upload chain
+ * (`upload.verifyStorage()`), and a generated document stores nothing. What §20.5 keeps is the record:
+ * which document was generated, for whom, by whom, when, and the assembled payload that reproduces it.
+ *
+ * Who sees which documents: the four actors — every holder of `documents.generate` — see the school's;
+ * every other holder of `documents.view` sees only those of the student, teacher or children linked to
+ * their own account, which may be none (`documents.service` `selfScope()`).
  */
 
 const { createRouter } = require('../../utils/createRouter');
@@ -55,6 +59,8 @@ const {
   requirePermission,
   requireActiveSubscription,
 } = require('../../middlewares');
+const { REPORT_FORMATS } = require('../../config/constants');
+const { respondsWithFile } = require('../../utils/routeMeta');
 
 const controller = require('./documents.controller');
 const { schemas } = require('./documents.validation');
@@ -79,11 +85,33 @@ router.post(
   asyncHandler(controller.generate)
 );
 
+/*
+ * The owner's decision D34 — pick-lists for the generate dialog, on `documents.generate`. FR-DOC-001's
+ * Accountant and Receptionist hold neither `teachers.view` nor `exams.view`, and a Teacher ID Card names
+ * a teacher and a Result Card an exam. Above `GET /:id`, so the literal segment is never read as an id.
+ */
+router.get(
+  '/pickers/teachers',
+  requirePermission('documents.generate'),
+  validate({ query: schemas.pickerQuery }),
+  asyncHandler(controller.pickTeachers)
+);
+
+router.get(
+  '/pickers/exams',
+  requirePermission('documents.generate'),
+  validate({ query: schemas.pickerQuery }),
+  asyncHandler(controller.pickExams)
+);
+
 router.get(
   '/:id',
   requirePermission('documents.view'),
   validate({ params: schemas.idParam, query: schemas.showQuery }),
-  asyncHandler(controller.show)
+  respondsWithFile(asyncHandler(controller.show), {
+    types: [controller.PDF_MIME],
+    when: `format=${REPORT_FORMATS.PDF}`,
+  })
 );
 
 module.exports = router;

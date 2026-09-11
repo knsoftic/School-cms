@@ -80,6 +80,7 @@ const {
 } = require('../../utils/schoolScope');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
+const { assertOnCurriculum } = require('../homework/homework.service');
 const {
   ASSIGNMENT_RECORD_TYPES,
   ASSIGNMENT_STATUS,
@@ -195,6 +196,8 @@ async function assertReferences(payload, schoolId, existing = null) {
       ]);
     }
   }
+  /* FR-ASG-001's "Class/subject assignment exists" (SRS:1108) — D30, the rule homework applies. */
+  await assertOnCurriculum(payload, schoolId, existing);
 
   const assigned = payload.assigned_date !== undefined
     ? dateOnly(payload.assigned_date)
@@ -212,21 +215,30 @@ async function assertReferences(payload, schoolId, existing = null) {
  * student nor a parent and therefore sees the whole school.
  *
  * Two sets, not one, because the two record types are narrowed by different columns: an assignment is
- * reached through `class_id`, a submission through `student_id`. Narrowing submissions by class would
- * show one student every classmate's work.
+ * reached through its placement — `class_id`, and `section_id` when it names one — a submission through
+ * `student_id`. Narrowing submissions by class would show one student every classmate's work.
+ *
+ * The section is part of the placement because `submit()` already refuses a student of another section
+ * (`ASSIGNMENT_NOT_FOR_STUDENT`). Narrowing the list by class alone showed that student the assignment
+ * and a Submit button, and then refused the submission.
  */
 async function selfScope(req) {
   if (!req.user || !req.user.id) return null;
 
-  const classIds = new Set();
+  const placements = [];
   const studentIds = new Set();
   let isSelfCaller = false;
+  const place = (row) => {
+    studentIds.add(Number(row.id));
+    if (row.class_id) {
+      placements.push({ classId: Number(row.class_id), sectionId: row.section_id ? Number(row.section_id) : null });
+    }
+  };
 
   const student = await db.Student.findOne({ where: tenantWhere(req.tenant, { user_id: req.user.id }) });
   if (student) {
     isSelfCaller = true;
-    studentIds.add(Number(student.id));
-    if (student.class_id) classIds.add(Number(student.class_id));
+    place(student);
   }
 
   const parent = await db.Parent.findOne({ where: tenantWhere(req.tenant, { user_id: req.user.id }) });
@@ -240,22 +252,36 @@ async function selfScope(req) {
       if (links.length) {
         const children = await db.Student.findAll({
           where: { id: { [Op.in]: links.map((l) => l.student_id) }, school_id: parent.school_id },
-          attributes: ['id', 'class_id'],
+          attributes: ['id', 'class_id', 'section_id'],
         });
-        for (const child of children) {
-          studentIds.add(Number(child.id));
-          if (child.class_id) classIds.add(Number(child.class_id));
-        }
+        children.forEach(place);
       }
     }
   }
 
-  return isSelfCaller ? { classIds: [...classIds], studentIds: [...studentIds] } : null;
+  return isSelfCaller ? { placements, studentIds: [...studentIds] } : null;
 }
 
 /** An empty `IN ()` — a self-service caller with no class or child resolves to nothing, never to all. */
 const NONE = Object.freeze({ [Op.in]: [0] });
 const inList = (values) => (values.length ? { [Op.in]: values } : NONE);
+
+/** Whether an assignment is set for one of `placements`: its class, and either no section or theirs. */
+function reaches(placements, row) {
+  return placements.some((p) => p.classId === Number(row.class_id) &&
+    (!row.section_id || p.sectionId === Number(row.section_id)));
+}
+
+/** The same test as a `WHERE` fragment. */
+function placementWhere(placements) {
+  if (!placements.length) return { class_id: NONE };
+  return {
+    [Op.or]: placements.map((p) => ({
+      class_id: p.classId,
+      [Op.or]: [{ section_id: null }, ...(p.sectionId ? [{ section_id: p.sectionId }] : [])],
+    })),
+  };
+}
 
 /**
  * A student or parent is shown a `draft` assignment by nobody: §20.3's first step is that the teacher
@@ -287,7 +313,7 @@ async function findById(req, id, namedSchoolId = undefined) {
   if (!row) throw ApiError.notFound('Assignment not found', { code: 'ASSIGNMENT_NOT_FOUND' });
 
   const own = await selfScope(req);
-  if (own && (!own.classIds.includes(Number(row.class_id)) || !VISIBLE_TO_CLASS.includes(row.status))) {
+  if (own && (!reaches(own.placements, row) || !VISIBLE_TO_CLASS.includes(row.status))) {
     throw ApiError.notFound('Assignment not found', { code: 'ASSIGNMENT_NOT_FOUND' });
   }
   return row;
@@ -317,7 +343,8 @@ async function list(req, query, pagination) {
 
   const own = await selfScope(req);
   if (own) {
-    where.class_id = inList(own.classIds);
+    /* Beside the caller's own filters, not over them — `class_id=` or `q=` can only narrow. */
+    where[Op.and] = [...(where[Op.and] || []), placementWhere(own.placements)];
     /*
      * Applied after the caller's own `status` filter, so a student asking for `status=draft` is
      * answered with nothing rather than with the school's drafts.

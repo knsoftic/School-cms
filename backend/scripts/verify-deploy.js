@@ -5,9 +5,10 @@
  *
  * ## What this suite can and cannot do, stated first because it bounds everything below
  *
- * `nginx`, `pm2`, `mysql`, `mysqldump` and `logrotate` are **all absent from this machine** — only
- * `node` and `openssl` are present. So **not one of these files can be validated by the tool that
- * will consume it**. There is no `nginx -t` here, no `pm2 start --dry-run`, no `logrotate -d`.
+ * `nginx`, `pm2` and `logrotate` are **absent from this machine**, and `mysql`/`mysqldump` are present only
+ * as XAMPP's, off PATH (`MYSQLDUMP_PATH` names the dump; `scripts/restore-drill.js` uses both). So **none
+ * of the nginx, PM2 or logrotate files can be validated by the tool that will consume it**. There is
+ * no `nginx -t` here, no `pm2 start --dry-run`, no `logrotate -d`.
  *
  * That is a real limitation and it is not worked around, because it cannot be. What this suite does
  * instead is the thing that actually goes wrong with deployment configuration: it checks that each
@@ -123,8 +124,10 @@ function verifyPm2() {
   const byName = Object.fromEntries(apps.map((a) => [a.name, a]));
   const api = byName['msms-api'] || {};
   const cron = byName['msms-cron'] || {};
+  const web = byName['msms-web'] || {};
 
-  check('it defines the API and the cron scheduler', Object.keys(byName).sort(), ['msms-api', 'msms-cron']);
+  check('it defines the API, the cron scheduler and the dashboard',
+    Object.keys(byName).sort(), ['msms-api', 'msms-cron', 'msms-web']);
 
   /*
    * Two apps, not three. `worker.js` runs one job and exits; PM2 would restart it in a loop forever.
@@ -154,12 +157,27 @@ function verifyPm2() {
   check('  and PM2 waits longer than it, or graceful shutdown is killed mid-flight',
     api.kill_timeout > SHUTDOWN_MS, true);
 
-  /* A script PM2 is told to run must exist, or the failure is a restart loop at 3 a.m. */
-  const scripts = apps.map((a) => a.script).filter(Boolean);
-  check('every script PM2 is pointed at exists',
-    scripts.filter((s) => !fs.existsSync(path.resolve(DEPLOY, 'pm2', s))
-      && !fs.existsSync(path.resolve(ROOT, s))
-      && !fs.existsSync(path.resolve(ROOT, 'backend', s))), []);
+  /*
+   * A script PM2 is told to run must exist, or the failure is a restart loop at 3 a.m. Resolved against
+   * the app's own `cwd`, which is where PM2 resolves it — the dashboard's is `frontend/`.
+   */
+  check('every script PM2 is pointed at exists, from the directory it runs in',
+    apps.filter((a) => a.script && !fs.existsSync(path.resolve(a.cwd || path.join(DEPLOY, 'pm2'), a.script)))
+      .map((a) => a.name), []);
+
+  /*
+   * The dashboard. It serves a build rather than a source tree, on loopback, on the port its own
+   * `npm start` names — the port nginx's dashboard upstream must target (Part 3).
+   */
+  const frontendStart = attempt(() => JSON.parse(
+    fs.readFileSync(path.join(ROOT, 'frontend', 'package.json'), 'utf8')).scripts.start, '');
+  check('the dashboard runs from frontend/, with Next\'s own server',
+    [path.basename(String(web.cwd || '')), /next\/dist\/bin\/next$/.test(String(web.script || ''))], ['frontend', true]);
+  check('  on the port frontend/package.json starts it on',
+    (String(web.args || '').match(/-p\s+(\d+)/) || [])[1], (frontendStart.match(/-p\s+(\d+)/) || [])[1]);
+  check('  bound to loopback, so only nginx reaches it — next start binds every interface by default',
+    /-H\s+127\.0\.0\.1\b/.test(String(web.args || '')), true);
+  check('  in production mode', (web.env && web.env.NODE_ENV) || null, 'production');
 
   check('the API runs with NODE_ENV=production',
     (api.env_production && api.env_production.NODE_ENV) || (api.env && api.env.NODE_ENV), 'production');
@@ -290,6 +308,57 @@ function verifyNginx() {
    */
   check('nginx does not announce its version', /server_tokens\s+off/.test(conf), true);
   check('  in any context, since the innermost one wins', /server_tokens\s+on/.test(conf), false);
+
+  /*
+   * ── The dashboard origin ──
+   *
+   * The second site, in front of msms-web. Checked against the ecosystem file and against the one place
+   * the frontend learns where the API is, because each of these fails silently: a wrong upstream port
+   * is a 502 on every page, and a NEXT_PUBLIC_API_URL naming a host nginx does not serve builds a
+   * dashboard that loads and then cannot sign anybody in.
+   */
+  const eco = attempt(() => require(path.join(DEPLOY, 'pm2/ecosystem.config.js')), { apps: [] });
+  const web = (eco.apps || []).find((a) => a.name === 'msms-web') || {};
+  const webPort = (String(web.args || '').match(/-p\s+(\d+)/) || [])[1];
+  const webUpstream = (conf.match(/upstream\s+msms_web\s*\{[^}]*server\s+127\.0\.0\.1:(\d+)/) || [])[1];
+  check('the dashboard upstream targets the port msms-web is started on, on loopback',
+    [webUpstream, webUpstream === webPort], [webPort, true]);
+  check('  and a TLS site proxies to it', /proxy_pass\s+http:\/\/msms_web\s*;/.test(conf), true);
+
+  const serverNames = [...conf.matchAll(/server_name\s+([^\s;]+)\s*;/g)].map((m) => m[1]);
+  const apiHost = serverNames[0];
+  const webHost = serverNames.find((name) => name !== apiHost);
+  check('  under its own hostname, beside the API\'s', [Boolean(apiHost), Boolean(webHost)], [true, true]);
+  check('  with its own certificate', conf.includes(`/etc/letsencrypt/live/${webHost}/fullchain.pem`), true);
+
+  /*
+   * Security headers: the API's come from helmet, so the API block must not add them (two HSTS headers
+   * and a browser keeps only the first); Next sets none, so the dashboard block must. Exactly one
+   * uncommented HSTS line, therefore — the dashboard's — and a Next config that sets none of its own.
+   */
+  const nextConfig = attempt(() => fs.readFileSync(path.join(ROOT, 'frontend', 'next.config.mjs'), 'utf8'), '');
+  check('HSTS is added once — for the dashboard, which nothing upstream gives it',
+    [(conf.match(/add_header\s+Strict-Transport-Security/g) || []).length, /Strict-Transport-Security/.test(nextConfig)],
+    [1, false]);
+
+  /*
+   * The frontend's API URL, built into the bundle, must be the API site's hostname and the prefix the
+   * app mounts; and the dashboard's origin must be one the API accepts — in CORS_ORIGINS, in
+   * FRONTEND_URL (which is mailed in reset links) and in nginx's own $cors_allow map.
+   */
+  const frontendEnv = attempt(() => fs.readFileSync(path.join(ROOT, 'frontend', '.env.example'), 'utf8'), '');
+  const apiUrl = (frontendEnv.match(/^NEXT_PUBLIC_API_URL=(\S+)$/m) || [])[1] || '';
+  const apiClient = attempt(() => fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'lib', 'apiClient.ts'), 'utf8'), '');
+  check('the frontend documents NEXT_PUBLIC_API_URL, and the API client is what reads it',
+    [Boolean(apiUrl), /process\.env\.NEXT_PUBLIC_API_URL/.test(apiClient)], [true, true]);
+  check('  naming the API site nginx serves and the prefix the app mounts',
+    apiUrl, `https://${apiHost}${config.app.apiPrefix}`);
+  const template = read('env/production.env.example');
+  const templateValue = (key) => (template.match(new RegExp(`^${key}=(\\S+)$`, 'm')) || [])[1] || '';
+  check('the dashboard origin is the one the API is told to accept — CORS_ORIGINS, FRONTEND_URL, $cors_allow',
+    [templateValue('CORS_ORIGINS').split(',').includes(`https://${webHost}`), templateValue('FRONTEND_URL'),
+      conf.includes(`"https://${webHost}"`)],
+    [true, `https://${webHost}`, true]);
 
   /* The API prefix the app actually mounts. */
   check('the site knows the API prefix the app mounts', raw.includes(config.app.apiPrefix), true);

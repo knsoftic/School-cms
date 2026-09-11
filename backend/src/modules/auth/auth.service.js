@@ -56,6 +56,7 @@ const ApiError = require('../../utils/ApiError');
 const { enqueue } = require('../../config/queue');
 const permissionService = require('../../services/permissionService');
 const entitlementService = require('../../services/entitlementService');
+const { schoolBrand } = require('../../utils/schoolScope');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const { STATUS_REFUSALS } = require('../../middlewares/authenticate');
 const { LOGIN_ALLOWED_STATUSES, JOB_NAMES } = require('../../config/constants');
@@ -820,7 +821,38 @@ async function profile(req) {
       isPlatform: req.tenant.isPlatform,
     },
     entitlements: await callerEntitlements(req),
+    school: await callerSchool(req),
   };
+}
+
+/**
+ * The caller's own school as its screens should name it, and its current session — or `null` for a
+ * caller who has no school.
+ *
+ * The owner's decisions D35 (the school's name, logo and currency appear on its screens) and D20 (forms
+ * default to the current session). Both were readable only through `GET /school-settings` and
+ * `GET /sessions/current`, which need permissions only school leadership and academic staff hold, so a
+ * Receptionist's shell showed the platform's name and an Accountant's fee form could not default its
+ * session. It rides here for the reasons `callerEntitlements()` gives: every screen needs it on load,
+ * it is the caller's own school, and a route of its own would need a permission the catalogue does not
+ * have. Only these four facts — the settings row's contact details, theme and preferences stay behind
+ * `settings.view`.
+ *
+ * @param {import('express').Request} req
+ * @returns {Promise<object|null>}
+ */
+async function callerSchool(req) {
+  if (!req.tenant || req.tenant.isPlatform || !req.tenant.schoolId) return null;
+
+  const [brand, session] = await Promise.all([
+    schoolBrand(req.tenant.schoolId),
+    db.AcademicSession.findOne({
+      where: { school_id: req.tenant.schoolId, is_current: true },
+      attributes: ['id', 'name', 'status', 'start_date', 'end_date'],
+    }),
+  ]);
+  if (!brand) return null;
+  return { ...brand, current_session: session ? session.get({ plain: true }) : null };
 }
 
 /**

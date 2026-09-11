@@ -96,8 +96,8 @@
  * imported nowhere), a place to put the bytes (a seventh upload profile, where six exist and adding one
  * is a recorded constraint), and a way to serve them back — there is **no** `res.download`,
  * `res.sendFile`, `express.static` or streamed response anywhere in the application. It would also make
- * this module the first production writer of stored bytes, which `LIMITS.STORAGE_LIMIT` is specified
- * for and nothing yet enforces. And SRS §22 is a separate Reports section that owns PDF/Excel/Print for
+ * this module a writer of stored bytes outside the upload chain, the one place `LIMITS.STORAGE_LIMIT` is
+ * charged (`upload.verifyStorage()`). And SRS §22 is a separate Reports section that owns PDF/Excel/Print for
  * seven report types including Exam Reports, with an actor list matching FR-EXAM-005's.
  *
  * So the server-side half is built and the presentation half is left to the module that owns it. The
@@ -120,6 +120,8 @@ const {
   loadSectionOfClass,
   loadSessionInSchool,
   loadTeacherInSchool,
+  assertOpenForNew,
+  schoolBrand,
 } = require('../../utils/schoolScope');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
@@ -441,6 +443,8 @@ async function assertExamReferences(payload, schoolId, existing = null) {
 async function createExam(req, payload) {
   const school = await resolveSchool(req, payload.school_id);
   await assertExamReferences(payload, school.id);
+  /* D20 — a closed session takes no new exam: neither the one named nor its class's own. */
+  await assertOpenForNew({ sessionId: payload.academic_session_id, classId: payload.class_id }, 'exam');
 
   let row;
   try {
@@ -1348,10 +1352,26 @@ async function listResults(req, query, pagination) {
         { model: db.Student, as: 'student', attributes: ['id', 'student_id', 'roll_number', 'first_name', 'last_name'] },
         { model: db.Exam, as: 'exam', attributes: ['id', 'name', 'exam_type', 'start_date'] },
       ],
-      order: getSort({ query }, RESULT_SORTABLE, ['position', 'ASC']),
+      order: unrankedLast(getSort({ query }, RESULT_SORTABLE, ['position', 'ASC'])),
     },
     pagination
   );
+}
+
+/**
+ * A merit list puts the unranked at its foot, whichever way it runs.
+ *
+ * MariaDB sorts NULL first in ascending order, so the list served every unranked result — a student
+ * absent from a paper, a result not yet computed — above first place, while `classResultPdf()` put them
+ * last. A screen and its export disagreeing about who is at the top of the class is the one ordering
+ * defect a family would notice; only an order on `position` is changed.
+ *
+ * @param {Array<Array>} order  from `getSort()`
+ * @returns {Array<Array>}
+ */
+function unrankedLast(order) {
+  if (!order.length || order[0][0] !== 'position') return order;
+  return [[db.sequelize.literal('`Result`.`position` IS NULL'), 'ASC'], ...order];
 }
 
 /**
@@ -1363,14 +1383,16 @@ async function listResults(req, query, pagination) {
  * unfinished — that is the standard the service header holds it to.
  */
 async function resultCard(req, result) {
-  const [exam, student, school] = await Promise.all([
+  const [exam, student, school, brand] = await Promise.all([
     db.Exam.findByPk(result.exam_id),
     db.Student.findByPk(result.student_id),
     db.School.findByPk(result.school_id),
+    schoolBrand(result.school_id),
   ]);
 
   return {
-    school: school ? { id: school.id, name: school.name, code: school.code } : null,
+    /* The name the school uses (D35), which is the one a card handed to a family should carry. */
+    school: school ? { id: school.id, name: brand ? brand.name : school.name, code: school.code } : null,
     exam: exam
       ? {
           id: exam.id,
@@ -1507,6 +1529,76 @@ function resultCardPdf(card) {
   });
 }
 
+/**
+ * FR-EXAM-004's "Class Result" as a PDF — every result of one exam, in merit order.
+ *
+ * The exam has already been found through the caller's tenant (`findExam`), so this reads by its id.
+ * Ranked students first by position, then the unranked — §19 ranks only those who sat every counted
+ * paper, and `ORDER BY position` alone would put MariaDB's NULLs first, heading a merit list with the
+ * students it does not rank.
+ *
+ * It honours the list's filters — published or not, a section, a student — so the PDF of what a screen
+ * shows filtered is that same set: one that quietly included the rows the screen hid would be a
+ * different document from the one the user chose to export.
+ *
+ * @param {object} exam  an `Exam` row the caller may read
+ * @param {{is_published?: boolean, class_id?: number, section_id?: number, student_id?: number}} [query]
+ * @returns {Promise<Buffer>}
+ */
+async function classResultPdf(exam, query = {}) {
+  const [school, rows] = await Promise.all([
+    /* D35 — the school's own display name heads the page. */
+    schoolBrand(exam.school_id),
+    db.Result.findAll({
+      where: {
+        exam_id: exam.id,
+        school_id: exam.school_id,
+        /* The list's own filters, every one it accepts — so the PDF is the set the screen shows. */
+        ...Object.fromEntries(
+          ['is_published', 'class_id', 'section_id', 'student_id']
+            .filter((field) => query[field] !== undefined)
+            .map((field) => [field, query[field]])
+        ),
+      },
+      include: [{ model: db.Student, as: 'student', attributes: ['student_id', 'roll_number', 'first_name', 'last_name'] }],
+      order: [[db.sequelize.literal('`Result`.`position` IS NULL'), 'ASC'], ['position', 'ASC'], ['id', 'ASC']],
+    }),
+  ]);
+  const published = rows.filter((row) => row.is_published).length;
+
+  return renderTable({
+    title: 'Class Result',
+    subtitle: [school && school.name, exam.name].filter(Boolean).join('  |  ') || null,
+    details: [
+      { label: 'Exam type', value: exam.exam_type },
+      { label: 'Exam dates', value: [exam.start_date, exam.end_date].filter(Boolean).join(' to ') },
+      { label: 'Results', value: `${rows.length} (${published} published)` },
+    ],
+    columns: [
+      { key: 'position', header: 'Pos.', width: 1 },
+      { key: 'student', header: 'Student', width: 4 },
+      { key: 'roll', header: 'Roll', width: 1 },
+      { key: 'marks', header: 'Marks', width: 2 },
+      { key: 'percentage', header: '%', width: 1 },
+      { key: 'grade', header: 'Grade', width: 1 },
+      { key: 'outcome', header: 'Outcome', width: 1 },
+    ],
+    rows: rows.map((row) => {
+      const student = row.student || {};
+      return {
+        position: row.position === null ? '—' : row.position,
+        student: [student.first_name, student.last_name].filter(Boolean).join(' ') || student.student_id,
+        roll: student.roll_number,
+        marks: `${row.total_marks_obtained} / ${row.total_full_marks}`,
+        percentage: row.percentage === null ? '—' : row.percentage,
+        grade: row.grade_name,
+        outcome: row.outcome,
+      };
+    }),
+    footer: (school && school.name) || 'School Management System',
+  });
+}
+
 async function findResult(req, id, namedSchoolId = undefined) {
   const where = tenantWhere(req.tenant, { id });
   const named = namedSchoolId !== undefined ? namedSchoolId : req.query && req.query.school_id;
@@ -1523,9 +1615,9 @@ async function findResult(req, id, namedSchoolId = undefined) {
  * §19.3 "Student Result" for the people it is about — `results.self.view`, held by a student and a
  * parent and nobody else.
  *
- * This is the one self-service view §19 actually names: §16 and §17 left their `.self.view`
- * permissions unmounted because those sections describe no such view, whereas §19.3 names "Student
- * Result" and FR-EXAM-005's actor list includes Parent and Student outright.
+ * §19.3 names "Student Result" and FR-EXAM-005's actor list includes Parent and Student outright. The
+ * other three self-view keys were mounted later by the owner's decision D17, and resolve whose records
+ * they are through `services/selfScope`, which states this function's rule once for all of them.
  *
  * Confinement is **not** `tenantWhere`, which would hand a parent their whole school. A parent is
  * resolved from their own account and confined through `parent_students`; a student to their own row.
@@ -1588,6 +1680,11 @@ async function myResults(req, query, pagination) {
     db.Result,
     {
       where,
+      /*
+       * `result_card_path` is a stored path, and no path leaves the server (Known Issues #26). Nothing
+       * writes it yet — the card is rendered on request — so this closes a leak before its first writer.
+       */
+      attributes: { exclude: ['result_card_path'] },
       include: [
         { model: db.Student, as: 'student', attributes: ['id', 'student_id', 'roll_number', 'first_name', 'last_name'] },
         /*
@@ -1617,6 +1714,7 @@ module.exports = {
   findResult,
   resultCard,
   resultCardPdf,
+  classResultPdf,
   subjectRows,
   listGrades,
   findGrade,

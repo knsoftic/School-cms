@@ -75,16 +75,35 @@ const HOME: Record<InboxSurface, string> = {
 const spell = (value: string) => value.replace(/_/g, ' ');
 
 /**
+ * The two §23 records a student's and a parent's surface has a screen for.
+ *
+ * `notifications.service.js` writes `/results/:id` for Result Published and `/homework/:id` for
+ * Homework, and addresses both to the student and to their parents. A student's results are their
+ * dashboard; a parent's have a screen of their own, and so does each surface's homework.
+ */
+const SELF_SCREENS: Record<'student' | 'parent', { results: string; homework: string }> = {
+  student: { results: '/student', homework: '/student/homework' },
+  parent: { results: '/parent/results', homework: '/parent/homework' },
+};
+
+/**
  * Where "Open" takes this viewer, or null when no screen on their surface shows that record.
  *
- * Only the school surface has screens for the records §23 is about; a student's and a parent's portal
- * is the dashboard. Every mapping is to a route that exists, and anything unrecognised gets no link.
+ * The school surface has a screen for each record §23 is about. A student or parent is sent to their
+ * results or homework screen for those two, and to their dashboard for the rest — exam announcements,
+ * attendance alerts and fee notices have no screen on either portal. This used to send a parent's
+ * result notification to the dashboard, which does not show results. Every mapping is to a route
+ * that exists, and anything unrecognised gets no link.
  */
 export function destinationFor(actionUrl: string | null, surface: InboxSurface): string | null {
   if (!actionUrl || !actionUrl.startsWith('/')) return null;
   if (actionUrl.startsWith('/super-admin/')) return surface === 'platform' ? actionUrl : null;
   if (surface === 'platform') return null;
-  if (surface !== 'school') return HOME[surface];
+  if (surface === 'student' || surface === 'parent') {
+    if (actionUrl.startsWith('/results')) return SELF_SCREENS[surface].results;
+    if (actionUrl.startsWith('/homework')) return SELF_SCREENS[surface].homework;
+    return HOME[surface];
+  }
 
   const exam = actionUrl.match(/^\/exams\/(\d+)$/);
   if (exam) return `/school/exams/${exam[1]}`;
@@ -92,8 +111,21 @@ export function destinationFor(actionUrl: string | null, surface: InboxSurface):
   if (actionUrl.startsWith('/results')) return '/school/results';
   if (actionUrl.startsWith('/attendance')) return '/school/attendance';
   if (actionUrl.startsWith('/fees')) return '/school/fees';
-  /* A school's subscription and its platform payments are shown on its dashboard. */
-  if (actionUrl.startsWith('/subscriptions') || actionUrl.startsWith('/payments')) return '/school';
+  /*
+   * A school's subscription, its invoices and its platform payments are on its Billing screen (the
+   * owner's decision D27), which used to not exist — so these went to the dashboard, which shows the
+   * plan and the state and nothing that could be paid or checked.
+   *
+   *  - Subscription Expiry writes `/subscriptions`: the overview, which says what the state means.
+   *  - Payment Received / Failed write `/payments/:id`: the Payments tab. They also reach the person who
+   *    submitted the payment, who may be an Accountant without `payments.view` — the screen then opens
+   *    on the first tab that account can read, the invoices, where each invoice shows its payments.
+   *  - D28's reminder for a subscription invoice writes `/invoices/:id`: that invoice's own screen.
+   */
+  if (actionUrl.startsWith('/subscriptions')) return '/school/billing';
+  if (actionUrl.startsWith('/payments')) return '/school/billing?tab=payments';
+  const invoice = actionUrl.match(/^\/invoices\/(\d+)$/);
+  if (invoice) return `/school/billing/invoices/${invoice[1]}`;
   return null;
 }
 

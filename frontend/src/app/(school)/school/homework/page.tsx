@@ -32,6 +32,15 @@
  * `has_attachment: Boolean(row.attachment_path)`. The column below renders that boolean. The bytes
  * live behind `GET /homework/:id/attachment`, which is a separate authenticated request — see the
  * attachment column for why the cell is a button that fetches rather than a link.
+ *
+ * ## The brief is read from the row the list already holds
+ *
+ * `description` is the work itself — `homework/new` calls it "the brief" — and §20.2's outcome is that
+ * homework "is available to the relevant class/students". It was captured at creation and then shown
+ * nowhere. It is on every list row already, because `present()` returns every column but the path, so
+ * the Details dialog reads the row it was opened from. `GET /homework/:id` is deliberately still not
+ * called: `findById()` returns the same row with *less* on it — no `class` or `subject` join — so a
+ * second request would cost a round trip to learn nothing.
  */
 
 import Link from 'next/link';
@@ -42,6 +51,7 @@ import { useAuth } from '@/lib/auth';
 import { EditDialog } from '@/components/editDialog';
 import { useCollection } from '@/lib/useCollection';
 import { Icon } from '@/components/icon';
+import { Modal } from '@/components/overlay';
 import { useToast } from '@/components/toast';
 import {
   SearchField,
@@ -72,13 +82,18 @@ import {
  * **two** — `Class as 'class'` with `['id','name']` and `Subject as 'subject'` with
  * `['id','name','code']`. `section`, `teacher` and `academicSession` arrive as bare foreign keys.
  *
- * Only the fields this screen uses are declared. The row carries more — `description`,
- * `notified_at`, `created_by`, `organization_id`, `academic_session_id` — and typing them here
- * would invite a later edit to put one on screen without re-reading why it was left off.
+ * Only the fields this screen uses are declared. The row carries more — `notified_at`,
+ * `created_by`, `organization_id`, `academic_session_id` — and typing them here would invite a later
+ * edit to put one on screen without re-reading why it was left off.
  */
 interface Homework {
   id: number;
   title: string;
+  /**
+   * The brief — up to 5000 characters (`homework.validation.js`), nullable, and `.empty('')` on the
+   * way in, so a cleared one is stored as null rather than as an empty string. See the header.
+   */
+  description: string | null;
   /**
    * The joined class. Typed nullable even though `class_id` is a NOT NULL foreign key: `list()` uses
    * a plain `include` (a LEFT JOIN, not `required: true`), so an unresolvable class would arrive as
@@ -224,9 +239,13 @@ export default function HomeworkPage() {
    * `class_id`, `section_id`, `subject_id` and `teacher_id` are accepted and not offered: each is a
    * numeric id, and moving homework to another class after it has been published is not a
    * correction. The attachment is likewise not here — `POST /homework` takes it as multipart, and
-   * there is no route that replaces one.
+   * there is no route that replaces one. The brief is offered: a typo in the work itself is the
+   * likeliest correction of all, and it could be written once and never fixed.
    */
   const [editing, setEditing] = useState<Homework | null>(null);
+
+  /* The row whose Details dialog is open — see the header on why it is not fetched again. */
+  const [viewing, setViewing] = useState<Homework | null>(null);
 
   /*
    * The attachment, fetched through the authenticated client — see the Attachment column.
@@ -267,7 +286,21 @@ export default function HomeworkPage() {
       {
         key: 'title',
         header: 'Homework',
-        cell: (row) => <span className="font-medium">{row.title}</span>,
+        /*
+         * The first line of the brief under the title, so a search that matched the description (the
+         * search box scans both) shows why it matched. One line only: the whole brief is in Details,
+         * and a list row that grew with its text would stop being a list.
+         */
+        cell: (row) => (
+          <div className="max-w-sm">
+            <span className="font-medium">{row.title}</span>
+            {row.description ? (
+              <span className="mt-0.5 block text-xs text-muted-soft line-clamp-1">
+                {row.description}
+              </span>
+            ) : null}
+          </div>
+        ),
       },
       {
         key: 'class',
@@ -284,8 +317,8 @@ export default function HomeworkPage() {
               * The section has no join, so its *name* is unavailable — but whether the field is set
               * is itself a fact worth reporting: it decides whether the whole class owes this work
               * or one section does. Saying "one section" rather than printing an id is the honest
-              * version. There is no homework detail screen to say which section it is; naming it
-              * needs `list()` to include `Section`.
+              * version. The Details dialog cannot say which section either — it reads this same row —
+              * so naming it needs `list()` to include `Section`.
               */}
             <span className="ml-2 text-xs text-muted-soft">
               {row.section_id === null ? 'all sections' : 'one section'}
@@ -397,19 +430,27 @@ export default function HomeworkPage() {
             <span className="text-muted-soft">—</span>
           ),
       },
-      ...(can('homework.manage')
-        ? [
-            {
-              key: 'actions',
-              header: 'Actions',
-              cell: (row: Homework) => (
-                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setEditing(row)}>
-                  Edit
-                </button>
-              ),
-            } as Column<Homework>,
-          ]
-        : []),
+      {
+        /*
+         * Details for everyone who can see the row — a student reading what was set is the audience
+         * §20.2's outcome names — and Edit only beside `homework.manage`.
+         */
+        key: 'actions',
+        header: 'Actions',
+        cell: (row: Homework) => (
+          <div className="flex gap-1">
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setViewing(row)}>
+              Details
+              <span className="sr-only"> of {row.title}</span>
+            </button>
+            {can('homework.manage') ? (
+              <button type="button" className="btn btn-sm btn-secondary" onClick={() => setEditing(row)}>
+                Edit
+              </button>
+            ) : null}
+          </div>
+        ),
+      },
     ],
     [can, download, downloading]
   );
@@ -454,7 +495,7 @@ export default function HomeworkPage() {
             * The placeholder names both fields the server searches. `q` is LIKEd against `title` OR
             * `description` (`homework.service.js`'s `list()`), and a box labelled only "search by
             * title" would make every description match look like a bug — especially here, where the
-            * description is not a column and the matching text is therefore off-screen.
+            * description is not a column: only its first line shows, under the title.
             */}
           <SearchField
             id="homework-search"
@@ -551,13 +592,14 @@ export default function HomeworkPage() {
       <EditDialog
         row={editing}
         title={editing ? `Edit ${editing.title}` : ''}
-        description="The title, the dates and whether students can see it. Which class it belongs to is fixed once it is set."
+        description="The title, the brief, the dates and whether students can see it. Which class it belongs to is fixed once it is set."
         success="Homework updated"
         onClose={() => setEditing(null)}
         onSaved={reload}
         save={(row, body) => api.patch(`/homework/${row.id}`, body)}
         initial={(row) => ({
           title: row.title,
+          description: row.description ?? '',
           /* DATEONLY columns; the input wants the day and the API sends it as one. */
           assigned_date: row.assigned_date,
           due_date: row.due_date,
@@ -565,6 +607,15 @@ export default function HomeworkPage() {
         })}
         fields={[
           { name: 'title', label: 'Title', required: true },
+          {
+            /* Nullable: the schema's `.allow(null)` is what lets a brief be cleared rather than kept. */
+            name: 'description',
+            label: 'Description',
+            kind: 'textarea',
+            rows: 6,
+            nullable: true,
+            hint: 'The brief itself, up to 5000 characters. Students see it once the homework is published.',
+          },
           { name: 'assigned_date', label: 'Set on', kind: 'date' },
           { name: 'due_date', label: 'Due', kind: 'date' },
           {
@@ -575,6 +626,81 @@ export default function HomeworkPage() {
           },
         ]}
       />
+
+      {/*
+        * The Details dialog — the row as the list holds it, with the whole brief. No request of its
+        * own: see the header. The class line says "one section" rather than which, for the reason the
+        * Class column gives.
+        */}
+      <Modal
+        open={viewing !== null}
+        onClose={() => setViewing(null)}
+        title={viewing ? viewing.title : ''}
+        size="lg"
+        footer={
+          <button type="button" className="btn btn-secondary" onClick={() => setViewing(null)}>
+            Close
+          </button>
+        }
+      >
+        {viewing ? (
+          <div className="space-y-4">
+            <dl className="grid grid-cols-[minmax(0,auto)_1fr] gap-x-4 gap-y-1.5 text-sm">
+              <dt className="text-muted">Class</dt>
+              <dd>
+                {viewing.class ? viewing.class.name : <span className="text-muted-soft">—</span>}
+                <span className="ml-2 text-xs text-muted-soft">
+                  {viewing.section_id === null ? 'all sections' : 'one section'}
+                </span>
+              </dd>
+              <dt className="text-muted">Subject</dt>
+              <dd>
+                {viewing.subject ? (
+                  viewing.subject.name
+                ) : (
+                  <span className="text-muted-soft">—</span>
+                )}
+              </dd>
+              <dt className="text-muted">Set on</dt>
+              <dd>{formatDay(viewing.assigned_date)}</dd>
+              <dt className="text-muted">Due</dt>
+              <dd className="font-medium">{formatDay(viewing.due_date)}</dd>
+              <dt className="text-muted">Published</dt>
+              <dd>
+                <StatusBadge status={viewing.is_published ? 'active' : 'draft'} />
+              </dd>
+            </dl>
+
+            <section aria-label="The brief" className="rounded-lg border border-border p-3">
+              {viewing.description ? (
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">
+                  {viewing.description}
+                </p>
+              ) : (
+                <p className="text-sm text-muted">
+                  No brief was written
+                  {viewing.has_attachment ? ' — the work is in the attachment.' : '.'}
+                </p>
+              )}
+            </section>
+
+            {viewing.has_attachment ? (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={downloading === viewing.id}
+                aria-busy={downloading === viewing.id}
+                onClick={() => void download(viewing)}
+              >
+                <Icon name="download" size={14} />
+                {downloading === viewing.id
+                  ? 'Downloading…'
+                  : `Download ${viewing.attachment_name ?? 'the attachment'}`}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }

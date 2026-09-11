@@ -23,8 +23,8 @@
  * | Method | the Express route method | no |
  * | Authentication | position relative to the annotated `authenticate` layer, plus the permission guard's own keys | no |
  * | Parameters | `validate()`'s `params` and `query` schemas, plus path placeholders | no |
- * | Request Body | `validate()`'s `body` schema, or the upload middleware | no |
- * | Error Response | the guards actually mounted, plus the envelope `errorHandler` guarantees | no |
+ * | Request Body | `validate()`'s `body` schema; multipart/form-data where the upload chain is mounted (`upload.js` records its field, count and types) | no |
+ * | Error Response | the guards actually mounted — permission, role, platform scope, subscription, module, feature, limit, upload — plus the envelope `errorHandler` guarantees | no |
  * | Response | **the one field with no machine-readable source** | see below |
  *
  * ## The seventh field, stated honestly
@@ -33,6 +33,11 @@
  * schema for it anywhere, because nothing validates responses on the way out. So the response
  * documented here is the **envelope** — `{ success: true, data, meta? }` — which is guaranteed for
  * every endpoint by `ApiResponse`, together with the status code the route actually sets.
+ *
+ * The exception is the fifteen routes that answer with a file — five stored uploads, and ten PDF / Excel
+ * exports chosen by `format` — which the route file marks with `routeMeta.respondsWithFile()`, naming the Content-Types
+ * from the constants the handler sends by. That mark is the one hand-stated fact in this document, so
+ * `verify-openapi.js` lists every file route to keep it honest.
  *
  * The shape of `data` is *not* described, and that is a real limitation rather than an oversight.
  * Describing it would mean writing 252 payload schemas by hand — reintroducing exactly the drift
@@ -155,6 +160,12 @@ const ERROR_RESPONSES = {
   SubscriptionInactive: [402, "The school's subscription is not in a usable state."],
   ModuleNotSubscribed: [403, "The plan does not include the module this endpoint belongs to."],
   PlanLimitExceeded: [403, 'The action would exceed a plan limit.'],
+  PayloadTooLarge: [413, 'A file is larger than the server accepts at all (`FILE_TOO_LARGE`) — no plan raises this.'],
+  UnsupportedMediaType: [
+    415,
+    "A file's type is not accepted on this surface (`UNSUPPORTED_MEDIA_TYPE`), or its extension " +
+      'does not match its declared type (`FILE_EXTENSION_MISMATCH`).',
+  ],
 };
 
 function buildErrorResponses() {
@@ -288,11 +299,17 @@ function collectMeta(handlers) {
     permissions: [],
     permissionMode: null,
     roles: [],
+    platformOnly: false,
     modules: [],
     moduleMode: null,
+    features: [],
+    subscription: false,
     limit: null,
     schemas: {},
     upload: null,
+    file: null,
+    /* Guards that apply only under a query condition — `reports.routes.js`'s two export guards. */
+    conditional: [],
   };
 
   for (const handler of handlers) {
@@ -304,13 +321,18 @@ function collectMeta(handlers) {
       collected.permissionMode = meta.permissionMode;
     }
     if (meta.roles) collected.roles.push(...meta.roles);
+    if (meta.platformOnly) collected.platformOnly = true;
     if (meta.modules) {
       collected.modules.push(...meta.modules);
       collected.moduleMode = meta.moduleMode;
     }
+    if (meta.features) collected.features.push(...meta.features);
+    if (meta.subscription) collected.subscription = true;
     if (meta.limit) collected.limit = meta.limit;
     if (meta.schemas) Object.assign(collected.schemas, meta.schemas);
     if (meta.upload) collected.upload = meta.upload;
+    if (meta.file) collected.file = meta.file;
+    if (meta.conditional) collected.conditional.push(meta.conditional);
   }
 
   return collected;
@@ -356,24 +378,66 @@ function buildParameters(routePath, schemas) {
  * authentication boundary; 403 only where a guard exists to refuse; 422 only where something
  * validates.
  */
+/**
+ * §28's "Response" for the success case: the envelope, or — on the routes whose route file marks the
+ * handler with `respondsWithFile()` — the file, alone or beside the envelope when a query selects it.
+ */
+function buildSuccess(meta) {
+  const envelope = { 'application/json': { schema: { $ref: '#/components/schemas/Success' } } };
+  if (!meta.file) return { description: 'Success', content: envelope };
+
+  const binary = {};
+  for (const type of meta.file.types) binary[type] = { schema: { type: 'string', format: 'binary' } };
+  const types = meta.file.types.map((type) => `\`${type}\``).join(', ');
+
+  return meta.file.when
+    ? {
+        description: `Success — the file (${types}) when \`${meta.file.when}\`; the JSON envelope otherwise.`,
+        content: { ...envelope, ...binary },
+      }
+    : { description: `Success — the file itself (${types}), not the JSON envelope.`, content: binary };
+}
+
 function buildResponses(route, meta) {
-  const responses = {
-    200: {
-      description: 'Success',
-      content: { 'application/json': { schema: { $ref: '#/components/schemas/Success' } } },
-    },
-  };
+  const responses = { 200: buildSuccess(meta) };
 
   if (route.methods.includes('post')) responses[201] = responses[200];
 
   const ref = (name) => {
     responses[ERROR_RESPONSES[name][0]] = { $ref: `#/components/responses/${name}` };
   };
+  const upload = meta.upload;
+  const conditionalPermissions = meta.conditional.filter((c) => c.permissions && c.permissions.length);
+  const conditionalFeatures = meta.conditional.filter((c) => c.features && c.features.length);
 
   if (Object.keys(meta.schemas).length) ref('ValidationFailed');
   if (route.authenticated) ref('Unauthenticated');
   if (/\{[A-Za-z0-9_]+\}/.test(route.path)) ref('NotFound');
-  if (meta.modules.length) ref('SubscriptionInactive');
+  /*
+   * 402 wherever a guard asserts a usable subscription — every entitlement guard does, before it looks
+   * at modules, features or limits, and so does the upload chain, except on the one billing surface
+   * that exists to let a lapsed school pay (`upload.js`, `allowInactiveSubscription`).
+   */
+  if (
+    meta.modules.length ||
+    meta.features.length ||
+    conditionalFeatures.length ||
+    meta.subscription ||
+    meta.limit ||
+    (upload && !upload.billingSurface)
+  ) {
+    ref('SubscriptionInactive');
+  }
+  if (upload) {
+    responses[400] = {
+      description:
+        '400 — the multipart body broke a rule the parser enforces: more files than the route takes, ' +
+        'or a file on a field it does not declare (`UPLOAD_LIMIT_*`).',
+      content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+    };
+    ref('PayloadTooLarge');
+    ref('UnsupportedMediaType');
+  }
 
   /*
    * Three distinct refusals share status 403 — a missing permission, an unsubscribed module and an
@@ -386,14 +450,37 @@ function buildResponses(route, meta) {
    * on the status only needs to know it can happen.
    */
   const causes = [];
-  if (meta.permissions.length || meta.roles.length) {
-    causes.push('`FORBIDDEN` — the caller lacks the required permission or role');
+  /*
+   * The codes the guards actually emit. This read `FORBIDDEN` for both until the guards were checked:
+   * `requirePermission` sends `INSUFFICIENT_PERMISSION` and `requireRole` sends `INSUFFICIENT_ROLE`,
+   * and a client branching on the documented code would never have matched either.
+   */
+  if (meta.permissions.length || conditionalPermissions.length) {
+    const also = conditionalPermissions.map((c) => ` (and ${c.permissions.map((p) => `\`${p}\``).join(', ')} when ${c.when})`);
+    causes.push(`\`INSUFFICIENT_PERMISSION\` — the caller lacks the required permission${also.join('')}`);
+  }
+  if (meta.roles.length) {
+    causes.push("`INSUFFICIENT_ROLE` — the caller's role is not one this route admits");
+  }
+  if (meta.platformOnly) {
+    causes.push('`PLATFORM_SCOPE_REQUIRED` — the route is for platform administrators only');
   }
   if (meta.modules.length) {
     causes.push("`MODULE_NOT_SUBSCRIBED` — the plan does not include this endpoint's module");
   }
-  if (meta.limit) {
-    causes.push('`PLAN_LIMIT_EXCEEDED` — the action would exceed a plan limit');
+  if (meta.features.length || conditionalFeatures.length) {
+    const also = conditionalFeatures.map((c) => ` (${c.features.map((f) => `\`${f}\``).join(', ')}, when ${c.when})`);
+    causes.push(`\`FEATURE_NOT_SUBSCRIBED\` — the plan does not include this endpoint's feature${also.join('')}`);
+  }
+  const limits = [
+    meta.limit,
+    upload && 'file_upload_limit',
+    upload && !upload.billingSurface && 'storage_limit',
+  ].filter(Boolean);
+  if (limits.length) {
+    causes.push(
+      `\`PLAN_LIMIT_EXCEEDED\` — the action would exceed a plan limit (${limits.map((l) => `\`${l}\``).join(', ')})`
+    );
   }
   if (causes.length) {
     responses[403] = {
@@ -421,12 +508,43 @@ function describeAuthentication(route, meta) {
   if (meta.roles.length) {
     parts.push(`Restricted to role(s) ${meta.roles.map((r) => `\`${r}\``).join(', ')}.`);
   }
+  if (meta.platformOnly) {
+    parts.push('Restricted to the platform scope (Super Admin).');
+  }
+  if (meta.subscription) {
+    parts.push("Requires the school's subscription to be in a usable state.");
+  }
   if (meta.modules.length) {
     const joiner = meta.moduleMode === 'any' ? ' or ' : ' and ';
     parts.push(`Requires the ${meta.modules.map((m) => `\`${m}\``).join(joiner)} module.`);
   }
+  if (meta.features.length) {
+    parts.push(`Requires the plan feature(s) ${meta.features.map((f) => `\`${f}\``).join(', ')}.`);
+  }
   if (meta.limit) {
     parts.push(`Counts against the \`${meta.limit}\` plan limit.`);
+  }
+  for (const condition of meta.conditional) {
+    if (condition.permissions && condition.permissions.length) {
+      parts.push(
+        `When ${condition.when}, also requires permission ${condition.permissions.map((p) => `\`${p}\``).join(' and ')}.`
+      );
+    }
+    if (condition.features && condition.features.length) {
+      parts.push(
+        `When ${condition.when}, also requires the plan feature(s) ${condition.features.map((f) => `\`${f}\``).join(', ')}.`
+      );
+    }
+  }
+  if (meta.upload) {
+    const { field, maxCount, billingSurface } = meta.upload;
+    parts.push(
+      `Takes ${maxCount === 1 ? 'one file' : `up to ${maxCount} files`} on \`${field}\` as ` +
+        "multipart/form-data; each file is held to the plan's `file_upload_limit`" +
+        (billingSurface
+          ? ', and the upload is accepted whatever state the subscription is in, so a lapsed school can still pay.'
+          : ', and the request is charged against its `storage_limit`.')
+    );
   }
 
   return parts.join(' ');
@@ -472,11 +590,31 @@ function buildOperation(route, method, meta) {
   const parameters = buildParameters(route.path, meta.schemas);
   if (parameters.length) operation.parameters = parameters;
 
-  if (meta.schemas.body) {
+  const json = meta.schemas.body ? fromJoi(meta.schemas.body) : null;
+
+  if (meta.upload) {
+    /*
+     * multipart/form-data: the text fields `validate({ body })` checks, plus the file field — and only
+     * that. multer passes a JSON request through untouched, so some of these routes would also take
+     * their text fields as JSON, but not all (`POST /students/:id/photo` as JSON can only be refused), and
+     * which is which is each service's judgement; multipart is the form every one of them accepts.
+     */
+    const { field, maxCount, mimeTypes } = meta.upload;
+    const file = { type: 'string', format: 'binary', description: `One of: ${mimeTypes.join(', ')}` };
+    const form = json ? { ...json } : { type: 'object' };
+    form.properties = {
+      ...(json && json.properties),
+      [field]: maxCount === 1 ? file : { type: 'array', maxItems: maxCount, items: file },
+    };
+
     operation.requestBody = {
       required: true,
-      content: { 'application/json': { schema: fromJoi(meta.schemas.body) } },
+      content: {
+        'multipart/form-data': { schema: form, encoding: { [field]: { contentType: mimeTypes.join(', ') } } },
+      },
     };
+  } else if (json) {
+    operation.requestBody = { required: true, content: { 'application/json': { schema: json } } };
   }
 
   if (route.authenticated) operation.security = [{ bearerAuth: [] }];

@@ -19,6 +19,16 @@
  *
  * The password can be generated. It is shown once, after the account exists, so the administrator can
  * hand it over; nothing stores it anywhere else, and it stops working at the first sign-in.
+ *
+ * ## Its inputs carry ids of their own
+ *
+ * `Modal` renders its `<dialog>` in place, so this form shares a document with whatever page opened it —
+ * and the teacher and staff records have an `email` input of their own. Two elements with one id is
+ * not a cosmetic fault: the label's `htmlFor` and the input's `aria-describedby` each resolve to the
+ * *first* match in the document, which there is the record's — so this dialog's Email label pointed at
+ * the record's input, and its input at the record's hint. Every input here is therefore prefixed
+ * (`create-login-…`). `Field` humanises a server message by its id, so the messages are humanised here
+ * against the API's own field names first.
  */
 
 import { useEffect, useState } from 'react';
@@ -26,7 +36,7 @@ import { useEffect, useState } from 'react';
 import { ApiError, api } from '@/lib/apiClient';
 import { splitApiErrors } from '@/lib/formErrors';
 import { Modal } from '@/components/overlay';
-import { Field, Notice, SubmitButton } from '@/components/form';
+import { Field, Notice, SubmitButton, humaniseFieldError } from '@/components/form';
 
 /** Who the login is for. `profileId` is absent only for a School Admin, who has no profile row. */
 export interface LoginTarget {
@@ -115,6 +125,10 @@ export function CreateLoginDialog({
 
   const isAdmin = target?.role === 'school_admin';
 
+  /* A server message for one field, worded by its label — see the header on why not by the input's id. */
+  const errorFor = (field: string, label: string) =>
+    fieldErrors[field] ? humaniseFieldError(fieldErrors[field], field, label) : undefined;
+
   async function submit() {
     if (!target) return;
     setBusy(true);
@@ -202,47 +216,47 @@ export function CreateLoginDialog({
 
           {isAdmin ? (
             <Field
-              id="name"
+              id="create-login-name"
               label="Name"
               required
               maxLength={160}
               value={name}
               onChange={(event) => setName(event.target.value)}
-              error={fieldErrors.name}
+              error={errorFor('name', 'Name')}
             />
           ) : null}
 
           <Field
-            id="email"
+            id="create-login-email"
             label="Email"
             type="email"
             required
             maxLength={180}
             value={email}
             onChange={(event) => setEmail(event.target.value)}
-            error={fieldErrors.email}
+            error={errorFor('email', 'Email')}
             hint="Where the verification email goes. Unique across the platform."
           />
 
           <Field
-            id="username"
+            id="create-login-username"
             label="Username"
             required
             maxLength={80}
             value={username}
             onChange={(event) => setUsername(event.target.value)}
-            error={fieldErrors.username}
+            error={errorFor('username', 'Username')}
             hint="Lower-case letters, digits, dots, hyphens and underscores. They can sign in with this or with the email."
           />
 
           <div className="space-y-2">
             <Field
-              id="password"
+              id="create-login-password"
               label="Temporary password"
               required
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              error={fieldErrors.password}
+              error={errorFor('password', 'Temporary password')}
               hint="Generated for you; change it if you prefer. It works once — they choose their own at the first sign-in."
             />
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => setPassword(generatePassword())}>

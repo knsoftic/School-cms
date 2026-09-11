@@ -3,8 +3,9 @@
 /**
  * Super Admin dashboard — SRS §9.1 (FR-SADMIN-001), §33's first Super Admin screen.
  *
- * Renders the eleven metrics `GET /platform/dashboard` returns, in source order, plus the two
- * derived figures the service already exposes (archived schools, pending amount).
+ * Renders the eleven metrics `GET /platform/dashboard` returns, in source order, plus the derived
+ * figures the service already exposes (archived schools, pending amount) and the per-currency lines
+ * behind the three money figures.
  */
 
 import Link from 'next/link';
@@ -12,9 +13,16 @@ import { useEffect, useState } from 'react';
 
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { formatMoney } from '@/lib/money';
 import { EXPLAINED_CODES } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
 import { ErrorNotice, LoadingBlock, MetricCard, PageHeader, RefusalNotice } from '@/components/table';
+
+/** One currency's share of a money figure — a row of `sumPaymentsByCurrency()`, sorted by code. */
+interface CurrencyLine {
+  currency: string;
+  amount: number;
+}
 
 interface PlatformDashboardData {
   totalOrganizations: number;
@@ -25,11 +33,22 @@ interface PlatformDashboardData {
   totalTeachers: number;
   activeSubscriptions: number;
   expiredSubscriptions: number;
-  monthlyRevenue: number | string;
-  yearlyRevenue: number | string;
+  /**
+   * The one total when every payment is in one currency, 0 when there are none, and **null** when
+   * currencies mix — `singleCurrencyTotal()` in `platform.service.js`. The three scalars are declared
+   * so the payload is described truthfully and are never rendered; `PerCurrency` says why.
+   */
+  monthlyRevenue: number | null;
+  yearlyRevenue: number | null;
   pendingPayments: number;
   archivedSchools: number;
-  pendingPaymentsAmount: number | string;
+  pendingPaymentsAmount: number | null;
+  /** The same three figures as one line per currency — what the scalars cannot say when currencies mix. */
+  revenueByCurrency: {
+    month: CurrencyLine[];
+    year: CurrencyLine[];
+    pending: CurrencyLine[];
+  };
   period?: {
     month: { from: string; to: string };
     year: { from: string; to: string };
@@ -37,37 +56,45 @@ interface PlatformDashboardData {
 }
 
 /**
- * A cross-currency total: grouped, two decimals, and **no currency symbol**.
+ * A money figure as one line per currency, each with its code.
  *
- * ## Why no symbol
+ * ## Why the lines and not the scalar
  *
- * These figures are `SUM(payments.amount)` with **no currency clause** — `sumPayments()` in
- * `platform.service.js` passes only a tenant scope and a date range. A platform billing one school
- * in USD and another in EUR therefore adds the two together, and this card used to stamp the result
- * with a hardcoded `currency: 'USD'`. That is not a rounding difference; it is a number presented as
- * dollars that is not a number of dollars.
+ * These cards used to show `SUM(payments.amount)` over every currency as one bare number, because
+ * the service added USD to PKR and the screen could only stop calling the result dollars.
+ * `platform.service.js` now sums per currency and refuses to add them: the scalar is the single total
+ * only while one currency is in play, and **null** once a second appears, since no one figure exists
+ * without an exchange rate the SRS does not supply. The lines say everything the scalar says plus the
+ * case it cannot, so they are what is rendered — and a null scalar is never formatted, so it cannot
+ * reach the card as "NaN" or the word "null".
  *
- * The frontend cannot fix the sum — that would mean changing what the endpoint returns — but it can
- * stop asserting something the data does not support. The figure is shown as a plain grouped number
- * and the cards say what it is, which is honest at the cost of being less tidy.
- *
- * ## Why two decimals
- *
- * `maximumFractionDigits: 0` silently discarded the cents the server had just been careful to round
- * to the currency scale — `sumPayments()` ends in `money.round(money.toNumber(total))`. Measured:
- * two pending payments of 499.00 and 1,250.50 rendered as **`$1,750`**.
+ * No lines means no payments in the window; the scalar is 0 then, and it is shown as a bare `0.00`
+ * because there is no currency to name. The code is written out rather than a symbol for the reason
+ * `lib/money.ts` gives — `$` is several currencies — and set smaller than the figure so a long amount
+ * still fits a two-column card.
  */
-function money(value: number | string): string {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return String(value);
-  return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(n);
+function PerCurrency({ lines }: { lines: CurrencyLine[] }) {
+  if (lines.length === 0) return <>{formatMoney(0)}</>;
+  return (
+    <ul>
+      {lines.map((line) => (
+        <li key={line.currency}>
+          {formatMoney(line.amount)}{' '}
+          <span className="text-sm font-medium text-muted">{line.currency}</span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
-/** Said on every cross-currency card, so the bare number is never read as one currency. */
-const MIXED_CURRENCY = 'Summed across every currency on the platform — not converted.';
+/**
+ * Said on both revenue cards: what is counted, and why a card can hold more than one line.
+ *
+ * "Less refunds" because revenue is `amount − refunded_amount` over approved, partially refunded and
+ * refunded payments — the service header's reading. It used to count `approved` alone, so a payment
+ * with any refund against it contributed nothing.
+ */
+const RECEIVED = 'Payments received, less refunds. One line per currency — never converted or added together.';
 
 function count(value: number): string {
   return new Intl.NumberFormat().format(value);
@@ -112,8 +139,8 @@ export default function PlatformDashboard() {
          * `{ metrics }`, not the metrics themselves: `platform.controller.js:13` answers
          * `ApiResponse.ok(res, { metrics })`, so the envelope nests them one level down. Reading
          * `result` directly gave every field as `undefined`, which `count()` rendered as **NaN**
-         * and `money()` as the literal string "undefined" — all thirteen cards, at text-3xl, on
-         * the first screen a Super Admin sees. The same shallow-envelope mistake this client
+         * and the old money formatter as the literal string "undefined" — all thirteen cards, at
+         * text-3xl, on the first screen a Super Admin sees. The same shallow-envelope mistake this client
          * already records for `meta.pagination`, and visible here rather than silent.
          */
         const result = await api.get<{ metrics: PlatformDashboardData }>('/platform/dashboard', {
@@ -140,9 +167,18 @@ export default function PlatformDashboard() {
 
   return (
     <div>
+      {/*
+        * Worded by scope. `GET /platform/dashboard` has no platform-scope guard: the Organization Admin
+        * holds `platform.dashboard.view` too, and `platform.service.getDashboard()` counts the same
+        * eleven figures over their own organization. "Across every organization" is the Super Admin's.
+        */}
       <PageHeader
-        title="Platform overview"
-        description={`Signed in as ${profile?.user.name ?? 'administrator'}. Live figures from across every organization.`}
+        title={profile?.tenant.isPlatform === false ? 'Organization overview' : 'Platform overview'}
+        description={`Signed in as ${profile?.user.name ?? 'administrator'}. ${
+          profile?.tenant.isPlatform === false
+            ? 'Live figures from your organization’s schools.'
+            : 'Live figures from across every organization.'
+        }`}
         action={
           /* The platform notifications of the owner's decision D15 — payments and expiring subscriptions. */
           <Link href="/super-admin/notifications" className="btn btn-secondary">
@@ -192,27 +228,27 @@ export default function PlatformDashboard() {
               <MetricCard label="Expired subscriptions" value={count(data.expiredSubscriptions)} />
               <MetricCard
                 label="Monthly revenue"
-                value={money(data.monthlyRevenue)}
+                value={<PerCurrency lines={data.revenueByCurrency.month} />}
                 hint={
                   data.period
-                    ? `${span(data.period.month.from, data.period.month.to)} (UTC). ${MIXED_CURRENCY}`
-                    : MIXED_CURRENCY
+                    ? `${span(data.period.month.from, data.period.month.to)} (UTC). ${RECEIVED}`
+                    : RECEIVED
                 }
               />
               <MetricCard
                 label="Yearly revenue"
-                value={money(data.yearlyRevenue)}
+                value={<PerCurrency lines={data.revenueByCurrency.year} />}
                 hint={
                   data.period
-                    ? `${span(data.period.year.from, data.period.year.to)} (UTC). ${MIXED_CURRENCY}`
-                    : MIXED_CURRENCY
+                    ? `${span(data.period.year.from, data.period.year.to)} (UTC). ${RECEIVED}`
+                    : RECEIVED
                 }
               />
               <MetricCard label="Pending payments" value={count(data.pendingPayments)} />
               <MetricCard
                 label="Pending amount"
-                value={money(data.pendingPaymentsAmount)}
-                hint={MIXED_CURRENCY}
+                value={<PerCurrency lines={data.revenueByCurrency.pending} />}
+                hint="The payments awaiting review, totalled per currency."
               />
             </dl>
           </section>

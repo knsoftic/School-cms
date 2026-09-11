@@ -53,10 +53,10 @@
  * ## What has no route, and why
  *
  * `coupons.service.expireLapsed()` — the sweep that moves a lapsed coupon's `status` to `expired`. Its
- * actor is the system, `package.json` declares `"cron": "node src/jobs/cron.js"` and `src/jobs/` is
- * Phase 5 work; the same reasoning keeps `subscriptions.runLifecycleSweep()` off the router. Nothing
- * depends on it having run — `validateForOrder()` compares `expires_at` to the clock directly — so the
- * absent scheduler cannot let an expired coupon be redeemed.
+ * actor is the system — the daily `coupon-expiry` job in `src/jobs/` runs it — and the same reasoning
+ * keeps `subscriptions.runLifecycleSweep()` off the router. Nothing depends on it having run —
+ * `validateForOrder()` compares `expires_at` to the clock directly — so a job that has not run yet
+ * cannot let an expired coupon be redeemed.
  */
 
 const { createRouter } = require('../../utils/createRouter');

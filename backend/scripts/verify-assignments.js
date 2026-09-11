@@ -696,6 +696,8 @@ async function verifyHttp() {
       const subject = await db.Subject.create({
         school_id: school.id, organization_id: org.id, name: `${tag} Maths`, code: `${CODE_PREFIX}${tag}M`,
       });
+      /* On Grade 1's curriculum only — D30 lets an assignment name a subject the class is taught. */
+      await db.ClassSubject.create({ school_id: school.id, class_id: klass.id, subject_id: subject.id });
       return { session, klass, other, section, otherSection, subject };
     };
     const A = await mkStructure(schoolA, 'A');
@@ -861,6 +863,12 @@ async function verifyHttp() {
       method: 'POST', token: teacher, body: { class_id: A.klass.id, subject_id: D.subject.id, title: 'x' },
     });
     check("nor name another school's subject", foreignSubject.status, 422);
+    /* D30 — FR-ASG-001's "Class/subject assignment exists" (SRS:1108): the pair, not only the school. */
+    const offCurriculum = await call('/assignments', {
+      method: 'POST', token: teacher, body: { class_id: A.other.id, subject_id: A.subject.id, title: 'x' },
+    });
+    check("D30 — nor a subject of this school that the class is not taught, naming the field",
+      [offCurriculum.status, ((offCurriculum.body.error || {}).details || []).map((d) => d.field)], [422, ['subject_id']]);
     const foreignTeacherAsg = await call('/assignments', {
       method: 'POST', token: teacher, body: { class_id: A.klass.id, teacher_id: foreignTeacher.id, title: 'x' },
     });
@@ -977,6 +985,18 @@ async function verifyHttp() {
       method: 'POST', token: aminaToken, body: {},
     });
     check('a sectioned assignment refuses a student of another section', wrongSection.status, 403);
+    /*
+     * And it is not shown to them either. The list and the read by id narrowed by class alone, so Amina
+     * was shown section B's assignment and a Submit button, and then refused by the check above.
+     */
+    check('  and a student of another section is not shown it — not in their list, not by id',
+      [dataOf(await expectOk('/assignments?limit=100', { token: aminaToken }, 200))
+        .map((a) => a.id).includes(sectioned.id),
+      (await call(`/assignments/${sectioned.id}`, { token: aminaToken })).status],
+      [false, 404]);
+    check('  while their own section\'s assignment still is',
+      dataOf(await expectOk('/assignments?limit=100', { token: aminaToken }, 200)).map((a) => a.id).includes(draft.id),
+      true);
 
     /* Late: assigned and due both in the past, which the ordering check still allows. */
     const overdue = await mk({
@@ -1168,8 +1188,13 @@ async function verifyHttp() {
     });
     check('changing the class while keeping a section of the old one is refused', staleSection.status, 422);
 
+    /*
+     * The section and the subject both cleared, so the only guard left is the one under test: `draft`
+     * names a subject Grade 2 is not taught, which D30 now refuses first — clearing it keeps this about
+     * the submissions.
+     */
     const moved = await call(`/assignments/${draft.id}`, {
-      method: 'PATCH', token: teacher, body: { class_id: A.other.id, section_id: null },
+      method: 'PATCH', token: teacher, body: { class_id: A.other.id, section_id: null, subject_id: null },
     });
     check('and even with the section cleared, an answered assignment does not move class', moved.status, 409);
     check('  saying why', codeOf(moved), 'ASSIGNMENT_HAS_SUBMISSIONS');

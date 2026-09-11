@@ -67,6 +67,38 @@ export interface Tenant {
   isPlatform: boolean;
 }
 
+/** The school's current academic session, as `callerSchool()` selects it. */
+export interface CurrentSession {
+  id: number;
+  name: string;
+  /** `ACADEMIC_SESSION_STATUS` — upcoming, active or closed. */
+  status: string;
+  /** `DATEONLY` — a calendar day, not an instant. */
+  start_date: string;
+  end_date: string;
+}
+
+/**
+ * The caller's own school as its screens name it — `auth.service.js` `callerSchool()`, for the owner's
+ * decisions D35 (the school's name, logo and currency on its screens) and D20 (forms default to the
+ * current session).
+ *
+ * Every school role receives it, with no permission of its own: `GET /school-settings` and
+ * `GET /sessions/current` answer only to school leadership and academic staff, and these four facts are
+ * all that rides here — the settings row's contact details, theme and preferences stay behind them.
+ */
+export interface SchoolProfile {
+  id: number;
+  /** The school's display name from its settings, or the name the platform registered it under. */
+  name: string;
+  /** An absolute http(s) URL (`settings.validation.js brandingUrl()`), or null when none is set. */
+  logo_path: string | null;
+  /** Null for a school that has never saved its settings; each form then keeps its own default. */
+  currency: string | null;
+  /** Null when the school has no current session. */
+  current_session: CurrentSession | null;
+}
+
 export interface Profile {
   user: User;
   permissions: string[];
@@ -77,6 +109,8 @@ export interface Profile {
    * rather than fetching separately, so it can never drift from the permissions beside it.
    */
   entitlements: unknown;
+  /** The caller's own school — see `SchoolProfile` — or null for a caller with no school in scope. */
+  school: SchoolProfile | null;
 }
 
 interface LoginResult {

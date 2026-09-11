@@ -50,8 +50,12 @@ function describe(key) {
  * charge for nothing. It stays one of the seven, and the Super Admin switches it on (FR-SUB-009)
  * once hosting supports it. A default only: `is_active` is the operator's, so an existing install
  * keeps whatever it has — see `up()`.
+ *
+ * `sms_credits` joins it by the owner's decision D25, for the same reason: the product has no SMS
+ * channel (§23 names in-app and e-mail delivery only), so the credits it sells are an allowance nothing
+ * consumes. Switched on by the Super Admin once an SMS channel exists.
  */
-const SEEDED_INACTIVE = Object.freeze(['custom_domain']);
+const SEEDED_INACTIVE = Object.freeze(['custom_domain', 'sms_credits']);
 
 const ADDON_DEFINITIONS = ADDON_LIST.map((key, index) => {
   const effect = ADDON_EFFECTS[key];

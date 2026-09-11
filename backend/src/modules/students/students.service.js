@@ -50,11 +50,14 @@ const {
   loadClassInSchool,
   loadSectionOfClass,
   loadSessionInSchool,
+  assertOpenForNew,
 } = require('../../utils/schoolScope');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const { cleanupUploads, relativeUploadPath, uploadedFiles } = require('../../middlewares/upload');
 const usageService = require('../../services/usageService');
+const selfScope = require('../../services/selfScope');
+const usersService = require('../users/users.service');
 const { LIMITS, STUDENT_STATUS, DOCUMENT_OWNER_TYPES } = require('../../config/constants');
 
 const SORTABLE = Object.freeze([
@@ -210,11 +213,23 @@ async function resolvePlacement(payload, schoolId, current = {}) {
     ? payload.section_id
     : (classChanged ? null : current.section_id);
 
+  const klass = classId ? await loadClassInSchool(classId, schoolId) : null;
+
+  /*
+   * The session follows the class when the class moves, for the same reason the section does not.
+   *
+   * A class belongs to one academic session (`classes.academic_session_id`), and §15.1's promotion is
+   * "to a new class/session" (SRS:821). Keeping the old session made a student promoted into next
+   * year's class carry last year's, which `fees.service` then stamped on every fee row assigned to them
+   * and `documents.service` printed on their certificates. A caller may still name a session; an
+   * unchanged class keeps the one the student has; a destination class with no session changes nothing.
+   */
   const sessionId = Object.prototype.hasOwnProperty.call(payload, 'academic_session_id')
     ? payload.academic_session_id
-    : current.academic_session_id;
+    : (classChanged && klass && klass.academic_session_id
+      ? klass.academic_session_id
+      : current.academic_session_id);
 
-  if (classId) await loadClassInSchool(classId, schoolId);
   if (sectionId) {
     if (!classId) {
       throw ApiError.validation('section_id requires class_id', [
@@ -410,6 +425,11 @@ async function list(req, query, pagination) {
 async function create(req, payload) {
   const school = await resolveSchool(req, payload.school_id);
   const placement = await resolvePlacement(payload, school.id);
+  /*
+   * D20 — a closed session takes no new admission, whether the session was named or came with the
+   * class (`resolvePlacement`).
+   */
+  await assertOpenForNew({ sessionId: placement.sessionId, classId: placement.classId }, 'admission');
   await loadUserInSchool(payload.user_id, school.id);
 
   let row;
@@ -487,11 +507,34 @@ async function update(req, id, payload) {
     ]);
   }
 
-  /* Write the checked placement rather than the submitted one. */
+  /*
+   * Write the checked placement rather than the submitted one — and when the class moves, the section
+   * and session that `resolvePlacement()` resolved for it, whether or not the body named them. Writing
+   * only the keys the body carried left a student moved by `PATCH` into another class still holding a
+   * section of the old one.
+   */
+  const classMoved =
+    Object.prototype.hasOwnProperty.call(next, 'class_id') &&
+    String(placement.classId ?? '') !== String(row.class_id ?? '');
   if (Object.prototype.hasOwnProperty.call(next, 'class_id')) next.class_id = placement.classId;
-  if (Object.prototype.hasOwnProperty.call(next, 'section_id')) next.section_id = placement.sectionId;
-  if (Object.prototype.hasOwnProperty.call(next, 'academic_session_id')) {
+  if (classMoved || Object.prototype.hasOwnProperty.call(next, 'section_id')) {
+    next.section_id = placement.sectionId;
+  }
+  if (classMoved || Object.prototype.hasOwnProperty.call(next, 'academic_session_id')) {
     next.academic_session_id = placement.sessionId;
+  }
+  /*
+   * D20 — moving a student into a closed session's class, or onto a closed session, is an admission
+   * into it by another door: refusing only the create let a student be admitted to an open year and
+   * then patched into a closed one. Edits that leave the placement where it is are unaffected.
+   */
+  const sessionMoved = Object.prototype.hasOwnProperty.call(next, 'academic_session_id') &&
+    String(next.academic_session_id ?? '') !== String(row.academic_session_id ?? '');
+  if (classMoved || sessionMoved) {
+    await assertOpenForNew({
+      sessionId: sessionMoved ? next.academic_session_id : null,
+      classId: classMoved ? placement.classId : null,
+    }, 'student');
   }
 
   row.set(next);
@@ -544,6 +587,8 @@ async function applyTransition(req, id, operation, payload) {
         { field: 'class_id', message: 'Name the class the student moves into' },
       ]);
     }
+    /* D20 — a promotion is into next year's class, and a closed year takes nobody new. */
+    await assertOpenForNew({ sessionId: placement.sessionId, classId: placement.classId }, 'student');
     columns = {
       previous_class_id: row.class_id,
       class_id: placement.classId,
@@ -574,6 +619,11 @@ async function applyTransition(req, id, operation, payload) {
 
   const before = snapshot(row);
 
+  /*
+   * D19 — a student who transfers or leaves takes their login with them, in the same transaction, as a
+   * deactivated teacher or staff member does. Promotion keeps the student enrolled, so it moves nothing.
+   */
+  let moved = null;
   await db.sequelize.transaction(async (t) => {
     if (columns.roll_number === ROLL_NUMBER_PENDING) {
       columns.roll_number = await allocateRollNumber(
@@ -585,6 +635,7 @@ async function applyTransition(req, id, operation, payload) {
     }
     row.set(columns);
     await row.save({ transaction: t });
+    if (operation !== 'promote') moved = await usersService.followProfile(row.user_id, false, t, 'Student');
   });
 
   await recordAudit(req, {
@@ -595,6 +646,7 @@ async function applyTransition(req, id, operation, payload) {
     after: snapshot(row),
     reason: payload.reason || null,
   });
+  await usersService.auditFollowed(req, moved, `Student ${transition.verb.toLowerCase()}`);
 
   /* Transfer and leaving take the student out of the active count; promotion does not. */
   await syncStudentHeadcount(row.school_id);
@@ -688,8 +740,8 @@ function documentsOf(student) {
  * One `documents` row per file, in one transaction, so a batch lands whole or not at all; the files are
  * already on disk by the time this runs, so a failure removes them again. Titled by the caller's
  * `title` when there is one file, prefixed by it when there are several, and by the file's own name
- * otherwise. `storage_limit` is not charged, the same as every other upload here — no upload caller
- * records storage usage, and starting with this one would make the figure mean nothing.
+ * otherwise. `storage_limit` is charged by the upload chain itself (`upload.verifyStorage()`), and
+ * refunded there when this fails, as it is for every upload.
  *
  * @param {import('express').Request} req
  * @param {number|string} id
@@ -803,9 +855,49 @@ async function syncStudentHeadcount(schoolId) {
   }
 }
 
+/**
+ * What a student and their parents are shown of the record: the record itself, not the office's working
+ * notes about it. `notes`, `metadata` and `leaving_reason` are written by staff for staff, and `user_id`
+ * is the account's internal link; the self view names its columns rather than taking the staff row.
+ */
+const SELF_ATTRIBUTES = Object.freeze([
+  'id', 'school_id', 'student_id', 'roll_number', 'admission_number', 'admission_date', 'admission_session_id',
+  'first_name', 'last_name', 'gender', 'date_of_birth', 'blood_group', 'religion', 'nationality',
+  'email', 'phone', 'address', 'city', 'guardian_name', 'guardian_phone', 'guardian_relation', 'emergency_contact',
+  'photo_path', 'class_id', 'section_id', 'academic_session_id', 'status', 'promoted_at', 'transferred_at',
+  'transfer_to', 'left_at', 'uses_transport',
+]);
+
+/**
+ * The student record for the people it is about — `students.self.view`, the owner's decision D17.
+ *
+ * A student gets their own record and a parent each linked child's (`services/selfScope`), read-only,
+ * with the class, section and session by name — neither holds `classes.view` or `sessions.view` to look
+ * them up. Shown through `present()`, so the stored photo path stays behind as it does for staff.
+ *
+ * @param {import('express').Request} req
+ * @returns {Promise<object[]>}
+ */
+async function mine(req) {
+  const ids = await selfScope.linkedStudentIds(req);
+  if (!ids.length) return [];
+  const rows = await db.Student.findAll({
+    where: { id: { [Op.in]: ids } },
+    attributes: SELF_ATTRIBUTES,
+    include: [
+      { model: db.Class, as: 'class', attributes: ['id', 'name'] },
+      { model: db.Section, as: 'section', attributes: ['id', 'name'] },
+      { model: db.AcademicSession, as: 'academicSession', attributes: ['id', 'name'] },
+    ],
+    order: [['first_name', 'ASC'], ['id', 'ASC']],
+  });
+  return rows.map(present);
+}
+
 module.exports = {
   list,
   findById,
+  mine,
   create,
   update,
   setPhoto,

@@ -30,13 +30,13 @@
  *
  * ## What §17 does not name, and is therefore not built
  *
- *  - **No automatic fine accrual.** `fine_type` includes `per_day`, but §17 says only that a user
- *    *may configure* Fine and Discount — it describes no clock-driven process that grows one, and
- *    FR-FEE-002 does not mention accrual either. Inventing a scheduled job would be a behaviour the
- *    source does not describe. A fine is therefore configured on the structure and, if it applies,
- *    set explicitly on the assignment; `fee_payments.fine_paid` records how much of a payment settled
- *    it. When §17's fine policy is specified, the accrual belongs in the Phase 5 scheduler beside
- *    `invoices.markOverdue()`, not here.
+ *  - **Fines accrue on a clock — the owner's decision D29.** §17 lets a user *configure* a Fine
+ *    (SRS:909, 922) and says nothing of when one applies, so for a long time a structure's fine was
+ *    stored and never read. D29 decided it: `applyFines()`, run daily by the `fee-fines` task, applies
+ *    the structure's fine to a fee still unpaid once its due date plus the grace days has passed —
+ *    `fixed` once, `percentage` of the fee once, `per_day` growing each day until the fee is paid. A
+ *    fine set by hand at assignment is kept: the applied figure only ever rises.
+ *    `fee_payments.fine_paid` still records how much of a payment settled it.
  *  - **No waiver.** `student_fees.status` has a `waived` value and the columns to go with it, and §17
  *    names no waiving operation. Left unwritten rather than guessed at.
  *
@@ -59,11 +59,19 @@ const { Op } = require('sequelize');
 const db = require('../../models');
 const { tenantWhere } = require('../../models');
 const ApiError = require('../../utils/ApiError');
+const logger = require('../../config/logger');
 const money = require('../../utils/money');
 const dates = require('../../utils/dates');
 const documentNumber = require('../../utils/documentNumber');
-const { resolveSchool, loadClassInSchool, loadSessionInSchool } = require('../../utils/schoolScope');
+const {
+  resolveSchool,
+  loadClassInSchool,
+  loadSessionInSchool,
+  assertOpenForNew,
+  schoolBrand,
+} = require('../../utils/schoolScope');
 const { paginateQuery, getSort } = require('../../utils/pagination');
+const selfScope = require('../../services/selfScope');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const { STUDENT_FEE_STATUS } = require('../../config/constants');
 
@@ -212,12 +220,18 @@ async function createStructure(req, payload) {
   const school = await resolveSchool(req, payload.school_id);
   if (payload.class_id) await loadClassInSchool(payload.class_id, school.id);
   if (payload.academic_session_id) await loadSessionInSchool(payload.academic_session_id, school.id);
+  /* D20 — a closed session takes no new fee structure: neither the one named nor its class's own. */
+  await assertOpenForNew({ sessionId: payload.academic_session_id, classId: payload.class_id }, 'fee structure');
+
+  /* D35 — an amount entered without a currency is in the school's, not in the column's USD default. */
+  const currency = payload.currency ? null : (await schoolBrand(school.id) || {}).currency;
 
   let row;
   try {
     row = await db.FeeStructure.create({
       school_id: school.id,
       organization_id: school.organization_id,
+      ...(currency ? { currency } : {}),
       ...pickStructure(payload),
     });
   } catch (err) {
@@ -648,6 +662,140 @@ async function pay(req, payload) {
   return { payment: result.payment, studentFee: result.studentFee };
 }
 
+/**
+ * The owner's decision D29 — apply each structure's configured fine to the fees it is owed on.
+ *
+ * A fee is fined once it is still unpaid (`unpaid` or `partially_paid`) after its due date plus the
+ * structure's `fine_grace_days`. What it owes:
+ *
+ *   fixed       fine_amount, once
+ *   percentage  fine_amount % of the fee's amount, once
+ *   per_day     fine_amount × the days late beyond the grace period, growing until the fee is paid
+ *
+ * The fee's `fine_amount` is raised to that figure and never lowered — a fine typed at assignment is
+ * kept, and a `per_day` fine stops growing when the fee is paid, because a paid fee is no longer a
+ * candidate. `net_amount` and `pending_amount` follow by the ledger arithmetic in the header. Idempotent:
+ * run twice on one day, the second run raises nothing.
+ *
+ * @param {{at?: Date, limit?: number}} [options]
+ * @returns {Promise<{scanned: number, fined: number}>}
+ */
+async function applyFines(options = {}) {
+  const at = options.at || new Date();
+  const today = dates.toDateOnly(at);
+
+  const candidates = await db.StudentFee.findAll({
+    where: {
+      status: { [Op.in]: [STUDENT_FEE_STATUS.UNPAID, STUDENT_FEE_STATUS.PARTIALLY_PAID] },
+      due_date: { [Op.lt]: today },
+      fee_structure_id: { [Op.ne]: null },
+    },
+    include: [{
+      model: db.FeeStructure,
+      as: 'feeStructure',
+      required: true,
+      where: { fine_type: { [Op.ne]: 'none' } },
+      attributes: ['id', 'fine_type', 'fine_amount', 'fine_grace_days'],
+    }],
+    order: [['id', 'ASC']],
+    limit: options.limit || 1000,
+  });
+
+  let fined = 0;
+  for (const fee of candidates) {
+    const structure = fee.feeStructure;
+    const daysLate = dates.daysBetween(fee.due_date, today) - Number(structure.fine_grace_days || 0);
+    if (daysLate <= 0) continue;
+
+    const rate = money.toNumber(structure.fine_amount);
+    let owed = 0;
+    if (structure.fine_type === 'fixed') owed = money.round(rate);
+    else if (structure.fine_type === 'percentage') owed = money.percentageOf(fee.amount, rate);
+    else if (structure.fine_type === 'per_day') owed = money.multiply(rate, daysLate);
+
+    if (money.toMinor(owed) <= money.toMinor(fee.fine_amount)) continue;
+
+    const net = netOf(fee.amount, fee.discount_amount, owed);
+    // eslint-disable-next-line no-await-in-loop
+    await fee.update({
+      fine_amount: owed,
+      net_amount: net,
+      pending_amount: money.clampNonNegative(money.subtract(net, fee.paid_amount)),
+    });
+    fined += 1;
+  }
+
+  if (fined) logger.info('Fee fines applied', { fined, at: today });
+  return { scanned: candidates.length, fined };
+}
+
+/** What `mine()` shows of a fee and of a receipt — see there. */
+const SELF_FEE_ATTRIBUTES = Object.freeze([
+  'id', 'academic_session_id', 'student_id', 'fee_structure_id', 'class_id', 'component', 'title',
+  'period_month', 'currency', 'amount', 'discount_amount', 'fine_amount', 'net_amount', 'paid_amount',
+  'pending_amount', 'due_date', 'status', 'paid_at', 'waived_at',
+]);
+const SELF_PAYMENT_ATTRIBUTES = Object.freeze([
+  'id', 'student_fee_id', 'student_id', 'receipt_number', 'currency', 'amount', 'fine_paid',
+  'discount_given', 'method', 'reference', 'paid_at',
+]);
+
+/**
+ * A student's fees for the people they are about — `fees.self.view`, the owner's decision D17.
+ *
+ * The catalogue names it "View own / child fees" and granted it to Student and Parent from the start;
+ * nothing mounted it. A student sees their own fees and a parent each linked child's
+ * (`services/selfScope`): every fee row with what is paid and pending, the receipts against them, and
+ * the outstanding total per currency — a fee in two currencies is never summed into one figure.
+ * Whole rather than paged: one student's fees for a session are a handful of rows, not a ledger.
+ *
+ * Named columns, not the office's rows — the rule `students.service`'s `SELF_ATTRIBUTES` applies to the
+ * record. What the family owes and paid, and when; not who collected it, the receipt file's stored
+ * path, the ledger entry it posted to, when a reminder went out, or the notes and waiver reasons staff
+ * write for each other.
+ *
+ * @param {import('express').Request} req
+ * @param {{student_id?: number, academic_session_id?: number, status?: string}} query
+ * @returns {Promise<object[]>}
+ */
+async function mine(req, query) {
+  const ids = selfScope.pickLinked(await selfScope.linkedStudentIds(req), query.student_id);
+  const students = await selfScope.linkedStudents(ids);
+
+  const out = [];
+  for (const student of students) {
+    const where = { student_id: student.id, school_id: student.school_id };
+    if (query.academic_session_id) where.academic_session_id = query.academic_session_id;
+    if (query.status) where.status = query.status;
+
+    // eslint-disable-next-line no-await-in-loop
+    const [fees, payments] = await Promise.all([
+      db.StudentFee.findAll({
+        where,
+        attributes: [...SELF_FEE_ATTRIBUTES],
+        order: [['due_date', 'ASC'], ['id', 'ASC']],
+      }),
+      db.FeePayment.findAll({
+        where: { student_id: student.id, school_id: student.school_id },
+        attributes: [...SELF_PAYMENT_ATTRIBUTES],
+        order: [['paid_at', 'DESC'], ['id', 'DESC']],
+      }),
+    ]);
+
+    const outstanding = {};
+    for (const fee of fees) {
+      outstanding[fee.currency] = money.sum(outstanding[fee.currency] || 0, fee.pending_amount);
+    }
+    out.push({
+      student,
+      fees,
+      payments,
+      outstanding: Object.entries(outstanding).map(([currency, amount]) => ({ currency, amount })),
+    });
+  }
+  return out;
+}
+
 async function listPayments(req, query, pagination) {
   const where = tenantWhere(req.tenant, {});
   if (query.school_id) {
@@ -707,8 +855,10 @@ module.exports = {
   updateStructure,
   assign,
   listLedger,
+  mine,
   pay,
   listPayments,
+  applyFines,
   discountFor,
   netOf,
   STRUCTURE_EDITABLE,

@@ -88,9 +88,12 @@ export const EXPLAINED_CODES = new Set([
   'MULTIPLE_SCHOOL_CONTEXT',
   /*
    * Raised by a **service** rather than by a guard — `exams.service.js` refuses
-   * `GET /exams/my-results?student_id=` for a student not linked to the caller. It is a refusal by
-   * every test that matters (retrying cannot help, and the remedy belongs to the school office), so
-   * it is explained rather than reported as an error.
+   * `GET /exams/my-results?student_id=` for a student not linked to the caller, and
+   * `services/selfScope.js pickLinked()` refuses the same way for the two D17 self views that take a
+   * `student_id` (`/attendance/mine`, `/fees/mine`). `/students/mine` is not one of them: its query
+   * schema is `Joi.object({})`, so a `student_id` is stripped before `mine()` runs, and `mine()` asks
+   * only `linkedStudentIds()`. It is a refusal by every test that matters (retrying cannot help, and
+   * the remedy belongs to the school office), so it is explained rather than reported as an error.
    *
    * `verify-frontend.js` scans `authorize.js` and `entitlement.js` for codes and so would never have
    * required this one. Noted here because that assertion's silence is not evidence of completeness:
@@ -115,6 +118,13 @@ export const EXPLAINED_CODES = new Set([
   'PARENT_PROFILE_MISSING',
   'PARENT_INACTIVE',
   'TEACHER_PROFILE_MISSING',
+  /*
+   * The D17 self views' version of the three above. `services/selfScope.js linkedStudentIds()` raises
+   * it (404) when the signed-in account has neither a student nor a parent profile — a student login
+   * whose record was never linked, or a teacher, who holds `attendance.self.view` and is answered this
+   * by `GET /attendance/mine` (`attendance.routes.js` says so). Nothing the reader does changes it.
+   */
+  'SELF_PROFILE_MISSING',
 ]);
 
 /**
@@ -203,4 +213,81 @@ export function useCollection<T>(path: string, query: Query = {}): Collection<T>
   const reload = useCallback(() => setNonce((n) => n + 1), []);
 
   return { rows, meta, loading, error, refusal, reload };
+}
+
+/** One payload that is not a page — a dashboard, a report, a week — in the same states as a list. */
+export interface Resource<T> {
+  data: T | null;
+  loading: boolean;
+  /** A 500 or a network failure — the state where retrying makes sense. */
+  error: string | null;
+  /** A deliberate refusal: no module, no subscription, no permission, no profile. */
+  refusal: Refusal | null;
+  reload: () => void;
+}
+
+/**
+ * Load one payload that `ApiResponse.ok(res, { … })` sends, sorting its failures exactly as
+ * `useCollection` sorts a list's.
+ *
+ * `useCollection` cannot serve these: it reads the paginated envelope, and a dashboard or a week is
+ * not one. So every such screen kept the same thirty lines by hand — the abort, the loading flag, the
+ * refusal-or-error split — in `parent/children.ts`, the teacher dashboard and the timetable's week
+ * grid among others. Written once here when the D17 self views arrived: nine screens, each of which
+ * would otherwise have carried its own copy.
+ *
+ * ## The caller hands over the request, not a path
+ *
+ * `verify-frontend.js` finds a screen's calls by `api.get(` followed immediately by its path, so a
+ * path passed to a hook would read as no caller at all — the blind spot `attendance/mark` and the
+ * subscription lifecycle each fell into. The call therefore stays written out at the call site, and
+ * this hook owns only what happens around it.
+ *
+ * `load` must be memoised (`useCallback` or `useMemo`), because a new function is a new request.
+ * `null` means "not yet": nothing is asked and the state is left as it was — `loading` starts true —
+ * so a screen waiting on a prerequisite, such as the child list a request is narrowed by, renders
+ * that wait itself.
+ */
+export function useResource<T>(load: ((signal: AbortSignal) => Promise<T>) | null): Resource<T> {
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refusal, setRefusal] = useState<Refusal | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    if (!load) return undefined;
+
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    setRefusal(null);
+
+    (async () => {
+      try {
+        const result = await load(controller.signal);
+        if (controller.signal.aborted) return;
+        setData(result);
+      } catch (caught) {
+        if (controller.signal.aborted) return;
+        /* The previous answer is dropped: it was for a different question, or the same one refused. */
+        setData(null);
+        if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
+          setRefusal({ code: caught.code, message: caught.message });
+        } else if (caught instanceof ApiError) {
+          setError(caught.message);
+        } else if ((caught as Error)?.name !== 'AbortError') {
+          setError('Could not reach the server. Check your connection and try again.');
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [load, nonce]);
+
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
+
+  return { data, loading, error, refusal, reload };
 }

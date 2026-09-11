@@ -135,12 +135,15 @@ const fields = {
   billing_cycle: Joi.string().valid(...BILLING_CYCLE_LIST),
 
   /**
-   * Seats or students, for the §10.4 models that price per unit.
+   * Seats, for Seat-Based pricing (§10.4) — the one per-unit model whose unit is typed.
    *
    * `subscriptions.quantity` is `INTEGER UNSIGNED NOT NULL DEFAULT 1` and its comment reads
-   * *"Seats/students used by the seat-based and per-student pricing models"*. The minimum is 1: a
-   * quantity of 0 on a per-student plan would bill nothing and permit nothing, and there is no
-   * operation in §12 that means "subscribed for zero seats" — that is what Cancelled is for.
+   * *"Seats/students used by the seat-based and per-student pricing models"*. Per-Student and
+   * Student-Based subscriptions no longer take a typed quantity: the service counts the school's active
+   * students and bills that (the owner's decision D26), and refuses a quantity sent for them. So a
+   * counted subscription carries 0 when no student is active — the honest bill for none — while a typed
+   * seat count is at least 1: there is no operation in §12 that means "subscribed for zero seats", which
+   * is what Cancelled is for.
    */
   quantity: Joi.number().integer().min(1).max(1000000),
 
@@ -375,10 +378,12 @@ const renew = Joi.object({ reason: fields.reason, ...refused, school_id: refused
 /**
  * `POST /:id/addons`.
  *
- * `addon_price_id` is optional — an add-on may be granted at no charge as part of a negotiation, and
- * `subscription_addons.addon_price_id` is nullable and `SET NULL` precisely so the row survives the
- * price being retired. When it is given, the service checks it belongs to the named add-on and is not
- * restricted to a different plan.
+ * `addon_price_id` is **required** — the owner's decision D21, closing Known Issues #18. It used to be
+ * optional, and a purchase that named no price was recorded at 0.00 with a null pointer and billed as a
+ * zero line: a billing figure nobody chose. `subscription_addons.addon_price_id` stays nullable and
+ * `SET NULL` so a purchase survives its price being retired later. The service checks the price
+ * belongs to the named add-on, is on sale, is not restricted to another plan, and bills on the
+ * subscription's own cycle and currency.
  *
  * `unit_amount`, `effect_type`, `effect_target` and `units_granted` are all absent by design: they
  * are the **purchase copy**, resolved from the `addons` row and the quantity at purchase time so a
@@ -388,7 +393,7 @@ const renew = Joi.object({ reason: fields.reason, ...refused, school_id: refused
  */
 const purchaseAddon = Joi.object({
   addon_id: fields.addon_id.required(),
-  addon_price_id: fields.addon_price_id,
+  addon_price_id: fields.addon_price_id.required(),
   quantity: Joi.number().integer().min(1).max(1000000).default(1),
 
   /* Both nullable on the model: null `ends_at` is an add-on with no end date. */

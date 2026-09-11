@@ -93,7 +93,8 @@
  * has exactly one writer:
  *
  *  - `draft → unpaid` — `finalise()`. Requests, `invoices.manage`.
- *  - `unpaid → cancelled` (and from `partially_paid`/`overdue`/`draft`) — `cancel()`.
+ *  - `unpaid → cancelled` (and from `overdue`/`draft`) — `cancel()`, only while nothing has been paid.
+ *    So never from `partially_paid`, which by definition has: a payment is refunded first.
  *  - `unpaid → partially_paid → paid` — `applyPayment()`, called **only** by `payments.service` on
  *    approval. Never by a request of its own: a status that could be typed in would make
  *    `amount_paid` a claim rather than a sum of approved payments.
@@ -117,7 +118,7 @@
  * ## What has no route, and why
  *
  *  - **`markOverdue()`** — a fact about `due_date` and the clock. Same scheduler argument as
- *    `subscriptions.runLifecycleSweep()`; `src/jobs/` is Phase 5.
+ *    `subscriptions.runLifecycleSweep()`; the daily `invoice-overdue` job in `src/jobs/` runs it.
  *  - **`reminderCandidates()` / `markReminderSent()`** — `reminder_sent_at`'s comment is *"Marker used
  *    by the fee/subscription reminder cron"*. The selection and the marker are implemented here because
  *    they are invoice facts; *sending* is §26's notification module, and inventing an email template
@@ -775,22 +776,45 @@ async function generateForSubscription(req, subscriptionId, payload = {}) {
   }
 
   /*
-   * `is_recurring` decides what a renewal charges for — see the header. `first_cycle` is inferred from
-   * whether the subscription has ever been renewed rather than from whether an invoice exists, because
-   * an operator may have cancelled the first invoice and the setup fee is still owed once.
+   * `is_recurring` decides what a renewal charges for — see the header. The first cycle — the one that
+   * also bills the setup fee and any one-off line — is a subscription never renewed **and** never yet
+   * invoiced. Renewals alone used to decide it, so a subscription reactivated before its first renewal
+   * was billed its setup fee a second time. An invoice the operator *cancelled* does not count, so a
+   * cancelled first invoice still leaves the setup fee owed once.
    */
+  const invoicedBefore = await db.Invoice.count({
+    where: { subscription_id: subscription.id, status: { [Op.in]: LIVE_STATUSES } },
+  });
   const isFirstCycle =
     payload.first_cycle !== undefined
       ? Boolean(payload.first_cycle)
-      : Number(subscription.renewal_count || 0) === 0;
+      : Number(subscription.renewal_count || 0) === 0 && invoicedBefore === 0;
 
-  const items = await db.SubscriptionItem.findAll({
+  const allItems = await db.SubscriptionItem.findAll({
     where: {
       subscription_id: subscription.id,
       ...(isFirstCycle ? {} : { is_recurring: true }),
     },
     order: [['id', 'ASC']],
   });
+
+  /*
+   * A cancelled add-on's line is closed — `is_recurring: false` — and the first cycle bills every line,
+   * recurring or not, so it used to pick the cancelled purchase up anyway. A line names its purchase in
+   * `metadata.subscription_addon_id`; one whose purchase is cancelled is left off.
+   */
+  const purchaseIds = allItems
+    .map((item) => item.item_type === 'addon' && item.metadata && item.metadata.subscription_addon_id)
+    .filter(Boolean);
+  const cancelledPurchases = purchaseIds.length
+    ? new Set((await db.SubscriptionAddon.findAll({
+      where: { id: { [Op.in]: purchaseIds }, status: 'cancelled' },
+      attributes: ['id'],
+    })).map((purchase) => Number(purchase.id)))
+    : new Set();
+  const items = allItems.filter(
+    (item) => !(item.metadata && cancelledPurchases.has(Number(item.metadata.subscription_addon_id)))
+  );
 
   if (!items.length) {
     throw new ApiError(422, 'The subscription has no billable items', {
@@ -904,14 +928,31 @@ async function recompute(invoice, transaction) {
     invoice.tax_id ? db.Tax.findByPk(invoice.tax_id, { transaction }) : null,
   ]);
 
+  const drawn = invoice.credit_applied;
   const totals = computeTotals({
     lines: items,
     coupon,
     tax,
     /* Already drawn down at issue; re-applying it would spend the same credit twice. */
-    creditAvailable: invoice.credit_applied,
+    creditAvailable: drawn,
     amountPaid: invoice.amount_paid,
   });
+
+  /*
+   * Credit this invoice no longer needs goes back to the subscription. A coupon can bring the total
+   * below the credit the invoice drew at issue, and `computeTotals()` then caps the credit at the new
+   * outstanding: the difference used to vanish — the school's credit destroyed, and owed again in full
+   * once the coupon came off, since the recompute that removes it can only re-use what is left. It is
+   * returned to `credit_balance`, where the next invoice draws it, as `cancel()` returns all of it.
+   */
+  const released = money.clampNonNegative(money.subtract(drawn, totals.creditApplied));
+  if (money.toMinor(released) > 0 && invoice.subscription_id) {
+    await db.Subscription.increment('credit_balance', {
+      by: released,
+      where: { id: invoice.subscription_id },
+      transaction,
+    });
+  }
 
   invoice.set({
     subtotal: totals.subtotal,
@@ -1009,6 +1050,11 @@ async function cancel(req, id, reason = null) {
         transaction,
       });
     }
+    /*
+     * And so does the coupon use, for the same reason. The code stays printed on the cancelled
+     * document, which is a record of what it said; the use it counted against Maximum Uses does not.
+     */
+    await releaseCouponUse(invoice, transaction);
 
     invoice.set({
       status: STATUS.CANCELLED,
@@ -1116,11 +1162,39 @@ async function applyCoupon(req, id, payload) {
 }
 
 /**
+ * Give back the coupon use an invoice recorded — its `coupon_usages` row deleted and `used_count`
+ * decremented — because the discount was never spent.
+ *
+ * §13.4's *Maximum Uses* must count only applications that had an effect. Two things end one without
+ * effect: taking the coupon off (`removeCoupon()`) and cancelling the invoice it was spent on
+ * (`cancel()`). Cancelling used to keep the use, so re-issuing the period and applying the same coupon
+ * could be refused as exhausted by a use that discounted nothing.
+ *
+ * @param {object} invoice
+ * @param {object} transaction
+ * @returns {Promise<number>} uses given back
+ */
+async function releaseCouponUse(invoice, transaction) {
+  if (!invoice.coupon_id) return 0;
+  const removed = await db.CouponUsage.destroy({
+    where: { coupon_id: invoice.coupon_id, invoice_id: invoice.id },
+    transaction,
+  });
+  if (removed > 0) {
+    await db.Coupon.decrement('used_count', {
+      by: removed,
+      where: { id: invoice.coupon_id, used_count: { [Op.gte]: removed } },
+      transaction,
+    });
+  }
+  return removed;
+}
+
+/**
  * Take a coupon back off an invoice.
  *
- * The `coupon_usages` row is deleted and `used_count` decremented, because the use was never spent: the
- * invoice it was recorded against no longer carries the discount. Leaving the row would make §13.4's
- * *Maximum Uses* count applications that had no effect, which is the one thing that count must not do.
+ * The use is given back (`releaseCouponUse()`), because the invoice it was recorded against no longer
+ * carries the discount.
  *
  * @param {import('express').Request} req
  * @param {number|string} id
@@ -1144,21 +1218,9 @@ async function removeCoupon(req, id, reason = null) {
   }
 
   const before = snapshot(invoice);
-  const couponId = invoice.coupon_id;
 
   await db.sequelize.transaction(async (transaction) => {
-    const removed = await db.CouponUsage.destroy({
-      where: { coupon_id: couponId, invoice_id: invoice.id },
-      transaction,
-    });
-
-    if (removed > 0) {
-      await db.Coupon.decrement('used_count', {
-        by: removed,
-        where: { id: couponId, used_count: { [Op.gte]: removed } },
-        transaction,
-      });
-    }
+    await releaseCouponUse(invoice, transaction);
 
     invoice.set({ coupon_id: null, coupon_code: null });
     await recompute(invoice, transaction);
@@ -1315,18 +1377,25 @@ async function markOverdue(options = {}) {
   });
 
   let flagged = 0;
+  const subscriptionIds = new Set();
 
   for (const invoice of candidates) {
     /* eslint-disable-next-line no-await-in-loop */
     await invoice.update({ status: STATUS.OVERDUE });
     flagged += 1;
+    if (invoice.subscription_id) subscriptionIds.add(Number(invoice.subscription_id));
   }
 
   if (flagged > 0) {
     logger.info('Invoices marked overdue', { flagged, at: cutoff });
   }
 
-  return { scanned: candidates.length, flagged };
+  /*
+   * Whose invoices went overdue, so the job can move those subscriptions to Past Due — the owner's
+   * decision D23. Returned rather than done here: the state machine is `subscriptions.service`'s, and
+   * that module already requires this one.
+   */
+  return { scanned: candidates.length, flagged, subscriptionIds: [...subscriptionIds] };
 }
 
 /**

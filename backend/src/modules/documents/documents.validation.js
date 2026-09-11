@@ -20,7 +20,7 @@
  * ## Every file column is refused
  *
  * `file_path`, `file_name`, `mime_type` and `file_size_bytes` are the system's, and §20.5 writes none of
- * them yet — rendering is Phase 5.4. Refusing them rather than ignoring them keeps this module out of
+ * them — a document is rendered on request and never stored. Refusing them rather than ignoring them keeps this module out of
  * Known Issues #26, which records five columns elsewhere that still accept a caller-supplied path.
  *
  * `is_generated`, `generated_at`, `generation_payload` and `uploaded_by` are refused for the same
@@ -124,7 +124,14 @@ const showQuery = Joi.object({
   format: Joi.string().valid(...DOCUMENT_FORMATS).default(REPORT_FORMATS.JSON),
 });
 
+/** D34's pick-lists: a search term and a cap, never more than fifty. */
+const pickerQuery = Joi.object({
+  school_id: fields.school_id,
+  q: Joi.string().trim().max(100).empty(''),
+  limit: Joi.number().integer().min(1).max(50),
+});
+
 module.exports = {
-  schemas: { generate, list, showQuery, idParam: commonSchemas.idParam, DOCUMENT_FORMATS },
+  schemas: { generate, list, showQuery, pickerQuery, idParam: commonSchemas.idParam, DOCUMENT_FORMATS },
   fields,
 };

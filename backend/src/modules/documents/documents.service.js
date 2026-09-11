@@ -50,16 +50,12 @@
  *
  * ## What FR-DOC-001 does not get, stated plainly
  *
- * **No bytes.** Rendering a PDF is checklist row 5.4 (Phase 5.4) and is not built, so `file_path`,
- * `file_name`, `mime_type` and `file_size_bytes` stay null and `storage_limit` — a cumulative limit that
- * is incremented explicitly — is not incremented, because nothing was stored. Mounting
- * `enforceLimit(STORAGE_LIMIT)` here would be a guard that can never fire.
- *
- * **No download route.** There is still no file-serving anywhere in this application. FR-EXAM-005,
- * FR-HW-001 and FR-ASG-001 each recorded that they were waiting on it; so does this. What §20.5 delivers
- * is the record — which document was generated, for whom, by whom, when, and with exactly the values
- * that reproduce it — which is what Phase 5.4 will render from. Known Issues #26 still has to be closed
- * before any such route exists.
+ * **No stored bytes.** A document is rendered as a PDF on request — `GET /:id?format=pdf`, drawn from
+ * `generation_payload` by `toPdf()` and streamed — and never written to disk, so `file_path`,
+ * `file_name`, `mime_type` and `file_size_bytes` stay null and `storage_limit` — charged by the upload
+ * chain, `upload.verifyStorage()`, for bytes a request actually stored — is not charged, because nothing
+ * was stored. What §20.5 keeps is the record: which document was generated, for whom, by whom, when,
+ * and with exactly the values that reproduce it.
  */
 
 const { Op } = require('sequelize');
@@ -76,7 +72,8 @@ const { subjectRows } = require('../exams/exams.service');
 const { tenantWhere } = require('../../models');
 const ApiError = require('../../utils/ApiError');
 const dates = require('../../utils/dates');
-const { resolveSchool } = require('../../utils/schoolScope');
+const { resolveSchool, schoolBrand } = require('../../utils/schoolScope');
+const { canManage } = require('../../utils/recordView');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const { loadSnapshot, assertSubscriptionUsable } = require('../../middlewares/entitlement');
@@ -122,8 +119,8 @@ const fullName = (row) => [row.first_name, row.last_name].filter(Boolean).join('
 
 /**
  * `file_path` never reaches a caller, for the reason every stored path is suppressed in this codebase.
- * It is always null today, and it will not be once Phase 5.4 renders something — suppressing it now
- * means the response shape does not change when that happens.
+ * It is null — Phase 5.4 renders on request and stores nothing — and suppressed anyway, so no future
+ * writer of the column could put a path in a response.
  */
 function present(row) {
   const json = typeof row.toJSON === 'function' ? row.toJSON() : { ...row };
@@ -173,12 +170,22 @@ async function assertModuleForType(req, documentType) {
 
 /* ─────────────────────────── the seven payload builders ─────────────────────────── */
 
-/** School-level values every document carries, so a rendered page can be headed. */
+/**
+ * School-level values every document carries, so a rendered page can be headed.
+ *
+ * `name` is the name the school uses — its `school_settings` display name when set — because the
+ * owner's decision D35 has the school's name appear on its documents; the platform record's name had
+ * been printed instead. Snapshotted with the rest of the payload, so a certificate reprinted after a
+ * rename says what it said when it was issued.
+ */
 async function schoolBlock(schoolId) {
-  const school = await db.School.findByPk(schoolId, {
-    attributes: ['id', 'name', 'code', 'email', 'phone', 'address', 'city'],
-  });
-  return school ? { id: school.id, name: school.name, code: school.code, city: school.city } : null;
+  const [school, brand] = await Promise.all([
+    db.School.findByPk(schoolId, { attributes: ['id', 'name', 'code', 'city'] }),
+    schoolBrand(schoolId),
+  ]);
+  return school
+    ? { id: school.id, name: brand ? brand.name : school.name, code: school.code, city: school.city }
+    : null;
 }
 
 /** A student, with the class and section named rather than left as ids a template cannot print. */
@@ -659,26 +666,31 @@ async function loadOwner(ownerType, ownerId, schoolId) {
  * resolving only the first would silently hide the rest. That was a real defect in §19's `myResults()`.
  */
 async function selfScope(req) {
-  if (!req.user || !req.user.id) return null;
+  /*
+   * Who is narrowed is decided by the permission, not by which profiles happen to exist. It was the
+   * other way round: a caller was narrowed only if a student, teacher or parent row was linked to them,
+   * so a Student or Parent login with no live profile — a student row soft-deleted with the login still
+   * active, say — was narrowed to nothing and read every document in the school, payloads included.
+   * `documents.generate` is what the four actors FR-DOC-001 names hold; everyone else sees only the
+   * documents of the profiles found below, which may be none.
+   */
+  if (await canManage(req, 'documents.generate')) return null;
+  if (!req.user || !req.user.id) return [];
 
   const owners = [];
-  let isSelfCaller = false;
 
   const student = await db.Student.findOne({ where: tenantWhere(req.tenant, { user_id: req.user.id }) });
   if (student) {
-    isSelfCaller = true;
     owners.push({ type: DOCUMENT_OWNER_TYPES.STUDENT, id: Number(student.id) });
   }
 
   const teacher = await db.Teacher.findOne({ where: tenantWhere(req.tenant, { user_id: req.user.id }) });
   if (teacher) {
-    isSelfCaller = true;
     owners.push({ type: DOCUMENT_OWNER_TYPES.TEACHER, id: Number(teacher.id) });
   }
 
   const parent = await db.Parent.findOne({ where: tenantWhere(req.tenant, { user_id: req.user.id }) });
   if (parent) {
-    isSelfCaller = true;
     if (parent.is_active) {
       const links = await db.ParentStudent.findAll({
         where: { parent_id: parent.id, school_id: parent.school_id },
@@ -690,7 +702,7 @@ async function selfScope(req) {
     }
   }
 
-  return isSelfCaller ? owners : null;
+  return owners;
 }
 
 /** `[{type, id}]` as a where clause: any of those exact pairs, and nothing else. */
@@ -731,6 +743,59 @@ async function findById(req, id, namedSchoolId = undefined) {
     throw ApiError.notFound('Document not found', { code: 'DOCUMENT_NOT_FOUND' });
   }
   return row;
+}
+
+/**
+ * The owner's decision D34 — the two pick-lists a document needs, on `documents.generate`.
+ *
+ * FR-DOC-001 names the Accountant and the Receptionist as actors (SRS:1132), and a Teacher ID Card
+ * names a teacher and a Result Card an exam — but neither role holds `teachers.view` or `exams.view`,
+ * so the generate dialog's pickers stayed empty for exactly the actors the FR names. D34 chose small
+ * pick-lists under the key they do hold rather than widening their grants: the few columns a picker
+ * shows, searchable, capped at fifty, confined to the school like every read.
+ *
+ * @param {import('express').Request} req
+ * @param {{school_id?: number, q?: string, limit?: number}} query
+ * @returns {Promise<object[]>}
+ */
+async function pickTeachers(req, query) {
+  const school = await resolveSchool(req, query.school_id);
+  const where = { school_id: school.id };
+  if (query.q) {
+    where[Op.or] = [
+      { first_name: { [Op.like]: `%${query.q}%` } },
+      { last_name: { [Op.like]: `%${query.q}%` } },
+      { employee_id: { [Op.like]: `%${query.q}%` } },
+      /* The whole name as a person types it — "John Smith" matched neither column on its own. */
+      db.sequelize.where(
+        db.sequelize.fn('CONCAT_WS', ' ', db.sequelize.col('first_name'), db.sequelize.col('last_name')),
+        { [Op.like]: `%${query.q}%` }
+      ),
+    ];
+  }
+  return db.Teacher.findAll({
+    where,
+    attributes: ['id', 'employee_id', 'first_name', 'last_name', 'designation', 'is_active'],
+    order: [['first_name', 'ASC'], ['id', 'ASC']],
+    limit: query.limit || 50,
+  });
+}
+
+/** The exams a Result Card may be generated for — see `pickTeachers()`. */
+async function pickExams(req, query) {
+  const school = await resolveSchool(req, query.school_id);
+  const where = { school_id: school.id };
+  if (query.q) where.name = { [Op.like]: `%${query.q}%` };
+  return db.Exam.findAll({
+    where,
+    attributes: ['id', 'name', 'exam_type', 'status', 'start_date', 'class_id', 'section_id'],
+    include: [
+      { model: db.Class, as: 'class', attributes: ['id', 'name'] },
+      { model: db.Section, as: 'section', attributes: ['id', 'name'] },
+    ],
+    order: [['start_date', 'DESC'], ['id', 'DESC']],
+    limit: query.limit || 50,
+  });
 }
 
 async function list(req, query, pagination) {
@@ -774,6 +839,32 @@ async function generate(req, payload) {
         { field: 'exam_id', message: 'Unknown exam for this school' },
       ]);
     }
+    /*
+     * FR-DOC-001's precondition is that the "relevant underlying record exists (e.g., student, fee
+     * payment, exam result)" (SRS:1133). A Result Card was generated for any student and any exam of the
+     * school and printed "no published result" when there was none — a card for a result that does not
+     * exist. The student and the exam were checked; the result, which is what the card is of, was not.
+     */
+    const result = await db.Result.findOne({
+      where: { exam_id: exam.id, student_id: owner.id, school_id: school.id },
+      attributes: ['id', 'is_published'],
+    });
+    if (!result) {
+      throw ApiError.validation('That student has no result for this exam', [
+        { field: 'exam_id', message: 'No result has been generated for this student in this exam' },
+      ]);
+    }
+    /*
+     * And it must be published — the owner's decision D31. A card is a generated document the student
+     * and their parents can read through `GET /documents/:id`, so a card made from an unpublished
+     * result released it through a side door while `myResults()` was still hiding it.
+     */
+    if (!result.is_published) {
+      throw ApiError.conflict('That result has not been published yet', {
+        code: 'RESULT_NOT_PUBLISHED',
+        details: { result_id: result.id },
+      });
+    }
     context.exam = exam;
   }
 
@@ -800,8 +891,9 @@ async function generate(req, payload) {
       generation_payload,
       uploaded_by: req.user ? req.user.id : null,
       /*
-       * No bytes: rendering is Phase 5.4. `file_path`, `file_name`, `mime_type` and `file_size_bytes`
-       * stay null, and `storage_limit` is not incremented, because nothing was stored.
+       * No stored bytes: the PDF is rendered on request and streamed. `file_path`, `file_name`,
+       * `mime_type` and `file_size_bytes` stay null, and `storage_limit` is not charged, because nothing
+       * was stored.
        */
     });
 
@@ -823,6 +915,8 @@ module.exports = {
   toPdf,
   PDF_SPEC,
   list,
+  pickTeachers,
+  pickExams,
   findById,
   generate,
   present,

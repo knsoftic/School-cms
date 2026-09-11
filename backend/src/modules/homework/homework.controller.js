@@ -50,8 +50,8 @@ async function update(req, res) {
  * FR-HW-001's attachment — the file half of *"Homework is available to the relevant class/students."*
  *
  * The row is loaded through `findById()`, which already applies the router's permission and tenant
- * guards and `selfScopeClasses()` — so a student gets their own class's published homework and
- * nothing else, and the file inherits every one of those rules without restating any of them.
+ * guards and `selfScopePlacements()` — so a student gets their own class's (and section's) published
+ * homework and nothing else, and the file inherits every one of those rules without restating any of them.
  *
  * `attachment_name` is the name the teacher's browser sent; the stored name is random hex and would
  * mean nothing to whoever downloads it.

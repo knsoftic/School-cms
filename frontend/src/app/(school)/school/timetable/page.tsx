@@ -3,47 +3,68 @@
 /**
  * Timetable — SRS §20.1, §33's "Timetable", checklist row 4.4.
  *
- * Built to the shape of the exemplar at `(platform)/super-admin/schools/page.tsx`: one
- * `useCollection`, one `Column[]`, the four-state render in refusal → error → loading → empty →
+ * The register tab is built to the shape of the exemplar at `(platform)/super-admin/schools/page.tsx`:
+ * one `useCollection`, one `Column[]`, the four-state render in refusal → error → loading → empty →
  * table order, and `Pagination`. Only the parts that are genuinely different from the exemplar are
  * commented below; the parts that are the same are the same on purpose.
  *
- * ## Why this screen is a flat list and not a week grid
+ * ## One table, three questions, three tabs
  *
- * §20.1 names a **Class Timetable** and a **Teacher Timetable**, and the API gives each its own
- * endpoint (`GET /timetable/class/:classId`, `GET /timetable/teacher/:teacherId`) which returns the
- * whole week unpaginated, deliberately — `timetable.service.js:431` says half a timetable is worse
- * than none. This screen is the third endpoint, `GET /timetable`, which is the paginated *register*
- * of every slot in the school. Pivoting a page of 20 rows into a grid would draw a week with holes
- * in it wherever the page boundary fell, which is exactly the failure those two views avoid by
- * refusing to paginate. So the register is rendered as a register.
+ * §20.1 names a **Class Timetable** and a **Teacher Timetable**, and FR-TT-001's outcome is that
+ * "class and teacher timetables are established". The API gives each its own endpoint
+ * (`GET /timetable/class/:classId`, `GET /timetable/teacher/:teacherId`), which returns the whole
+ * week unpaginated, deliberately — `classView()`'s docblock in `timetable.service.js` says half a
+ * timetable is worse than none. The third endpoint, `GET /timetable`, is the paginated *register* of
+ * every slot in the school.
  *
- * The grid would belong to per-class and per-teacher screens, and **neither exists**: both endpoints
- * are mounted and nothing in the frontend calls them. The page description used to say a class's or
- * a teacher's week "is on their own timetable", which sent people looking for a screen the product
- * does not have; it now describes only what this one does.
+ * So the register is rendered as a register, and the two named views as grids. Pivoting a page of 20
+ * register rows into a grid would draw a week with holes in it wherever the page boundary fell, which
+ * is exactly the failure the two views avoid by refusing to paginate; a week read from one of them is
+ * whole, so it can be laid out as days × periods with no blank that is not a free period. Until now
+ * both endpoints were mounted and nothing in the frontend called them.
+ *
+ * ## Who is offered which tab
+ *
+ * `timetable.view` reaches almost every role, students and parents included, and reading a week needs
+ * nothing more. *Choosing* whose week does: the class picker is `GET /classes` (`classes.view`) and
+ * the teacher picker `GET /teachers` (`teachers.view`, plus the Teachers module `teachers.routes.js`
+ * mounts on itself). Each tab is offered only to a caller holding the key its picker needs — a parent
+ * holding `timetable.view` alone would otherwise be shown two pickers that could only fail. A module
+ * refusal on the teacher list still reaches its tab, in words.
  *
  * ## The module gate is not checked here
  *
  * `timetable.routes.js` mounts `requireModule(MODULES.TIMETABLE)` at router level, so a school whose
  * plan omits the module gets a 403 `MODULE_NOT_SUBSCRIBED`. `useCollection` classifies that as a
- * *refusal* rather than an error and `RefusalNotice` explains it. Testing the entitlement snapshot
- * here as well would put a second, client-side copy of the rule next to the server's — and a copy
- * that disagreed would either hide a screen the plan covers or promise one it does not. No plan name
- * is compared against a literal anywhere on this screen (SRS §30 Rule 1); the only thing that decides
- * is the server's answer.
+ * *refusal* rather than an error — the two week views sort it by the same `EXPLAINED_CODES` — and
+ * `RefusalNotice` explains it. Testing the entitlement snapshot here as well would put a second,
+ * client-side copy of the rule next to the server's — and a copy that disagreed would either hide a
+ * screen the plan covers or promise one it does not. No plan name is compared against a literal
+ * anywhere on this screen (SRS §30 Rule 1); the only thing that decides is the server's answer.
  */
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 
+import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
-import { useCollection } from '@/lib/useCollection';
+import { EXPLAINED_CODES, useCollection } from '@/lib/useCollection';
+import type { Refusal } from '@/lib/useCollection';
+import {
+  sessionNames,
+  teacherName,
+  useClassSections,
+  useList,
+  useWholeList,
+} from '@/lib/useTimetablePickers';
+import type { SessionOption, TeacherOption } from '@/lib/useTimetablePickers';
 import {
   SearchField,
   FilterBar,
   FilterSelect,
+  Notice,
 } from '@/components/form';
+import { TabPanel, Tabs, useActiveTab } from '@/components/tabs';
 import {
   Column,
   DataTable,
@@ -123,7 +144,21 @@ function dayLabel(day: string): string {
   return day.charAt(0).toUpperCase() + day.slice(1);
 }
 
-export default function TimetablePage() {
+/**
+ * The teacher on an entry, by name, or null.
+ *
+ * `first_name` and `last_name` are the two attributes the include actually selects, joined here
+ * rather than assuming a `name` column the query never asked for. `employee_id` is selected too but
+ * is not shown: it is the payroll key, and a timetable is read by name.
+ */
+function entryTeacher(entry: TimetableEntry): string | null {
+  if (!entry.teacher) return null;
+  return `${entry.teacher.first_name} ${entry.teacher.last_name ?? ''}`.trim() || null;
+}
+
+/* ─────────────────────────────── the register ─────────────────────────────── */
+
+function RegisterPanel() {
   const { can } = useAuth();
 
   const [page, setPage] = useState(1);
@@ -303,14 +338,9 @@ export default function TimetablePage() {
       {
         key: 'teacher',
         header: 'Teacher',
-        /*
-         * `first_name` and `last_name` are the two attributes the include actually selects, joined
-         * here rather than assuming a `name` column the query never asked for. `employee_id` is
-         * selected too but is not shown: it is the payroll key, and a timetable is read by name.
-         */
+        /* Joined by `entryTeacher`, which the week grids share — see there for which columns. */
         cell: (row) => {
-          if (!row.teacher) return NONE;
-          const name = `${row.teacher.first_name} ${row.teacher.last_name ?? ''}`.trim();
+          const name = entryTeacher(row);
           return name ? <span className="whitespace-nowrap">{name}</span> : NONE;
         },
       },
@@ -348,31 +378,6 @@ export default function TimetablePage() {
 
   return (
     <div>
-      <PageHeader
-        title="Timetable"
-        description="Every scheduled period in the school, Monday first. Choose a day to read it period by period."
-        action={
-          /*
-           * `timetable.manage` exists — `config/permissions.js:129`, granted to Principal, School
-           * Admin and Super Admin only, while `timetable.view` reaches almost every role including
-           * students and parents. That gap is the reason the button is conditional: this screen is
-           * readable by nearly everyone and writable by three roles.
-           *
-           * Hiding it is a courtesy, not a control. `requirePermission('timetable.manage')` re-reads
-           * the permission from the database on the request itself, so a reader who conjured this
-           * link would still be refused by Express.
-           */
-          can('timetable.manage') ? (
-            <Link
-              href="/school/timetable/new"
-              className="btn btn-primary"
-            >
-              Add entry
-            </Link>
-          ) : null
-        }
-      />
-
       <FilterBar
         activeCount={[activity, day, search].filter(Boolean).length}
         onClear={() => {
@@ -473,5 +478,535 @@ export default function TimetablePage() {
         </>
       )}
     </div>
+  );
+}
+
+/* ─────────────────────────────── §20.1's two named views ─────────────────────────────── */
+
+/**
+ * What one slot of a week grid says.
+ *
+ * The same four associations the register's columns read, folded into one cell. Which of them is
+ * worth a line depends on the question: a class's week names the teacher, and — since one period of
+ * a class can hold one entry per section — the section; a teacher's week names the class. The subject
+ * line follows the register's rule: a break says "Break", and a lesson whose subject was deleted from
+ * under it (`SET NULL`) says so rather than going blank.
+ *
+ * The retired badge is kept for the register's reason: `is_active: false` does not free the slot.
+ */
+function SlotEntry({ entry, kind }: { entry: TimetableEntry; kind: 'class' | 'teacher' }) {
+  const teacher = entryTeacher(entry);
+  const where =
+    kind === 'class'
+      ? [entry.section ? entry.section.name : 'whole class', teacher]
+      : [
+          entry.class ? entry.class.name : `class #${entry.class_id}`,
+          entry.section ? entry.section.name : 'all sections',
+        ];
+
+  return (
+    <div>
+      <p className="font-medium text-ink">
+        {entry.is_break ? (
+          <span className="text-muted">Break</span>
+        ) : entry.subject ? (
+          entry.subject.name
+        ) : (
+          <span className="text-muted-soft">No subject</span>
+        )}
+        {entry.period_label ? (
+          <span className="font-normal text-muted"> · {entry.period_label}</span>
+        ) : null}
+      </p>
+      <p className="text-xs text-muted">{where.filter(Boolean).join(' · ')}</p>
+      <p className="text-xs tabular-nums text-muted-soft">
+        {clock(entry.start_time)}–{clock(entry.end_time)}
+        {entry.room ? ` · ${entry.room}` : ''}
+      </p>
+      {entry.is_active ? null : (
+        <span className="mt-1 inline-block">
+          <StatusBadge status="inactive" />
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One week, read from one of the two named views and laid out as days × periods.
+ *
+ * ## One request per mount
+ *
+ * The parent keys this component on whose week it shows, so a new choice mounts a fresh grid rather
+ * than dimming the previous class's week under a caption that already names the next one. The four
+ * states are kept by hand, as `classes/sections` keeps them for the same reason: `useCollection`
+ * reads the paginated envelope, and these two answer `ApiResponse.ok(res, { timetable })`.
+ *
+ * Both calls are written out rather than built from a path variable. `verify-frontend.js` finds a
+ * caller by `api.get(` followed immediately by the literal, and a path assembled elsewhere reads as
+ * no caller at all — the trap `attendance/mark` fell into with a ternary inside the call.
+ *
+ * ## Days and periods come from the week, not from a template
+ *
+ * Only the days that hold an entry get a column, in the ENUM's own order — which days a school
+ * teaches is its business, and a fixed Monday-to-Friday frame would draw an empty Friday for a school
+ * that teaches Sunday to Thursday and leave its Sunday off the end. Rows are the period numbers that
+ * appear, in order: `period_number` is what the conflict checks key on and the clock is descriptive
+ * (the service header), so a row is a period and each entry carries its own times. A blank cell is a
+ * free period.
+ *
+ * Below `md` the grid becomes one card per day, the rule `DataTable` keeps for every list: a
+ * seven-column grid on a 375px screen is a scrollbar, not a timetable.
+ */
+function WeekGrid({
+  kind,
+  id,
+  sectionId = '',
+  caption,
+  empty,
+}: {
+  kind: 'class' | 'teacher';
+  id: string;
+  sectionId?: string;
+  caption: string;
+  empty: string;
+}) {
+  const [entries, setEntries] = useState<TimetableEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refusal, setRefusal] = useState<Refusal | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    setRefusal(null);
+
+    (async () => {
+      try {
+        /*
+         * `section_id` is the one filter used. With it, `classView()` returns that section's periods
+         * *and* the class-wide ones, because a whole-class period is that section's too — the rule
+         * `assertNoConflict()` enforces, read instead of written. `is_active` is left unset so a
+         * retired entry still shows where it holds its slot, as on the register by default.
+         */
+        const body =
+          kind === 'class'
+            ? await api.get<{ timetable: { entries: TimetableEntry[] } }>(`/timetable/class/${id}`, {
+                query: { section_id: sectionId || undefined },
+                signal: controller.signal,
+              })
+            : await api.get<{ timetable: { entries: TimetableEntry[] } }>(`/timetable/teacher/${id}`, {
+                signal: controller.signal,
+              });
+        if (controller.signal.aborted) return;
+        setEntries(body.timetable?.entries ?? []);
+      } catch (caught) {
+        if (controller.signal.aborted) return;
+        setEntries([]);
+        if (caught instanceof ApiError && EXPLAINED_CODES.has(caught.code)) {
+          setRefusal({ code: caught.code, message: caught.message });
+        } else if (caught instanceof ApiError) {
+          setError(caught.message);
+        } else if ((caught as Error)?.name !== 'AbortError') {
+          setError('Could not reach the server. Check your connection and try again.');
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [kind, id, sectionId, attempt]);
+
+  if (refusal) return <RefusalNotice refusal={refusal} />;
+  if (error) return <ErrorNotice message={error} onRetry={() => setAttempt((n) => n + 1)} />;
+  if (loading) return <LoadingBlock label="Loading the week…" />;
+  if (entries.length === 0) return <EmptyNotice icon="calendar">{empty}</EmptyNotice>;
+
+  const days = WEEKDAYS.filter((day) => entries.some((entry) => entry.day_of_week === day));
+  const periods = [...new Set(entries.map((entry) => entry.period_number))].sort((a, b) => a - b);
+  /* Every entry in one `(day, period)` — several in a class's week, one per section. */
+  const slots = new Map<string, TimetableEntry[]>();
+  for (const entry of entries) {
+    const key = `${entry.day_of_week}|${entry.period_number}`;
+    slots.set(key, [...(slots.get(key) ?? []), entry]);
+  }
+  const slot = (day: string, period: number) => slots.get(`${day}|${period}`) ?? [];
+
+  return (
+    <>
+      {/* The grid from `md` up. Same header styling as `DataTable`, so the two tabs read alike. */}
+      <div
+        className="table-scroll surface hidden md:block"
+        tabIndex={0}
+        role="region"
+        aria-label={caption}
+      >
+        <table className="data-table w-full min-w-max text-sm">
+          <caption className="sr-only">{caption}</caption>
+          <thead>
+            <tr className="border-b border-border">
+              <th
+                scope="col"
+                className="px-4 py-2.5 text-left text-2xs font-semibold uppercase tracking-[0.08em] text-muted"
+              >
+                Period
+              </th>
+              {days.map((day) => (
+                <th
+                  key={day}
+                  scope="col"
+                  className="px-4 py-2.5 text-left text-2xs font-semibold uppercase tracking-[0.08em] text-muted"
+                >
+                  {dayLabel(day)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border-soft">
+            {periods.map((period) => (
+              <tr key={period}>
+                <th scope="row" className="px-4 py-3 text-left align-top font-semibold tabular-nums text-ink">
+                  {period}
+                </th>
+                {days.map((day) => (
+                  <td key={day} className="px-4 py-3 align-top">
+                    {/* The width bound sits on a block, not the cell: CSS 2.1 §10.4 leaves `max-width`
+                        on a table cell undefined, and one long period label would widen the day. */}
+                    <div className="max-w-56">
+                      {slot(day, period).length === 0 ? (
+                        <>
+                          <span aria-hidden className="text-muted-soft">—</span>
+                          <span className="sr-only">Free period</span>
+                        </>
+                      ) : (
+                        <ul className="space-y-2.5">
+                          {slot(day, period).map((entry) => (
+                            <li key={entry.id}>
+                              <SlotEntry entry={entry} kind={kind} />
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* One card per day below `md`, free periods left out rather than drawn as dashes. */}
+      <ul className="space-y-2 md:hidden" aria-label={caption}>
+        {days.map((day) => (
+          <li key={day} className="surface p-3.5">
+            <p className="text-sm font-semibold text-ink">{dayLabel(day)}</p>
+            <ol className="mt-2.5 space-y-2.5">
+              {periods
+                .filter((period) => slot(day, period).length > 0)
+                .map((period) => (
+                  <li key={period} className="flex gap-3">
+                    <span className="w-6 shrink-0 text-right text-xs font-semibold tabular-nums text-muted-soft">
+                      <span className="sr-only">Period </span>
+                      {period}
+                    </span>
+                    <ul className="min-w-0 flex-1 space-y-2">
+                      {slot(day, period).map((entry) => (
+                        <li key={entry.id}>
+                          <SlotEntry entry={entry} kind={kind} />
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+            </ol>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/**
+ * §20.1's Class Timetable — choose a class, and optionally one of its sections.
+ *
+ * The class and section lists come from `useClassSections`, the same hook the create and edit forms
+ * use, with the class list read past its first page. It is enabled unconditionally because this tab
+ * is only offered to a caller holding `classes.view` (see the header). The section is cleared when the
+ * class changes: `classView()` refuses a section of another class through `loadSectionOfClass`.
+ *
+ * Each class option names its session, as the admission and homework forms label theirs — "Grade 5"
+ * exists once a year. The session list is asked for only by a caller who can read it; for anyone
+ * else the option is the bare name.
+ */
+function ClassWeekPanel() {
+  const { can } = useAuth();
+  const [classId, setClassId] = useState('');
+  const [sectionId, setSectionId] = useState('');
+
+  const { classes: firstClasses, sections } = useClassSections(classId, true);
+  const classes = useWholeList('/classes', firstClasses);
+  const firstSessions = useList<SessionOption>('/sessions', can('sessions.view'));
+  const sessions = useWholeList('/sessions', firstSessions);
+  const classSessions = sessionNames(sessions);
+
+  const chosen =
+    classes.state === 'ready' ? classes.rows.find((row) => String(row.id) === classId) : undefined;
+  const section =
+    sections.state === 'ready' ? sections.rows.find((row) => String(row.id) === sectionId) : undefined;
+  const title = chosen ? `${chosen.name}${section ? `, section ${section.name}` : ''}` : '';
+
+  return (
+    <>
+      <FilterBar>
+        <FilterSelect
+          id="week-class"
+          label="Class"
+          labelVisible
+          value={classId}
+          onChange={(value) => {
+            setClassId(value);
+            setSectionId('');
+          }}
+          disabled={classes.state !== 'ready' || classes.rows.length === 0}
+          className="sm:min-w-64"
+        >
+          <option value="">{classes.state === 'loading' ? 'Loading…' : 'Choose a class…'}</option>
+          {classes.state === 'ready'
+            ? classes.rows.map((row) => {
+                const session =
+                  row.academic_session_id === null
+                    ? undefined
+                    : classSessions.get(row.academic_session_id);
+                return (
+                  <option key={row.id} value={row.id}>
+                    {row.name}
+                    {row.code ? ` (${row.code})` : ''}
+                    {session ? ` · ${session}` : ''}
+                    {row.is_active ? '' : ' · inactive'}
+                  </option>
+                );
+              })
+            : null}
+        </FilterSelect>
+
+        <FilterSelect
+          id="week-section"
+          label="Section"
+          labelVisible
+          value={sectionId}
+          onChange={setSectionId}
+          disabled={!classId || sections.state !== 'ready' || sections.rows.length === 0}
+        >
+          {/* The empty option says why the select is disabled, so a greyed-out control is never silent. */}
+          <option value="">
+            {!classId
+              ? 'Choose a class first'
+              : sections.state === 'loading'
+                ? 'Loading…'
+                : sections.state === 'failed'
+                  ? 'Sections could not be loaded'
+                  : sections.rows.length === 0
+                    ? 'This class has no sections'
+                    : 'Every section'}
+          </option>
+          {sections.state === 'ready'
+            ? sections.rows.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {row.name}
+                  {row.is_active ? '' : ' · inactive'}
+                </option>
+              ))
+            : null}
+        </FilterSelect>
+      </FilterBar>
+
+      {classes.state === 'ready' && classes.total > classes.rows.length ? (
+        <p className="-mt-2 mb-4 text-sm text-muted">
+          Showing the first {classes.rows.length} of {classes.total} classes.
+        </p>
+      ) : null}
+      {section ? (
+        <p className="-mt-2 mb-4 text-sm text-muted">
+          Whole-class periods are included: a period set for the whole class is this section&rsquo;s
+          period too.
+        </p>
+      ) : null}
+
+      {classes.state === 'failed' ? (
+        <Notice tone="error">
+          The class list could not be loaded, so a class cannot be chosen here. Reload the page to
+          try again.
+        </Notice>
+      ) : classes.state === 'ready' && classes.rows.length === 0 ? (
+        <EmptyNotice>This school has no classes yet, so there is no class timetable to show.</EmptyNotice>
+      ) : !chosen ? (
+        <EmptyNotice icon="calendar">Choose a class to see its week.</EmptyNotice>
+      ) : (
+        <WeekGrid
+          key={`${classId}|${sectionId}`}
+          kind="class"
+          id={classId}
+          sectionId={sectionId}
+          caption={`Class timetable: ${title}`}
+          empty={
+            section
+              ? `Nothing is scheduled for ${title}, nor for the whole of ${chosen.name}.`
+              : `Nothing is scheduled for ${chosen.name} yet.`
+          }
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * §20.1's Teacher Timetable — the same rows, asked where one teacher is.
+ *
+ * Enabled unconditionally for the reason `ClassWeekPanel` is: the tab is only offered to a caller
+ * holding `teachers.view`. The plan can still refuse it — `teachers.routes.js` mounts
+ * `requireModule(MODULES.TEACHERS)` — and that is said in words rather than left as an empty select.
+ * Retired teachers are listed and marked: a teacher who has left can still be named on a slot.
+ */
+function TeacherWeekPanel() {
+  const [teacherId, setTeacherId] = useState('');
+  const firstTeachers = useList<TeacherOption>('/teachers', true);
+  const teachers = useWholeList('/teachers', firstTeachers);
+
+  const chosen =
+    teachers.state === 'ready' ? teachers.rows.find((row) => String(row.id) === teacherId) : undefined;
+
+  return (
+    <>
+      <FilterBar>
+        <FilterSelect
+          id="week-teacher"
+          label="Teacher"
+          labelVisible
+          value={teacherId}
+          onChange={setTeacherId}
+          disabled={teachers.state !== 'ready' || teachers.rows.length === 0}
+          className="sm:min-w-64"
+        >
+          <option value="">{teachers.state === 'loading' ? 'Loading…' : 'Choose a teacher…'}</option>
+          {teachers.state === 'ready'
+            ? teachers.rows.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {teacherName(row)} ({row.employee_id})
+                  {row.is_active ? '' : ' · inactive'}
+                </option>
+              ))
+            : null}
+        </FilterSelect>
+      </FilterBar>
+
+      {teachers.state === 'ready' && teachers.total > teachers.rows.length ? (
+        <p className="-mt-2 mb-4 text-sm text-muted">
+          Showing the first {teachers.rows.length} of {teachers.total} teachers by first name.
+        </p>
+      ) : null}
+
+      {teachers.state === 'failed' ? (
+        <Notice tone="error">
+          The teacher list could not be loaded, so a teacher cannot be chosen here. Reading it needs
+          the &ldquo;View teachers&rdquo; permission and a plan that carries the Teachers module.
+        </Notice>
+      ) : teachers.state === 'ready' && teachers.rows.length === 0 ? (
+        <EmptyNotice>No teachers have been added to this school yet.</EmptyNotice>
+      ) : !chosen ? (
+        <EmptyNotice icon="calendar">Choose a teacher to see where they teach each period.</EmptyNotice>
+      ) : (
+        <WeekGrid
+          key={teacherId}
+          kind="teacher"
+          id={teacherId}
+          caption={`Teacher timetable: ${teacherName(chosen)}`}
+          empty={`${teacherName(chosen)} is not named on any period. A slot joins a teacher’s timetable when the teacher is named on it.`}
+        />
+      )}
+    </>
+  );
+}
+
+/* ─────────────────────────────── the screen ─────────────────────────────── */
+
+/** What the header says under each tab — each view answers a different question. */
+const DESCRIPTIONS: Record<string, string> = {
+  register: 'Every scheduled period in the school, Monday first. Choose a day to read it period by period.',
+  class: 'One class’s week, day by day and period by period — SRS §20.1’s Class Timetable.',
+  teacher: 'Where one teacher is, day by day and period by period — SRS §20.1’s Teacher Timetable.',
+};
+
+function TimetableScreen() {
+  const { can } = useAuth();
+
+  /* Each week tab only for the caller its picker can serve — see the header. */
+  const tabs = useMemo(
+    () => [
+      { key: 'register', label: 'Register' },
+      ...(can('classes.view') ? [{ key: 'class', label: 'Class timetable' }] : []),
+      ...(can('teachers.view') ? [{ key: 'teacher', label: 'Teacher timetable' }] : []),
+    ],
+    [can]
+  );
+  const [tab, setTab] = useActiveTab(tabs);
+
+  return (
+    <div>
+      <PageHeader
+        title="Timetable"
+        description={DESCRIPTIONS[tab]}
+        action={
+          /*
+           * `timetable.manage` exists — `config/permissions.js:129`, granted to Principal, School
+           * Admin and Super Admin only, while `timetable.view` reaches almost every role including
+           * students and parents. That gap is the reason the button is conditional: this screen is
+           * readable by nearly everyone and writable by three roles.
+           *
+           * Hiding it is a courtesy, not a control. `requirePermission('timetable.manage')` re-reads
+           * the permission from the database on the request itself, so a reader who conjured this
+           * link would still be refused by Express.
+           */
+          can('timetable.manage') ? (
+            <Link
+              href="/school/timetable/new"
+              className="btn btn-primary"
+            >
+              Add entry
+            </Link>
+          ) : null
+        }
+      />
+
+      {/* A single tab is no choice, so a caller offered only the register gets it without a tab bar. */}
+      {tabs.length > 1 ? (
+        <>
+          <Tabs tabs={tabs} active={tab} onChange={setTab} label="Timetable views" />
+          <TabPanel tabKey={tab}>
+            {tab === 'class' ? (
+              <ClassWeekPanel />
+            ) : tab === 'teacher' ? (
+              <TeacherWeekPanel />
+            ) : (
+              <RegisterPanel />
+            )}
+          </TabPanel>
+        </>
+      ) : (
+        <RegisterPanel />
+      )}
+    </div>
+  );
+}
+
+export default function TimetablePage() {
+  /* `useActiveTab` reads the query string, which cannot run during prerender. */
+  return (
+    <Suspense fallback={<LoadingBlock />}>
+      <TimetableScreen />
+    </Suspense>
   );
 }

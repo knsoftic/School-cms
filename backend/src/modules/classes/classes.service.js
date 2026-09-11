@@ -18,7 +18,7 @@
 const db = require('../../models');
 const { tenantWhere } = require('../../models');
 const ApiError = require('../../utils/ApiError');
-const { resolveSchool, loadTeacherInSchool } = require('../../utils/schoolScope');
+const { resolveSchool, loadTeacherInSchool, assertSessionOpen } = require('../../utils/schoolScope');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 
@@ -90,7 +90,8 @@ async function list(req, query, pagination) {
 
 async function create(req, payload) {
   const school = await resolveSchool(req, payload.school_id);
-  await loadSessionInSchool(payload.academic_session_id, school.id);
+  /* D20 — a closed session takes no new class. */
+  assertSessionOpen(await loadSessionInSchool(payload.academic_session_id, school.id), 'class');
   if (payload.class_teacher_id) {
     await loadTeacherInSchool(payload.class_teacher_id, school.id, 'class_teacher_id');
   }
@@ -128,7 +129,15 @@ async function create(req, payload) {
 async function update(req, id, payload) {
   const row = await findClass(req, id);
   if (payload.academic_session_id) {
-    await loadSessionInSchool(payload.academic_session_id, row.school_id);
+    const session = await loadSessionInSchool(payload.academic_session_id, row.school_id);
+    /*
+     * D20 — moving a class into a closed session is adding one to it. Refusing only the create let a
+     * class be made in an open year and then patched into a closed one; editing a class already in a
+     * closed session, without moving it, is still allowed.
+     */
+    if (Number(payload.academic_session_id) !== Number(row.academic_session_id)) {
+      assertSessionOpen(session, 'class');
+    }
   }
   if (Object.prototype.hasOwnProperty.call(payload, 'class_teacher_id') && payload.class_teacher_id) {
     await loadTeacherInSchool(payload.class_teacher_id, row.school_id, 'class_teacher_id');

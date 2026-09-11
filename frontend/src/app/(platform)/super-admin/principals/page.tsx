@@ -114,7 +114,7 @@ function day(value: string | null): string | null {
 }
 
 export default function PrincipalsPage() {
-  const { can } = useAuth();
+  const { can, profile } = useAuth();
 
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState('');
@@ -221,7 +221,12 @@ export default function PrincipalsPage() {
     <div>
       <PageHeader
         title="Principals"
-        description="Principal accounts across every school on the platform."
+        description={
+          /* An Organization Admin reads this list too, confined to their organization by `tenantWhere()`. */
+          profile?.tenant.isPlatform === false
+            ? 'Principal accounts across your organization’s schools.'
+            : 'Principal accounts across every school on the platform.'
+        }
         action={
           /* Hidden without `users.manage` — the same courtesy the exemplar documents. `POST /principals`
            * additionally carries `requirePlatformScope()`, so an organization admin holding the

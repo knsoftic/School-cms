@@ -4,7 +4,8 @@
  * A route group of its own so the shell can carry a teacher's nav rather than the school
  * administrator's. The teacher's work happens in the School screens themselves — §5 grants a teacher
  * attendance, marks, homework and timetable, all of which already exist and are permission-gated —
- * so this nav points at those rather than duplicating them.
+ * so this nav points at those rather than duplicating them. The one screen of its own besides the
+ * dashboard is `teacher/timetable`, the teacher's own week, which no School screen offers a teacher.
  */
 import { AppShell } from '@/components/shell';
 import { TEACHER_NAV } from '@/lib/nav';

@@ -53,6 +53,31 @@ function annotate(fn, meta) {
 }
 
 /**
+ * Mark a route's final handler as answering with a file rather than the JSON envelope — §28's
+ * "Response" for the endpoints that stream bytes.
+ *
+ * The one fact here a guard cannot supply. Every other annotation hangs on a middleware built from the
+ * very arguments it records; a controller that sends a PDF was built from nothing, so the route file
+ * states it beside the handler — from the same constants the handler sends by (`UPLOAD_RULES` for a
+ * stored file, the reports export table for an export), so the MIME types cannot disagree with it.
+ * That it is stated at all is the part that could drift, and `verify-openapi.js` lists every file
+ * endpoint to hold it in place.
+ *
+ * @param {Function} handler  the route's final handler, as mounted (already `asyncHandler`-wrapped)
+ * @param {object} spec
+ * @param {string[]} spec.types  the Content-Types the file can arrive as
+ * @param {string} [spec.when]   the query condition that selects the file; when given, the JSON
+ *                               envelope is the answer otherwise
+ * @returns {Function} `handler`
+ */
+function respondsWithFile(handler, spec) {
+  if (!spec || !Array.isArray(spec.types) || !spec.types.length) {
+    throw new TypeError('respondsWithFile() requires at least one Content-Type');
+  }
+  return annotate(handler, { file: { types: [...spec.types], when: spec.when || null } });
+}
+
+/**
  * Read a middleware's metadata, or `null` for the many middleware that carry none.
  *
  * @param {Function} fn
@@ -64,4 +89,4 @@ function metaOf(fn) {
   return meta && typeof meta === 'object' ? meta : null;
 }
 
-module.exports = { annotate, metaOf, KEY };
+module.exports = { annotate, respondsWithFile, metaOf, KEY };

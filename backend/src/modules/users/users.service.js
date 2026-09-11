@@ -56,7 +56,7 @@ const { resolveSchool } = require('../../utils/schoolScope');
 const { paginateQuery, getSort } = require('../../utils/pagination');
 const { recordAudit, snapshot } = require('../../middlewares/activityLog');
 const { PERMISSION_KEY_SET, PERMISSIONS } = require('../../config/permissions');
-const { ROLES, STAFF_CATEGORIES, LIMITS, USER_STATUS } = require('../../config/constants');
+const { ROLES, STAFF_CATEGORIES, LIMITS, USER_STATUS, STUDENT_STATUS } = require('../../config/constants');
 
 const { tenantWhere, Op } = db;
 
@@ -320,10 +320,33 @@ async function update(req, id, payload) {
    */
   const emailChanged = payload.email !== undefined && payload.email !== user.email;
 
+  /*
+   * Re-activation is a limit event, as `teachers.service.update()` records for `teacher_limit`.
+   *
+   * D2 enforces the Admin Limit on School Admin logins, and it counts **active** accounts — so the
+   * guard on creation alone let a school at its ceiling suspend one School Admin, create a
+   * replacement, set the first back to active here and sit at limit + 1. The same reservation the
+   * create path takes, for the same role, at the moment the counted value is set.
+   */
+  const reactivatesAdmin =
+    payload.status === USER_STATUS.ACTIVE &&
+    user.status !== USER_STATUS.ACTIVE &&
+    Boolean(user.school_id) &&
+    Boolean(user.role) && user.role.slug === ROLES.SCHOOL_ADMIN;
+
   try {
-    await user.update({
-      ...payload,
-      ...(emailChanged ? { email_verified_at: null } : {}),
+    await db.sequelize.transaction(async (transaction) => {
+      /* First in the transaction — `reserveHeadcount()` explains why the order is load-bearing. */
+      if (reactivatesAdmin) {
+        await usageService.reserveHeadcount(user.school_id, LIMITS.ADMIN_LIMIT, 1, transaction);
+      }
+      await user.update(
+        {
+          ...payload,
+          ...(emailChanged ? { email_verified_at: null } : {}),
+        },
+        { transaction }
+      );
     });
   } catch (err) {
     rethrowUniqueViolation(err, payload);
@@ -362,6 +385,79 @@ async function update(req, id, payload) {
   return { user: await findById(req.tenant, user.id), verificationEmailSent };
 }
 
+/**
+ * Create an Organization Admin — `POST /users` with `role: organization_admin`, the owner's decision D18.
+ *
+ * SRS:97 places the role between the platform and its schools and leaves its workflows "Not Specified";
+ * the role was seeded with read-only grants and nothing could create an account for it. D18: the Super
+ * Admin creates them, and nobody else — a school creating an account that can read its whole
+ * organization would be a school widening its own scope. The account belongs to the organization
+ * (`school_id` null) and keeps the role's seeded grants; `resolveTenant` already scopes such an account
+ * to its organization.
+ *
+ * @param {import('express').Request} req
+ * @param {object} payload  validated body — `organization_id`, `name`, `email`, `username`, `password`
+ * @returns {Promise<{user: object, verificationEmailSent: boolean, profile: null}>}
+ */
+async function createOrganizationAdmin(req, payload) {
+  if (!req.tenant || !req.tenant.isPlatform) {
+    throw ApiError.forbidden('Only the Super Admin creates Organization Admin accounts', {
+      code: 'PLATFORM_SCOPE_REQUIRED',
+    });
+  }
+  const organization = await db.Organization.findByPk(payload.organization_id);
+  if (!organization) {
+    throw ApiError.validation('No organization with that id', [
+      { field: 'organization_id', message: 'Name an existing organization' },
+    ]);
+  }
+  const role = await db.Role.findOne({ where: { slug: ROLES.ORGANIZATION_ADMIN } });
+  if (!role) {
+    throw new ApiError(500, 'The organization_admin role is missing — run the seeders', { code: 'ROLE_MISSING' });
+  }
+
+  let user;
+  try {
+    user = await db.User.create({
+      role_id: role.id,
+      school_id: null,
+      organization_id: organization.id,
+      name: payload.name,
+      email: payload.email,
+      username: payload.username,
+      phone: payload.phone ?? null,
+      password_hash: await hashPassword(payload.password),
+      status: USER_STATUS.ACTIVE,
+      must_change_password: true,
+    });
+  } catch (err) {
+    rethrowUniqueViolation(err, payload);
+  }
+
+  await recordAudit(req, {
+    tableName: 'users',
+    recordId: user.id,
+    event: 'create',
+    after: snapshot(user, AUDIT_FIELDS),
+    reason: payload.reason || `Organization Admin created for organization ${organization.code}`,
+    organizationId: organization.id,
+  });
+
+  let verificationEmailSent = false;
+  try {
+    const result = await authService.sendVerificationEmail(user);
+    verificationEmailSent = Boolean(result && result.issued);
+  } catch (err) {
+    logger.error('Organization Admin created but the verification email could not be sent', {
+      requestId: req.id,
+      userId: user.id,
+      error: err.message,
+    });
+  }
+
+  return { user: await findById(req.tenant, user.id), verificationEmailSent, profile: null };
+}
+
 /* ────────────── Creating a login — the owner's decision D1 in docs/OWNER-DECISIONS.md ────────────── */
 
 /**
@@ -396,6 +492,8 @@ const PROFILE_FOR_ROLE = Object.freeze({
  * @returns {Promise<{user: object, verificationEmailSent: boolean, profile: object|null}>}
  */
 async function create(req, payload) {
+  if (payload.role === ROLES.ORGANIZATION_ADMIN) return createOrganizationAdmin(req, payload);
+
   const school = await resolveSchool(req, payload.school_id);
   const role = await db.Role.findOne({ where: { slug: payload.role } });
   if (!role) {
@@ -440,6 +538,15 @@ async function create(req, payload) {
       }
 
       const profileName = profile ? [profile.first_name, profile.last_name].filter(Boolean).join(' ') : null;
+      /*
+       * A login created for a profile that is already inactive — a teacher or staff member deactivated,
+       * a student who left or transferred — starts inactive, as D19 would have left it had the login
+       * existed first; `parents.service` does the same for an inactive parent. It comes up with the
+       * profile when that is reactivated (`followProfile()`).
+       */
+      const profileInactive = Boolean(profile) && (profileRule.model === 'Student'
+        ? profile.status !== STUDENT_STATUS.ACTIVE
+        : profile.is_active === false);
       const user = await db.User.create(
         {
           role_id: role.id,
@@ -450,7 +557,7 @@ async function create(req, payload) {
           username: payload.username,
           phone: payload.phone ?? null,
           password_hash: passwordHash,
-          status: USER_STATUS.ACTIVE,
+          status: profileInactive ? USER_STATUS.INACTIVE : USER_STATUS.ACTIVE,
           must_change_password: true,
         },
         { transaction }
@@ -624,11 +731,67 @@ function permissionCatalogue() {
   return [...byGroup.entries()].map(([group, permissions]) => ({ group, permissions }));
 }
 
+/**
+ * Move a profile's login with the profile — the owner's decision D19.
+ *
+ * Deactivating a teacher or a staff member, or a student leaving or transferring, left their login
+ * active: only the parents module moved the two together. Called inside the profile's transaction, so
+ * both rows move or neither does.
+ *
+ * Deactivation takes an `active` login to `inactive`, the status `parents.service` uses. Reactivation
+ * restores a login that is `inactive` — the status deactivation gives it. A login an administrator
+ * **suspended** stays suspended, because reactivating a profile is not a decision about that account;
+ * one an administrator wants kept off while the profile is active should be suspended, not set inactive.
+ *
+ * Only a login **of the profile's kind** moves: a teacher's with the Teacher role, a staff member's with
+ * one of the four staff roles, a student's with the Student role. A profile's `user_id` may be edited to
+ * name another account of the school, and without this a School Admin linked to an inactive staff row
+ * was reactivated with it — past the Admin Limit, which is checked on the users route and not here — and
+ * a Principal linked to a student went inactive when the student left.
+ *
+ * @param {number|null} userId  the profile's `user_id`, as the profile will hold it after the write
+ * @param {boolean} active      the profile's new state
+ * @param {object} transaction
+ * @param {'Teacher'|'Staff'|'Student'} profileModel  which profile table the login is for
+ * @returns {Promise<{account: object, before: object}|null>} what moved, for `auditFollowed()`
+ */
+async function followProfile(userId, active, transaction, profileModel) {
+  if (!userId) return null;
+  const account = await db.User.findByPk(userId, { include: [ROLE_INCLUDE], transaction });
+  if (!account) return null;
+  const loginRoles = Object.entries(PROFILE_FOR_ROLE)
+    .filter(([, rule]) => rule.model === profileModel)
+    .map(([slug]) => slug);
+  if (!account.role || !loginRoles.includes(account.role.slug)) return null;
+  const from = active ? USER_STATUS.INACTIVE : USER_STATUS.ACTIVE;
+  if (account.status !== from) return null;
+
+  const before = snapshot(account, AUDIT_FIELDS);
+  account.status = active ? USER_STATUS.ACTIVE : USER_STATUS.INACTIVE;
+  await account.save({ transaction });
+  return { account, before };
+}
+
+/** Audit a login `followProfile()` moved, as its own `users` row — after the commit, like every audit. */
+async function auditFollowed(req, moved, reason) {
+  if (!moved) return;
+  await recordAudit(req, {
+    tableName: 'users',
+    recordId: moved.account.id,
+    event: 'update',
+    before: moved.before,
+    after: snapshot(moved.account, AUDIT_FIELDS),
+    reason,
+  });
+}
+
 module.exports = {
   list,
   findById,
   create,
   update,
+  followProfile,
+  auditFollowed,
   setPermissions,
   present,
   presentWithPermissions,

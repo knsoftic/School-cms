@@ -473,16 +473,29 @@ function verifyRouting() {
 
   const src = stripped('../src/modules/ai/ai.routes.js');
 
-  /* ── the meter: exactly one route, and it is the generation ── */
-
-  check('exactly one route carries an entitlement limit', (src.match(/enforceLimit\(/g) || []).length, 1);
-  check('  and it is the AI limit', /enforceLimit\(LIMITS\.AI_LIMIT\)/.test(src), true);
-  check(
-    '  mounted on the generation, because §21 counts requests and a 1000-request plan must buy 1000 sets',
-    handlerNames(aiRoutes, 'post', '/banks/:id/generate').length
-      > handlerNames(aiRoutes, 'post', '/banks/:id/analyze').length,
-    true
-  );
+  /*
+   * ── the meter: checked on three routes, consumed on one ──
+   *
+   * The owner's decision D32: at the AI limit the steps that call the model are refused — extraction,
+   * topic analysis and generation — but only generation consumes the allowance, so a 1000-request plan
+   * still buys 1000 question sets (the service's `reserveUsage`, asserted below). The upload calls no
+   * model and is not limited. Read off the mounted stack through the same route metadata the OpenAPI
+   * document is built from.
+   */
+  check('one limit is built in the router, and it is the AI limit',
+    [(src.match(/enforceLimit\(/g) || []).length, /enforceLimit\(LIMITS\.AI_LIMIT\)/.test(src)], [1, true]);
+  const { metaOf } = require('../src/utils/routeMeta');
+  const limitedAt = (method, path) => {
+    const layer = aiRoutes.stack.find((l) => l.route && l.route.path === path && l.route.methods[method]);
+    return layer ? layer.route.stack.some((s) => (metaOf(s.handle) || {}).limit === LIMITS.AI_LIMIT) : null;
+  };
+  check('D32 — the AI limit is checked on every step that calls the model: extract, analyze, generate',
+    ['/banks/:id/extract', '/banks/:id/analyze', '/banks/:id/generate'].map((p) => limitedAt('post', p)),
+    [true, true, true]);
+  check('  and on none of the steps that call no model — the upload, difficulty, approve, and the reads',
+    [limitedAt('post', '/banks'), limitedAt('post', '/banks/:id/difficulty'), limitedAt('post', '/banks/:id/approve'),
+      limitedAt('get', '/banks')],
+    [false, false, false, false]);
   const svc = stripped('../src/modules/ai/ai.service.js');
   /*
    * The whole generated set is checked before ANY of it is written. The model validator would refuse a
@@ -793,13 +806,17 @@ async function verifyHttp() {
       /*
        * A deliberately tiny AI allowance, so FR-AI-002's block is reachable in three requests rather
        * than a thousand. `file_upload_limit` is seeded because `upload.js` treats an unconfigured Fixed
-       * limit as ZERO — without it every upload would be refused before multer ran.
+       * limit as ZERO — without it every upload would be refused before multer ran — and
+       * `storage_limit` for the same reason: every upload is charged against it.
        */
       await db.PlanLimit.create({
         plan_id: plan.id, limit_key: LIMITS.AI_LIMIT, limit_type: LIMIT_TYPES.FIXED, limit_value: aiLimit,
       });
       await db.PlanLimit.create({
         plan_id: plan.id, limit_key: LIMITS.FILE_UPLOAD_LIMIT, limit_type: LIMIT_TYPES.FIXED, limit_value: 5,
+      });
+      await db.PlanLimit.create({
+        plan_id: plan.id, limit_key: LIMITS.STORAGE_LIMIT, limit_type: LIMIT_TYPES.UNLIMITED,
       });
       return plan;
     };
@@ -1138,6 +1155,31 @@ async function verifyHttp() {
 
     check('a second generation is allowed', (await runOne('Second')).status, 200);
     check('  and the counter moves', await usedNow(subA.id), 2);
+    /*
+     * Three banks staged below the cap, each stopped one step short, so that once the cap is reached
+     * each step can be shown refused at it (D32). Staging them costs nothing: only generation counts.
+     */
+    const staged = async (label, steps) => {
+      const id = dataOf(await expectOk('/ai/banks', {
+        method: 'POST', token: teacher, form: (() => {
+          const f = new FormData();
+          f.set('name', label);
+          f.set('source_type', AI_SOURCE_TYPES.SYLLABUS);
+          f.set('source', new Blob([PDF], { type: 'application/pdf' }), 'syllabus.pdf');
+          return f;
+        })(),
+      }, 201)).bank.id;
+      for (const step of steps) {
+        // eslint-disable-next-line no-await-in-loop
+        await expectOk(`/ai/banks/${id}/${step}`, { method: 'POST', token: teacher, body: {} }, 200);
+      }
+      return id;
+    };
+    const heldAtUpload = await staged('Held at upload', []);
+    const heldAtExtract = await staged('Held at extract', ['extract']);
+    const heldAtAnalysis = await staged('Fourth', ['extract', 'analyze']);
+    check('  and staging three banks up to the last step costs nothing — only generation is counted (D32)',
+      await usedNow(subA.id), 2);
     check('a third exhausts the plan', (await runOne('Third')).status, 200);
     check('  bringing usage to the allowance', await usedNow(subA.id), 3);
 
@@ -1145,9 +1187,20 @@ async function verifyHttp() {
     check('FR-AI-002 — the system now reports the school at its limit',
       [atLimit.used, atLimit.allowed, atLimit.remaining, atLimit.at_limit], [3, 3, 0, true]);
 
-    const blocked = await runOne('Fourth');
+    const blocked = await call(`/ai/banks/${heldAtAnalysis}/generate`, { method: 'POST', token: teacher, body: { count: 2 } });
     check('and the fourth is blocked — §21\'s "block/warning when the limit is reached"', blocked.status, 403);
     check('  by the limit, named', codeOf(blocked), 'PLAN_LIMIT_EXCEEDED');
+    /*
+     * D32 — and so are the steps before it that call the model. With the real driver, extraction from
+     * an image and topic analysis are model calls too, and they used to go on working at the cap. The
+     * upload calls nothing, so a teacher can still stage a source for when the allowance renews.
+     */
+    check('D32 — at the limit, extraction and topic analysis are refused by the same limit',
+      [codeOf(await call(`/ai/banks/${heldAtUpload}/extract`, { method: 'POST', token: teacher, body: {} })),
+        codeOf(await call(`/ai/banks/${heldAtExtract}/analyze`, { method: 'POST', token: teacher, body: {} }))],
+      ['PLAN_LIMIT_EXCEEDED', 'PLAN_LIMIT_EXCEEDED']);
+    check('  while an upload, which calls no model, is still accepted',
+      (await upload(teacher, { name: 'Fifth' })).status, 201);
     check(
       '  and the blocked request cost nothing: the counter did not move',
       await usedNow(subA.id),
