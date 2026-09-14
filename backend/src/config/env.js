@@ -267,6 +267,17 @@ const config = {
       ? str('LOG_DIR', 'storage/logs')
       : path.join(ROOT, str('LOG_DIR', 'storage/logs')),
     retentionDays: num('LOG_RETENTION_DAYS', 30),
+    /**
+     * Also write the log to stdout. The default is what the logger always did — on in development, off
+     * in production and in tests — so nothing changes unless a deployment asks.
+     *
+     * Hostinger's managed Node.js hosting is the deployment that asks. Its **Runtime logs** panel shows
+     * stdout and stderr and nothing else, and with this off a healthy production start printed nothing
+     * there at all: the only line an operator could ever see was `Failed to start:`, which `server.js`
+     * writes to stderr directly. Found by booting the Hostinger configuration in production mode, whose
+     * probe waited two minutes for a "listening" line that went only to a file.
+     */
+    console: bool('LOG_CONSOLE', !isProduction && !isTest),
   },
 
   backup: {
@@ -279,6 +290,33 @@ const config = {
 
   cron: {
     enabled: bool('ENABLE_CRON', false),
+    /**
+     * Run the scheduler inside the API process instead of as `npm run cron`.
+     *
+     * For hosts that run exactly one process per app and give it no second one — Hostinger's managed
+     * Node.js hosting is the case this exists for (`docs/DEPLOY-HOSTINGER.md`). On a server with PM2,
+     * leave it off and run `cron.js` as its own process, as `deploy/pm2/ecosystem.config.js` does.
+     *
+     * Separate from `ENABLE_CRON` on purpose. That key licenses the *resident cron process*, and a
+     * VPS's API and cron processes read the same `.env` — so if one key meant both, turning the
+     * scheduler on would start it twice against one database and double every notification.
+     * `cron.js` refuses resident mode while this is on, so the two cannot both be scheduling.
+     */
+    inApi: bool('CRON_IN_API', false),
+    /** Task names to leave out of the schedule — on a host with no `mysqldump`, `database-backup`. */
+    skip: list('CRON_SKIP', []),
+  },
+
+  boot: {
+    /**
+     * Apply pending migrations and the mandatory seed before the API accepts traffic.
+     *
+     * For hosts where nobody can run `npm run db:migrate` by hand. Both halves are idempotent —
+     * `migrator.up()` applies only what `SequelizeMeta` does not record, and the seed finds and keeps
+     * rows that already exist (it never changes an existing password) — so it is safe on every start.
+     * Off by default: on a VPS, migrating is a deliberate step taken before the new code is started.
+     */
+    migrate: bool('MIGRATE_ON_BOOT', false),
   },
 };
 
@@ -309,6 +347,29 @@ function assertRuntimeConfig() {
     }
     if (config.ai.driver === 'anthropic' && !config.ai.apiKey) {
       errors.push('ANTHROPIC_API_KEY must be set when AI_DRIVER=anthropic.');
+    }
+    /*
+     * The one development default that fails *silently* in production.
+     *
+     * `log` is right for a developer with no SMTP server — `mailService.js` writes the message into
+     * the application log. Left on in production it does the same thing, and nothing looks wrong: a
+     * password reset answers "check your email", the link goes to a file on the server, and the person
+     * locked out of their account never receives it. FR-AUTH-005 and FR-AUTH-006 require those links
+     * to be *sent*. A misconfigured JWT secret stops the process; this one would have let it serve
+     * for weeks before anybody noticed, which is the stronger reason to stop it.
+     */
+    if (config.mail.driver === 'log') {
+      errors.push(
+        'MAIL_DRIVER=log writes password-reset and verification links to a log file and emails nobody. ' +
+          'Set MAIL_DRIVER=smtp with MAIL_HOST, MAIL_PORT, MAIL_USER and MAIL_PASSWORD.'
+      );
+    }
+    /* A scheduler started inside the API and a resident `cron.js` would both sweep one database. */
+    if (config.cron.inApi && config.cron.enabled) {
+      errors.push(
+        'CRON_IN_API and ENABLE_CRON are both true. Choose one: CRON_IN_API for a host with a single ' +
+          'process (Hostinger web hosting), ENABLE_CRON for a separate cron process (PM2 on a VPS).'
+      );
     }
   }
 

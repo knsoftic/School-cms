@@ -16,7 +16,7 @@
 const service = require('./reports.service');
 const ApiResponse = require('../../utils/ApiResponse');
 const { describeActivity } = require('../../middlewares/activityLog');
-const { REPORT_FORMATS } = require('../../config/constants');
+const { REPORT_FORMATS, ACTIVITY_ACTIONS } = require('../../config/constants');
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const PDF_MIME = 'application/pdf';
@@ -49,23 +49,37 @@ function handlerFor(type) {
      * place for the two to drift apart.
      */
     const spec = EXPORTS[req.query.format];
-    if (spec) {
-      const buffer = await service[spec.render](report);
+    if (!spec) {
       /*
-       * The export is recorded in the activity trail and the JSON read is not. A report that leaves the
-       * building as a file is a different event from one a client rendered on screen — FR-REPORT-002 is
-       * a requirement of its own, and this is where it is observable.
+       * A screen read is a **view**, and says so.
+       *
+       * `reports.routes.js` annotates every report route `action: 'export'`, which is right for the
+       * file branch and wrong for this one: a request that rendered JSON into a screen was recorded as
+       * an export, with no description, so the trail read "Export · No description" for someone who
+       * had only looked. An audit trail that overstates what happened is worse than one that says
+       * nothing — it accuses. The route's annotation cannot tell the two apart, because the format is
+       * a query parameter it never reads; here, where the branch is taken, it is known.
        */
       describeActivity(req, {
-        description: `Exported the ${type} report as ${spec.label}`,
-        metadata: { report: type, format: req.query.format, bytes: buffer.length },
+        action: ACTIVITY_ACTIONS.VIEW,
+        description: `Viewed the ${type} report`,
+        metadata: { report: type },
       });
-      res.setHeader('Content-Type', spec.mime);
-      res.setHeader('Content-Disposition', `attachment; filename="${filenameFor(type, req.query.format)}"`);
-      return res.status(200).send(Buffer.from(buffer));
+      return ApiResponse.ok(res, { report });
     }
 
-    return ApiResponse.ok(res, { report });
+    const buffer = await service[spec.render](report);
+    /*
+     * A report that leaves the building as a file is a different event from one a client rendered on
+     * screen — FR-REPORT-002 is a requirement of its own, and this is where it is observable.
+     */
+    describeActivity(req, {
+      description: `Exported the ${type} report as ${spec.label}`,
+      metadata: { report: type, format: req.query.format, bytes: buffer.length },
+    });
+    res.setHeader('Content-Type', spec.mime);
+    res.setHeader('Content-Disposition', `attachment; filename="${filenameFor(type, req.query.format)}"`);
+    return res.status(200).send(Buffer.from(buffer));
   };
 }
 

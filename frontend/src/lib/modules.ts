@@ -42,6 +42,27 @@ export const MODULES: ReadonlyArray<{ key: string; label: string }> = [
 /** Just the labels, for the places that list what a plan can include. */
 export const MODULE_LABELS: ReadonlyArray<string> = MODULES.map((module) => module.label);
 
+/**
+ * The four a plan can sell and nothing implements — the owner's decision **D37**.
+ *
+ * "Online Exams, Laboratory, Transport and Hostel can be sold and have no requirement behind them (no
+ * FR; §29 gives Online Exams a table and nowhere to store an attempt)… Leave them unbuilt, recorded."
+ *
+ * They stay in the catalogue, because D37 left them sellable and §35 forbids editing the twenty. What
+ * they must not do is claim otherwise on a page anyone can read without signing in: the landing page
+ * put the same green tick beside *Online Exams* as beside *Fees*, and a tick on a marketing page is a
+ * promise. Listed apart and marked, they are the truth; ticked, they were a claim no code supports.
+ *
+ * `verify-frontend.js` checks this list against D37's own row in `docs/OWNER-DECISIONS.md`, so building
+ * one of them means editing the decision record — which is where that fact belongs.
+ */
+export const PLANNED_MODULE_KEYS: ReadonlyArray<string> = ['online_exams', 'laboratory', 'transport', 'hostel'];
+
+/** Is this module one a plan may sell but nothing implements yet (D37)? */
+export function isPlanned(key: string): boolean {
+  return PLANNED_MODULE_KEYS.includes(key);
+}
+
 /** A module's label, falling back to its own key rather than rendering nothing. */
 export function moduleLabel(key: string): string {
   return MODULES.find((module) => module.key === key)?.label ?? key;

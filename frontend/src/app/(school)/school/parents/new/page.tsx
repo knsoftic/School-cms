@@ -92,6 +92,7 @@ import {
   FormActions,
   PasswordField,
   FormSection,
+  FormSpan,
   SearchField,
 } from '@/components/form';
 import { Icon } from '@/components/icon';
@@ -403,11 +404,13 @@ export default function NewParentPage() {
 
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
+          columns={2}
           title="Account"
           description="The sign-in the parent will use. The email address doubles as the username unless one is given."
         >
           <Field
             id="name"
+            width="md"
             label="Full name"
             required
             maxLength={160}
@@ -419,6 +422,7 @@ export default function NewParentPage() {
 
           <Field
             id="email"
+            width="md"
             label="Sign-in email"
             type="email"
             required
@@ -432,6 +436,7 @@ export default function NewParentPage() {
 
           <Field
             id="username"
+            width="md"
             label="Username"
             required
             maxLength={80}
@@ -449,6 +454,7 @@ export default function NewParentPage() {
           */}
           <PasswordField
             id="password"
+            width="md"
             label="Temporary password"
             required
             autoComplete="new-password"
@@ -460,6 +466,7 @@ export default function NewParentPage() {
 
           <PasswordField
             id="confirmation"
+            width="md"
             label="Confirm password"
             required
             autoComplete="new-password"
@@ -476,6 +483,7 @@ export default function NewParentPage() {
           */}
           <SelectField
             id="is_active"
+            width="sm"
             label="Account state"
             value={values.is_active}
             onChange={set('is_active')}
@@ -489,23 +497,27 @@ export default function NewParentPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Parent details"
           description="Held on the parent record, and shown to staff rather than to other families."
         >
-          <Field
-            id="relation"
-            label="Relation"
-            maxLength={60}
-            value={values.relation}
-            onChange={set('relation')}
-            error={fieldErrors.relation}
-            /* Free text (`STRING(60)`), not an ENUM — the model's comment is the whole vocabulary and the
-               database enforces none of it, so this is an input rather than a select. */
-            hint="Free text, up to 60 characters — father, mother, guardian, and so on. A child linked below with no relation of its own inherits this one."
-          />
+          <FormSpan>
+            <Field
+              id="relation"
+              label="Relation"
+              maxLength={60}
+              value={values.relation}
+              onChange={set('relation')}
+              error={fieldErrors.relation}
+              /* Free text (`STRING(60)`), not an ENUM — the model's comment is the whole vocabulary and the
+                 database enforces none of it, so this is an input rather than a select. */
+              hint="Free text, up to 60 characters — father, mother, guardian, and so on. A child linked below with no relation of its own inherits this one."
+            />
+          </FormSpan>
 
           <Field
             id="contact_email"
+            width="md"
             label="Contact email"
             type="email"
             maxLength={180}
@@ -517,6 +529,7 @@ export default function NewParentPage() {
 
           <Field
             id="phone"
+            width="sm"
             label="Phone"
             maxLength={40}
             value={values.phone}
@@ -527,6 +540,7 @@ export default function NewParentPage() {
 
           <Field
             id="occupation"
+            width="md"
             label="Occupation"
             maxLength={120}
             value={values.occupation}
@@ -534,17 +548,20 @@ export default function NewParentPage() {
             error={fieldErrors.occupation}
           />
 
-          <Field
-            id="address"
-            label="Address"
-            maxLength={255}
-            value={values.address}
-            onChange={set('address')}
-            error={fieldErrors.address}
-          />
+          <FormSpan>
+            <Field
+              id="address"
+              label="Address"
+              maxLength={255}
+              value={values.address}
+              onChange={set('address')}
+              error={fieldErrors.address}
+            />
+          </FormSpan>
 
           <Field
             id="national_id"
+            width="sm"
             label="National ID"
             maxLength={60}
             value={values.national_id}

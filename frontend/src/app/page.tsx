@@ -35,7 +35,7 @@
 
 import Link from 'next/link';
 
-import { MODULE_LABELS } from '@/lib/modules';
+import { MODULES, isPlanned } from '@/lib/modules';
 import { useAuth } from '@/lib/auth';
 import { landingRouteFor } from '@/lib/nav';
 import { Icon, type IconName } from '@/components/icon';
@@ -272,15 +272,45 @@ export default function LandingPage() {
               A school that is not entitled to a module does not see it in its navigation, and its
               endpoints refuse.
             </p>
+            {/*
+              * Said plainly, because the alternative is a tick that is not true. Four of the twenty are
+              * sellable and unimplemented (the owner's decision D37), and they used to carry the same
+              * green check as Fees on a page anyone can read without signing in.
+              */}
+            <p className="mt-2 text-base leading-relaxed text-muted">
+              Sixteen are built and in use today. Four are part of the catalogue and not yet
+              implemented; they are marked below rather than left to look finished.
+            </p>
           </div>
 
           <ul className="mt-10 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
-            {MODULE_LABELS.map((label) => (
-              <li key={label} className="flex items-center gap-2.5 text-sm text-ink-soft">
-                <Icon name="check" size={14} className="shrink-0 text-brand-text" />
-                {label}
-              </li>
-            ))}
+            {MODULES.map((module) => {
+              const planned = isPlanned(module.key);
+              return (
+                <li
+                  key={module.key}
+                  className={`flex items-center gap-2.5 text-sm ${planned ? 'text-muted' : 'text-ink-soft'}`}
+                >
+                  {/*
+                    * A tick means built. Planned entries take a clock — "later", where a cross would read
+                    * "removed" — and say "planned" in words as well,
+                    * so the difference survives a greyscale print and a reader who cannot tell the two
+                    * marks apart by colour.
+                    */}
+                  <Icon
+                    name={planned ? 'clock' : 'check'}
+                    size={14}
+                    className={`shrink-0 ${planned ? 'text-muted-soft' : 'text-brand-text'}`}
+                  />
+                  <span>{module.label}</span>
+                  {planned ? (
+                    <span className="rounded-full border border-border-soft px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide text-muted-soft">
+                      Planned
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
         </section>
 

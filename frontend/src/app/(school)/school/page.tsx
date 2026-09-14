@@ -9,10 +9,28 @@
 
 import Link from 'next/link';
 
+import { Icon } from '@/components/icon';
 import { useAuth } from '@/lib/auth';
 import { useEntitlements } from '@/lib/entitlements';
 import type { Limit } from '@/lib/entitlements';
+import { limitLabel } from '@/lib/limits';
+import { moduleLabel } from '@/lib/modules';
 import { MetricCard, PageHeader, StatusBadge } from '@/components/table';
+
+/**
+ * The date a subscription's state turns on, in the viewer's own zone.
+ *
+ * A state word alone — Active, Trial, Grace Period — says nothing about *when*, which is the only part
+ * a principal has to act on. Rendered from the instant the snapshot already carries, so the screen adds
+ * no fact of its own.
+ */
+const DAY = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+function onDay(instant: string | null): string | null {
+  if (!instant) return null;
+  const date = new Date(instant);
+  return Number.isNaN(date.getTime()) ? null : DAY.format(date);
+}
 
 /* Pinned to `en-US`, as `lib/money.ts` pins its own, so a figure is grouped the same way everywhere. */
 const COUNT = new Intl.NumberFormat('en-US');
@@ -41,13 +59,35 @@ export default function SchoolDashboard() {
   const enabled = modules.filter(([, on]) => on);
   const limits = entitlements ? Object.entries(entitlements.limits) : [];
 
+  /*
+   * What the state means in dates. Each branch reads the instant that *that* state turns on, so the
+   * line is never a guess: a trial says when it ends, a grace period says when it runs out, and an
+   * ordinary period says when it renews.
+   */
+  const subscription = entitlements?.subscription ?? null;
+  const renewsOn = (() => {
+    if (!subscription) return null;
+    const state = subscription.state.toLowerCase();
+    if (state.includes('trial')) {
+      const day = onDay(subscription.trialEndsAt);
+      return day ? `Trial ends ${day}` : null;
+    }
+    if (state.includes('grace')) {
+      const day = onDay(subscription.gracePeriodEndsAt);
+      return day ? `Grace ends ${day}` : null;
+    }
+    const day = onDay(subscription.currentPeriodEnd);
+    if (!day) return null;
+    return subscription.renewalMode === 'manual' ? `Period ends ${day}` : `Renews ${day}`;
+  })();
+
   const shortcuts = [
-    { href: '/school/students', label: 'Students', permission: 'students.view', module: 'students' },
-    { href: '/school/attendance', label: 'Attendance', permission: 'attendance.view', module: 'attendance' },
-    { href: '/school/fees', label: 'Fees', permission: 'fees.view', module: 'fees' },
-    { href: '/school/exams', label: 'Exams', permission: 'exams.view', module: 'exams' },
-    { href: '/school/classes', label: 'Classes', permission: 'classes.view', module: null },
-    { href: '/school/teachers', label: 'Teachers', permission: 'teachers.view', module: 'teachers' },
+    { href: '/school/students', label: 'Students', permission: 'students.view', icon: 'graduation' as const, module: 'students' },
+    { href: '/school/attendance', label: 'Attendance', permission: 'attendance.view', icon: 'clipboard' as const, module: 'attendance' },
+    { href: '/school/fees', label: 'Fees', permission: 'fees.view', icon: 'wallet' as const, module: 'fees' },
+    { href: '/school/exams', label: 'Exams', permission: 'exams.view', icon: 'file-text' as const, module: 'exams' },
+    { href: '/school/classes', label: 'Classes', permission: 'classes.view', icon: 'grid' as const, module: null },
+    { href: '/school/teachers', label: 'Teachers', permission: 'teachers.view', icon: 'users' as const, module: 'teachers' },
     /*
      * School settings and academic sessions — FR-SCHOOL-001 and FR-SCHOOL-002.
      *
@@ -56,17 +96,17 @@ export default function SchoolDashboard() {
      * (§22), Billing (D27) and Logs (§26) — and settings is not among them. The two requirements are
      * real and their routes have a caller; nothing yet names the sidebar as the place for them.
      */
-    { href: '/school/settings', label: 'School settings', permission: 'school.settings.view', module: null },
+    { href: '/school/settings', label: 'School settings', permission: 'school.settings.view', icon: 'settings' as const, module: null },
     /*
      * Two more screens §33's seventeen do not list and whose requirements are real: §20.3's
      * assignments, and §23's notification centre. The notification one is the starker case — the
      * engine has been writing `in_app` rows since it was built and nothing could read them, so a
      * delivery channel had no recipient.
      */
-    { href: '/school/assignments', label: 'Assignments', permission: 'assignments.view', module: 'assignments' },
-    { href: '/school/notifications', label: 'Notifications', permission: 'notifications.view', module: null },
+    { href: '/school/assignments', label: 'Assignments', permission: 'assignments.view', icon: 'paperclip' as const, module: 'assignments' },
+    { href: '/school/notifications', label: 'Notifications', permission: 'notifications.view', icon: 'inbox' as const, module: null },
     /* §21's workflow. Module-gated as well as permission-gated, like every other AI route. */
-    { href: '/school/ai', label: 'AI questions', permission: 'ai.generate', module: 'ai' },
+    { href: '/school/ai', label: 'AI questions', permission: 'ai.generate', icon: 'layers' as const, module: 'ai' },
     /*
      * §22's six school reports, for the actors FR-REPORT-001 names (SRS:1190). §33's School list has
      * no Reports entry, and the only report screen was the platform one, whose school picker needs
@@ -74,14 +114,14 @@ export default function SchoolDashboard() {
      * too, so it is in the sidebar as well as here, on the same pair of keys. Each report inside is
      * gated again on its route's second key; `reports.view` is only the door.
      */
-    { href: '/school/reports', label: 'Reports', permission: 'reports.view', module: 'reports' },
+    { href: '/school/reports', label: 'Reports', permission: 'reports.view', icon: 'bar-chart' as const, module: 'reports' },
     /*
      * The owner's decision D27 — the school's own subscription, invoices and payments. On the
      * subscription read, and module-free: billing is how a school keeps its modules, so a school whose
      * plan has lapsed must still be able to reach it. In the sidebar too, on the same keys — and on
      * `invoices.self.view` as well, which is how an Accountant, who pays the invoices, reaches it.
      */
-    { href: '/school/billing', label: 'Billing', permission: 'subscriptions.self.view', module: null, alsoPermission: 'invoices.self.view' },
+    { href: '/school/billing', label: 'Billing', permission: 'subscriptions.self.view', icon: 'credit-card' as const, module: null, alsoPermission: 'invoices.self.view' },
   ].filter(
     (item) => (can(item.permission) || Boolean(item.alsoPermission && can(item.alsoPermission)))
       && (item.module === null || hasModule(item.module))
@@ -131,6 +171,11 @@ export default function SchoolDashboard() {
         </div>
       ) : (
         <>
+          {/*
+            * The plan band says three things a principal acts on: which plan, what state it is in, and
+            * **the date that state turns**. It used to say the first two and leave the third in the
+            * billing screen, so "Trial" carried no hint of how long is left.
+            */}
           <section className="surface mb-6 p-5">
             <div className="flex flex-wrap items-start gap-4">
               <div className="min-w-0 flex-1">
@@ -140,21 +185,63 @@ export default function SchoolDashboard() {
                 </h2>
                 <p className="mt-1 text-sm text-muted">
                   {entitlements.plan
-                    ? `${enabled.length} of ${modules.length} modules included`
+                    ? `${enabled.length} of ${modules.length} modules included${renewsOn ? ` · ${renewsOn}` : ''}`
                     : 'This school is not on a plan, so no modules are included yet.'}
                 </p>
               </div>
-              {/* Nullable: a school may have no subscription at all. */}
-              {entitlements.subscription ? (
-                <StatusBadge status={entitlements.subscription.state} />
-              ) : (
-                <span className="text-sm text-muted-soft">No subscription</span>
-              )}
+              <div className="flex items-center gap-3">
+                {/* Nullable: a school may have no subscription at all. */}
+                {entitlements.subscription ? (
+                  <StatusBadge status={entitlements.subscription.state} />
+                ) : (
+                  <span className="text-sm text-muted-soft">No subscription</span>
+                )}
+                {can('subscriptions.self.view') || can('invoices.self.view') ? (
+                  <Link href="/school/billing" className="btn btn-secondary btn-sm">
+                    Billing
+                  </Link>
+                ) : null}
+              </div>
             </div>
           </section>
 
+          {/*
+            * Shortcuts first, limits and modules after.
+            *
+            * The order was the other way round, which put nine allowance figures and a row of module
+            * chips — reference, read once a month — above the only part of this screen that *goes*
+            * anywhere. A dashboard's job is to start work, so the links come first and the plan's
+            * small print sits under them.
+            */}
+          {shortcuts.length > 0 ? (
+            <section className="mb-8" aria-label="Go to">
+              <div className="mb-3 flex items-center gap-3">
+                <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">Go to</h2>
+                <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
+              </div>
+              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+                {shortcuts.map((item) => (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      className="card card-interactive flex items-center gap-2.5 px-3.5 py-3 text-sm font-medium text-ink"
+                    >
+                      <Icon name={item.icon} size={16} className="shrink-0 text-muted-soft" />
+                      <span className="truncate">{item.label}</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
           <section className="mb-8" aria-label="Key limits">
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">Limits</h2>
+            <div className="mb-3 flex items-center gap-3">
+              <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">
+                What the plan allows
+              </h2>
+              <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
+            </div>
             {/*
               * Every limit the snapshot carries. This was `limits.slice(0, 8)`, and the snapshot has
               * nine — the eight §11.2 plan limits and `sms_limit`, an add-on-only allowance that
@@ -165,7 +252,8 @@ export default function SchoolDashboard() {
               {limits.map(([key, limit]) => (
                 <MetricCard
                   key={key}
-                  label={key.replace(/_/g, ' ')}
+                  /* §11.2's own names, mirrored in `lib/limits.ts`; the key itself is not a name. */
+                  label={limitLabel(key)}
                   value={formatLimit(limit)}
                   hint={limitUnit(limit)}
                 />
@@ -174,9 +262,12 @@ export default function SchoolDashboard() {
           </section>
 
           <section className="mb-8" aria-label="Included modules">
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
-              Included modules
-            </h2>
+            <div className="mb-3 flex items-center gap-3">
+              <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">
+                Included modules
+              </h2>
+              <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
+            </div>
             {/*
               * An unsubscribed school has every module off — `unsubscribedSnapshot()` returns
               * `emptyModules()` — which is the ordinary state before billing starts, and it used to
@@ -188,9 +279,10 @@ export default function SchoolDashboard() {
                 {enabled.map(([key]) => (
                   <li
                     key={key}
-                    className="rounded-full border border-teal/30 bg-teal-mist px-3 py-1 text-xs font-medium capitalize text-teal-deep"
+                    className="rounded-full border border-teal/30 bg-teal-mist px-3 py-1 text-xs font-medium text-teal-deep"
                   >
-                    {key.replace(/_/g, ' ')}
+                    {/* §11's own names, from `lib/modules.ts` — not the key with its underscores rubbed out. */}
+                    {moduleLabel(key)}
                   </li>
                 ))}
               </ul>
@@ -203,26 +295,6 @@ export default function SchoolDashboard() {
             )}
           </section>
 
-          {shortcuts.length > 0 ? (
-            <section aria-label="Shortcuts">
-              <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
-                Jump to
-              </h2>
-              <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {shortcuts.map((item) => (
-                  <li key={item.href}>
-                    <Link
-                      href={item.href}
-                      className="surface block p-4 transition-transform duration-200 hover:-translate-y-0.5 hover:border-teal"
-                    >
-                      <span className="font-semibold text-ink">{item.label}</span>
-                      <span className="mt-1 block text-xs text-teal">Open →</span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
         </>
       )}
     </div>

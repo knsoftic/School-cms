@@ -768,12 +768,20 @@ function main() {
    * Every key any file puts in browser storage, read from CODE rather than raw text so a comment
    * explaining the rule is not mistaken for breaking it.
    *
-   * `msms-theme` is the one permitted key and it is permitted for a reason: the chosen colour theme
-   * has to be readable before the first paint, or every visit flashes the wrong theme before
-   * correcting itself, and nothing but synchronous storage can be read that early. It holds the
-   * string 'light' or 'dark' and nothing else.
+   * Two keys are permitted, each for a stated reason, and both hold a display preference:
+   *
+   *   - `msms-theme` — the chosen colour theme has to be readable before the first paint, or every
+   *     visit flashes the wrong theme before correcting itself, and nothing but synchronous storage
+   *     can be read that early. It holds the string 'light' or 'dark' and nothing else.
+   *   - `msms.nav.collapsed` — which sidebar groups the reader has folded away. SRS §33 fixes the
+   *     screen list at sixteen for the platform and seventeen for a school, so the sidebar cannot be
+   *     shortened by design; folding a group is how a reader shortens it, and a fold that is forgotten
+   *     on every navigation is worse than none. It holds an array of section headings.
+   *
+   * Adding a third means writing its reason here first. The rule below — that a file which writes to
+   * storage may not so much as mention a token — is not relaxed by either of them.
    */
-  const ALLOWED_STORAGE_KEYS = ['msms-theme'];
+  const ALLOWED_STORAGE_KEYS = ['msms-theme', 'msms.nav.collapsed'];
 
   const storageKeys = new Set();
   const storageFiles = [];
@@ -821,9 +829,13 @@ function main() {
   check('  and no file that writes to storage so much as mentions a session or a token',
     leaky, []);
 
-  /* Named so a reader can see WHICH files are permitted to touch storage at all. */
-  check('  and only the theme control touches storage in the first place',
-    storageFiles.sort(), ['src/components/theme.tsx']);
+  /*
+   * Named so a reader can see WHICH files are permitted to touch storage at all — and it is two, each
+   * owning one key. `navPreferences.ts` exists *because* of the token rule above rather than in spite
+   * of it: `shell.tsx` renders the change-password banner, so it may never be the file that writes.
+   */
+  check('  and only the theme control and the sidebar preference touch storage in the first place',
+    storageFiles.sort(), ['src/components/theme.tsx', 'src/lib/navPreferences.ts']);
   check('  and the rule is written down where the token lives, so it is not undone by accident',
     /never in `localStorage`/.test(fs.readFileSync(path.join(FRONTEND, 'lib', 'apiClient.ts'), 'utf8')),
     true);
@@ -1702,6 +1714,48 @@ check('every key a nav entry names beyond its own permission is in the catalogue
   ]).filter((key) => !PERMISSION_KEY_SET.has(key))
     .concat(navItems.filter((item) => item.requires && !backendModuleKeys.includes(item.requires.module)).map((item) => item.href)),
   []);
+/*
+ * ── one entry is lit at a time (session 31) ──
+ *
+ * The sidebar used to light an entry on its own route *and* on every route below it, which lit two
+ * siblings at once: on `/super-admin/plans/features` both Plans and Features, on
+ * `/school/classes/sections` both Classes and Sections. They are siblings on screen, not a tree, so the
+ * shell now lights the **longest** matching href and nothing else. Two things are checked, because the
+ * rule has two halves — the code that applies it, and the route set it is applied to.
+ */
+const sidebarCode = code(fs.readFileSync(path.join(FRONTEND, 'components', 'shell.tsx'), 'utf8'));
+check('the sidebar marks one entry current, by the longest match rather than by every prefix',
+  [/const current = item\.href === currentHref;/.test(sidebarCode),
+    /item\.href\.length > best\.length/.test(sidebarCode)],
+  [true, true]);
+
+/*
+ * And no portal's own list has a tie: two entries in the same sidebar sharing an href would make "the
+ * longest match" ambiguous, and whichever the loop reached first would light.
+ *
+ * Checked per portal, not across all five. A teacher's sidebar deliberately points at five of the
+ * school's routes — `/school/attendance`, `/school/exams`, `/school/homework`, `/school/timetable`,
+ * `/school/reports` — and `visibleNav()` ever returns one portal's sections, so those repeats are two
+ * different sidebars naming the same screen rather than one sidebar naming it twice.
+ */
+const NAV_TREES = ['PLATFORM_NAV', 'SCHOOL_NAV', 'TEACHER_NAV', 'PARENT_NAV', 'STUDENT_NAV'];
+const treeTies = [];
+for (const tree of NAV_TREES) {
+  const start = navCode.indexOf(`export const ${tree}`);
+  /*
+   * Bounded by the array's own closing `];`, not by the next declaration: the last tree would
+   * otherwise run to the end of the file and swallow `landingRouteFor`'s table, which names
+   * `/student` again — a duplicate this check would then report against a sidebar that has one.
+   */
+  const end = navCode.indexOf('\n];', start);
+  const block = navCode.slice(start, end === -1 ? navCode.length : end);
+  const hrefs = [...block.matchAll(/href:\s*'([^']+)'/g)].map((m) => m[1]);
+  const ties = [...new Set(hrefs.filter((href, i, all) => all.indexOf(href) !== i))];
+  if (ties.length) treeTies.push(`${tree}: ${ties.join(', ')}`);
+}
+check('  and no sidebar names the same route twice, which would make the longest match ambiguous',
+  treeTies, []);
+
 const requiresOf = (href) => (navItems.find((item) => item.href === href) || {}).requires || null;
 check('  each portal timetable requires what its first read needs — the self view it finds its class or teacher through',
   [requiresOf('/student/timetable'), requiresOf('/parent/timetable'), requiresOf('/teacher/timetable')],
@@ -1737,6 +1791,45 @@ check('the frontend module list is the backend\'s, key for key and label for lab
   frontendModules, Object.entries(backendModules));
 check('  and it is still exactly the twenty §11 modules, so §35\'s "no twenty-first" holds on both sides',
   [frontendModules.length, Object.keys(backendModules).length], [20, 20]);
+
+/*
+ * `frontend/src/lib/limits.ts` copies the limit labels for the same reason and under the same terms:
+ * the entitlement snapshot carries a limit's key and not its name, so a dashboard printing limits had
+ * only `ai_limit` to show, and showed it. §11.2 names eight limits and §11.3 sells `sms_limit`, so
+ * nine — and the words are the SRS's own, which is what makes the copy a citation rather than a new
+ * naming scheme invented on a screen.
+ */
+const { LIMIT_LABELS: backendLimits } = require('../src/config/constants');
+const limitsText = fs.readFileSync(path.join(FRONTEND, 'lib', 'limits.ts'), 'utf8');
+const frontendLimits = [...code(limitsText).matchAll(/\{\s*key:\s*'([^']+)',\s*label:\s*'([^']+)'\s*\}/g)]
+  .map((match) => [match[1], match[2]]);
+
+check('the frontend limit labels are the backend\'s, key for key and label for label',
+  frontendLimits, Object.entries(backendLimits));
+check('  and it is still the eight §11.2 limits plus the add-on-only SMS credits',
+  [frontendLimits.length, Object.keys(backendLimits).length], [9, 9]);
+
+/*
+ * The landing page is public, so what it ticks is a claim made to someone who has not signed in. Four
+ * of the twenty modules are sellable and unimplemented — the owner's decision D37 — and they used to
+ * carry the same green check as Fees. They are now marked "Planned", and the list of which four is
+ * checked against **D37's own row** rather than against a second copy of the same opinion: building
+ * one of them means editing the decision record, which is where that fact belongs.
+ */
+const decisions = fs.readFileSync(
+  path.resolve(__dirname, '..', '..', 'docs', 'OWNER-DECISIONS.md'),
+  'utf8'
+);
+const d37 = decisions.split('\n').find((line) => line.startsWith('| D37 |')) || '';
+const plannedInDecision = ['online_exams', 'laboratory', 'transport', 'hostel']
+  .filter((key) => new RegExp(key.replace('_', '[ _]'), 'i').test(d37));
+const plannedInCode = [...code(modulesText).matchAll(/PLANNED_MODULE_KEYS[^=]*=\s*\[([^\]]*)\]/g)]
+  .flatMap((match) => [...match[1].matchAll(/'([^']+)'/g)].map((key) => key[1]));
+check('the modules the landing page marks unbuilt are the four D37 names, and only those',
+  [plannedInCode.sort(), plannedInDecision.sort()],
+  [['hostel', 'laboratory', 'online_exams', 'transport'], ['hostel', 'laboratory', 'online_exams', 'transport']]);
+check('  and the page ticks the built ones only — a planned entry is marked in words, not by colour',
+  [/isPlanned\(module\.key\)/.test(landingCode), /Planned/.test(landingCode)], [true, true]);
 
 
 /* ────────────────────────────── the shared form layer ────────────────────────────── */

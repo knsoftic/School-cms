@@ -61,6 +61,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
 import { PageHeader, RefusalNotice } from '@/components/table';
@@ -199,6 +200,7 @@ export default function NewPlanPage() {
         >
           <Field
             id="name"
+            width="md"
             label="Name"
             required
             value={values.name}
@@ -209,6 +211,7 @@ export default function NewPlanPage() {
 
           <Field
             id="code"
+            width="sm"
             label="Code"
             required
             value={values.code}
@@ -229,11 +232,13 @@ export default function NewPlanPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Availability"
           description="Who can see the plan, and the trial and grace periods it comes with."
         >
           <SelectField
             id="visibility"
+            width="sm"
             label="Visibility"
             value={values.visibility}
             onChange={set('visibility')}
@@ -251,6 +256,7 @@ export default function NewPlanPage() {
 
           <Field
             id="trial_days"
+            width="xs"
             label="Trial days"
             type="number"
             min={0}
@@ -262,21 +268,24 @@ export default function NewPlanPage() {
             hint="0 to 3,650. Zero means no trial, not an unset one."
           />
 
-          <Field
-            id="grace_period_days"
-            label="Grace period days"
-            type="number"
-            min={0}
-            max={3650}
-            step={1}
-            value={values.grace_period_days}
-            onChange={set('grace_period_days')}
-            error={fieldErrors.grace_period_days}
-            hint="0 to 3,650. How long an unpaid subscription keeps working (SRS §12.2)."
-          />
+          <FormSpan>
+            <Field
+              id="grace_period_days"
+              label="Grace period days"
+              type="number"
+              min={0}
+              max={3650}
+              step={1}
+              value={values.grace_period_days}
+              onChange={set('grace_period_days')}
+              error={fieldErrors.grace_period_days}
+              hint="0 to 3,650. How long an unpaid subscription keeps working (SRS §12.2)."
+            />
+          </FormSpan>
 
           <SelectField
             id="default_renewal_mode"
+            width="sm"
             label="Default renewal mode"
             value={values.default_renewal_mode}
             onChange={set('default_renewal_mode')}

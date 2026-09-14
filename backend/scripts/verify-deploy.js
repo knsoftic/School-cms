@@ -389,8 +389,13 @@ function verifyEnv() {
   const templateKeys = keysIn(template);
   const exampleKeys = keysIn(exampleSrc);
 
+  /*
+   * 73 until session 31, which added four for Hostinger's managed Node.js hosting — `CRON_IN_API`,
+   * `CRON_SKIP`, `MIGRATE_ON_BOOT` and `LOG_CONSOLE` (docs/DEPLOY-HOSTINGER.md). Each defaults to what
+   * the application already did, and Part 8 checks the Hostinger template that turns them on.
+   */
   check('env.js still reads the key count .env.example documents',
-    [readByEnvJs.length, exampleKeys.length], [73, 73]);
+    [readByEnvJs.length, exampleKeys.length], [77, 77]);
 
   check('the production template covers every key env.js reads',
     readByEnvJs.filter((k) => !templateKeys.includes(k)), []);
@@ -705,6 +710,197 @@ function verifyRepositoryHygiene() {
   const env = spawnSync('git', ['ls-files', '-z', '--', '*.env', '.env'], { cwd: ROOT, encoding: 'utf8' });
   check('no .env is tracked either',
     (env.stdout || '').split('\0').filter(Boolean), []);
+
+  /*
+   * And no variant of one can be. The patterns were `.env`, `.env.local` and `.env.*.local`, so
+   * `.env.production` or a backup like `.env.bak` was committable — and in session 31 a full copy of the
+   * development `.env`, written as a backup before a port change, sat untracked but NOT ignored in
+   * `backend/` until it was noticed. Asked of git itself with `check-ignore`, which applies the real
+   * precedence rules, rather than by reading the patterns: the examples must stay committable, and a
+   * pattern broad enough to catch the variants could easily catch them too.
+   */
+  const ignored = (rel) => spawnSync('git', ['check-ignore', '-q', rel], { cwd: ROOT }).status === 0;
+  check('every .env variant is ignored, whatever it is called',
+    ['backend/.env.production', 'backend/.env.bak', 'backend/.env.bak-before-port-change',
+      'frontend/.env.local', 'frontend/.env.production.local'].filter((rel) => !ignored(rel)), []);
+  check('  while every committed example stays committable',
+    ['backend/.env.example', 'frontend/.env.example', 'deploy/env/production.env.example',
+      'deploy/hostinger/api.env.example', 'deploy/hostinger/app.env.example'].filter(ignored), []);
+}
+
+/* ═══════════════════ part 8 — Hostinger's managed Node.js hosting ═══════════════════ */
+
+/**
+ * Part 8 — the second deployment target (session 31, docs/DEPLOY-HOSTINGER.md).
+ *
+ * Hostinger's Business and Cloud web hosting run one process per app, from an entry file, on a port
+ * the host assigns, and overwrite the app's folder on every deploy. The VPS kit above assumes none of
+ * that, so this target has its own templates, its own entry file for the web app, and two boot-time
+ * settings that exist only for it: `MIGRATE_ON_BOOT` and `CRON_IN_API`.
+ *
+ * The behaviour was proven live before these checks were written — an API started on an empty
+ * database migrated, seeded one owner, scheduled without `database-backup`, and answered
+ * `/health/ready`; started again, it applied nothing. That run needs a database it may create and
+ * drop, so it is not repeated here. What is held here is what would quietly undo it: the wiring order
+ * in `server.js`, the refusals, and templates that would ship a broken or unsafe configuration.
+ */
+function verifyHostinger() {
+  console.log('');
+  console.log('── Part 8 — Hostinger web hosting ──');
+  console.log('');
+
+  const api = read('hostinger/api.env.example');
+  const web = read('hostinger/app.env.example');
+  const envSrc = attempt(() => fs.readFileSync(path.join(ROOT, 'backend/src/config/env.js'), 'utf8'), '');
+  const assignedIn = (text) => Object.fromEntries(
+    [...text.matchAll(/^\s*([A-Z][A-Z0-9_]*)=(.*)$/gm)].map((m) => [m[1], m[2].trim()])
+  );
+  const keysIn = (text) => [...new Set([...text.matchAll(/^\s*#?\s*([A-Z][A-Z0-9_]*)=/gm)].map((m) => m[1]))];
+  const readByEnvJs = [...new Set([
+    ...[...envSrc.matchAll(/\b(?:str|num|bool|list)\(\s*'([A-Z][A-Z0-9_]*)'/g)].map((m) => m[1]),
+    ...(/process\.env\.NODE_ENV/.test(envSrc) ? ['NODE_ENV'] : []),
+  ])];
+  const a = assignedIn(api);
+
+  check('the API template covers every key env.js reads, and invents none',
+    [readByEnvJs.filter((k) => !keysIn(api).includes(k)), keysIn(api).filter((k) => !readByEnvJs.includes(k))],
+    [[], []]);
+  const secretish = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'DB_PASSWORD', 'SUPER_ADMIN_PASSWORD',
+    'ANTHROPIC_API_KEY', 'MAIL_PASSWORD', 'ONLINE_GATEWAY_API_KEY', 'ONLINE_GATEWAY_SECRET',
+    'ONLINE_GATEWAY_WEBHOOK_SECRET'];
+  check('  and, being committed, carries no secret at all', secretish.filter((k) => a[k]), []);
+
+  check('  runs production, migrates at boot and schedules inside the API',
+    [a.NODE_ENV, a.MIGRATE_ON_BOOT, a.CRON_IN_API], ['production', 'true', 'true']);
+  check('  never alongside a resident cron process, which production refuses',
+    /^(true|1|yes|on)$/i.test(a.ENABLE_CRON || ''), false);
+
+  /* A CRON_SKIP naming a task that does not exist stops the boot — so the template's must all exist. */
+  const { TASKS } = require('../src/jobs/cron');
+  const skipped = String(a.CRON_SKIP || '').split(',').map((s) => s.trim()).filter(Boolean);
+  check('  skips the backup this host has no mysqldump for, naming only real tasks',
+    [skipped.includes('database-backup'), skipped.filter((name) => !TASKS[name])], [true, []]);
+
+  check('  sends real mail, since production refuses the log driver', a.MAIL_DRIVER, 'smtp');
+  /*
+   * hPanel's Runtime logs are stdout and stderr only, and production's logger writes files only unless
+   * told otherwise — so without this a healthy start shows an empty runtime log. Found by booting this
+   * template's configuration in production mode, not by reading it.
+   */
+  check('  logs to stdout too, the only log Hostinger\'s dashboard shows', a.LOG_CONSOLE, 'true');
+  check('  trusts one proxy hop — Hostinger\'s', a.TRUST_PROXY, '1');
+  check('  and does not assign PORT, which would override the port the host chooses',
+    [Object.prototype.hasOwnProperty.call(a, 'PORT'), Object.prototype.hasOwnProperty.call(assignedIn(web), 'PORT')],
+    [false, false]);
+
+  /*
+   * The whole reason these three are set: Hostinger overwrites the app's folder on every deploy, and
+   * env.js resolves a relative path against that folder. Absolute, and not under it.
+   */
+  check('  keeps uploads, logs and backups at absolute paths outside the app folder',
+    ['UPLOAD_DIR', 'LOG_DIR', 'BACKUP_DIR'].filter((k) => !/^\/home\/[^/]+\/(?!domains\/)/.test(a[k] || '')), []);
+
+  /*
+   * The refresh and CSRF cookies are `SameSite=Lax` and host-only on the API. A browser sends them
+   * across subdomains of one site and not across two sites, so the template must describe one site.
+   */
+  const siteOf = (url) => attempt(() => new URL(url).hostname.split('.').slice(-2).join('.'), null);
+  check('  with the web app and the API on one site, so the Lax cookies are sent',
+    [siteOf(a.APP_URL), a.CORS_ORIGINS === a.FRONTEND_URL], [siteOf(a.FRONTEND_URL), true]);
+
+  const w = assignedIn(web);
+  check('the web app template runs production against an https API address',
+    [w.NODE_ENV, /^https:\/\/[^/]+\/api\/v1$/.test(w.NEXT_PUBLIC_API_URL || '')], ['production', true]);
+
+  /* ── the refusals, against the real assertRuntimeConfig() ── */
+
+  const refusal = (mutate) => {
+    const saved = {
+      isProduction: config.isProduction, driver: config.mail.driver,
+      inApi: config.cron.inApi, enabled: config.cron.enabled,
+    };
+    try {
+      config.isProduction = true;
+      mutate();
+      require('../src/config/env').assertRuntimeConfig();
+      return '';
+    } catch (err) {
+      return err.message;
+    } finally {
+      config.isProduction = saved.isProduction;
+      config.mail.driver = saved.driver;
+      config.cron.inApi = saved.inApi;
+      config.cron.enabled = saved.enabled;
+    }
+  };
+  check('production refuses MAIL_DRIVER=log, and does not refuse smtp',
+    [/MAIL_DRIVER=log/.test(refusal(() => { config.mail.driver = 'log'; })),
+      /MAIL_DRIVER/.test(refusal(() => { config.mail.driver = 'smtp'; }))],
+    [true, false]);
+  check('production refuses CRON_IN_API with ENABLE_CRON, and allows either alone',
+    [/CRON_IN_API and ENABLE_CRON/.test(refusal(() => { config.mail.driver = 'smtp'; config.cron.inApi = true; config.cron.enabled = true; })),
+      /CRON_IN_API/.test(refusal(() => { config.mail.driver = 'smtp'; config.cron.inApi = true; config.cron.enabled = false; })),
+      /CRON_IN_API/.test(refusal(() => { config.mail.driver = 'smtp'; config.cron.inApi = false; config.cron.enabled = true; }))],
+    [true, false, false]);
+  check('  and every Hostinger setting is off unless a deployment turns it on',
+    [config.cron.inApi, config.cron.skip, config.boot.migrate], [false, [], false]);
+  /*
+   * `LOG_CONSOLE`'s default is the logger's old rule, restated rather than changed: on outside
+   * production and tests, off inside them. Read from env.js's source because this process is a test
+   * process, where the value is false either way and could not tell the two defaults apart.
+   */
+  check('  including console logging, whose default is still "not in production, not in tests"',
+    /console:\s*bool\('LOG_CONSOLE',\s*!isProduction && !isTest\)/.test(envSrc), true);
+
+  const { schedule } = require('../src/jobs/cron');
+  check('a CRON_SKIP naming no task stops the scheduler rather than being ignored',
+    attempt(() => { schedule({ skip: ['databse-backup'] }); return 'started'; }, (err) => err.message),
+    'cron: CRON_SKIP names unknown task(s): databse-backup');
+
+  /* ── the wiring order in server.js ── */
+
+  const serverCode = attempt(() => fs.readFileSync(path.join(ROOT, 'backend/src/server.js'), 'utf8'), '')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, '');
+  const at = (re) => { const m = re.exec(serverCode); return m ? m.index : -1; };
+  const assertAt = at(/config\.assertRuntimeConfig\(\)/);
+  const connectAt = at(/await assertConnection\(\)/);
+  const migrateAt = at(/if \(config\.boot\.migrate\)[\s\S]*?migrator\.up\(sequelize\)[\s\S]*?seed'\)\.run\(sequelize\)/);
+  const cronAt = at(/if \(config\.cron\.inApi\)\s*\{\s*require\('\.\/jobs\/cron'\)\.schedule\(\{ skip: config\.cron\.skip \}\)/);
+  const listenAt = at(/app\.listen\(/);
+  check('server.js checks config, connects, migrates and schedules — all before it listens',
+    [assertAt > -1, assertAt < connectAt, connectAt < migrateAt, migrateAt < cronAt, cronAt < listenAt],
+    [true, true, true, true, true]);
+
+  const cronCode = attempt(() => fs.readFileSync(path.join(ROOT, 'backend/src/jobs/cron.js'), 'utf8'), '');
+  check('cron.js refuses resident mode while the API is the scheduler',
+    /else if \(config\.cron\.inApi\) \{[\s\S]*?process\.exit\(1\);\s*\} else if \(!config\.cron\.enabled\)/.test(cronCode),
+    true);
+
+  /* ── the web app's entry file ── */
+
+  const webServer = attempt(() => fs.readFileSync(path.join(ROOT, 'frontend/server.js'), 'utf8'), '');
+  check('frontend/server.js takes its port from the host',
+    /process\.env\.PORT/.test(webServer), true);
+  check('  and runs production unless development is asked for by name — not unless production is',
+    [/const dev = process\.env\.NODE_ENV === 'development'/.test(webServer),
+      /NODE_ENV !== 'production'/.test(webServer.replace(/\/\*[\s\S]*?\*\//g, ''))],
+    [true, false]);
+  check('  and exits non-zero, with a reason, when there is no build to serve',
+    /\.catch\([\s\S]*?process\.exit\(1\)/.test(webServer), true);
+  check('  without disturbing the VPS start script PM2 and Nginx agree on',
+    attempt(() => JSON.parse(fs.readFileSync(path.join(ROOT, 'frontend/package.json'), 'utf8')).scripts.start, ''),
+    'next start -p 3000');
+
+  /* ── the guide names things that exist ── */
+
+  const guide = attempt(() => fs.readFileSync(path.join(ROOT, 'docs/DEPLOY-HOSTINGER.md'), 'utf8'), '');
+  check('the Hostinger guide exists and names the entry files and templates that exist',
+    [guide.length > 2000,
+      /Entry file \| `src\/server\.js`/.test(guide) && fs.existsSync(path.join(ROOT, 'backend/src/server.js')),
+      /Entry file \| `server\.js`/.test(guide) && fs.existsSync(path.join(ROOT, 'frontend/server.js')),
+      /deploy\/hostinger\/api\.env\.example/.test(guide) && api.length > 0,
+      /deploy\/hostinger\/app\.env\.example/.test(guide) && web.length > 0],
+    [true, true, true, true, true]);
 }
 
 function main() {
@@ -715,6 +911,7 @@ function main() {
   verifyOps();
   verifyLint();
   verifyRepositoryHygiene();
+  verifyHostinger();
 }
 
 try {

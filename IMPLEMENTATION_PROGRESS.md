@@ -19,8 +19,9 @@ pages. It is now written from measurement, and the figures below were taken on 2
 | Backend | Every SRS section implemented. 64 domain tables (§29, plus `sequelize_meta`), 109 permissions, 11 roles, 359 default grants. **Thirty-eight owner decisions** (D1–D38, `docs/OWNER-DECISIONS.md`) settle what the SRS leaves open; each is built and asserted, or recorded as confirming today's behaviour |
 | Frontend | Next.js 16.3.4 / React 19.2.8 / Tailwind 4.3.3 / TypeScript 5.9.3 — **103 routes** in the build (89 static, 14 dynamic), `tsc` clean, `eslint .` exit 0. **Every UI audit finding is closed** — 174 from session 26's sweep, 132 from session 28's sweep of the twenty newer screens, and 36 from session 29 — the building agents' reports and three reviews of the portal, billing and logs screens (35 fixed, one left with its reason) — but none of the session-28 or session-29 changes was reproduced in a browser (see "Next task") |
 | API reach | **152 write routes mounted, all 152 with a frontend caller** — `POST /auth/refresh` through a raw `fetch`, because it *is* the refresh mechanism. Re-measured at the end of session 29, whose decisions added no write route; it read 149 of 150 before D1 and D13 added two |
-| Verification | **40 suites, 5,798 assertions, 0 FAIL, 0 SKIP, every script exit 0** — one serial loop against live MariaDB. `npm test` wraps it as **6,008 cases**. A run killed partway no longer poisons the next: `scripts/kill-test.js`, 39 of 39 killable suites SAFE in one full run after the last code change of session 29, and `verify-students.js` — the one suite session 30 changed — SAFE (killed at 145 of 171, rerun green, nothing left) after that change |
-| Checklist | **169 rows `Completed`, 2 `In Progress`, 1 `Implemented`, 1 `Will not be built`** — counted under each table's `Status` column, unchanged by sessions 29 and 30, whose decisions deepened rows already `Completed`. It read 165 / 5 / 2 / 1 until the first round of owner decisions answered what §13.2 Wallet, FR-SUB-008, FR-STUDENT-001 and FR-BILL-001 were blocked on. None is blocked on engineering |
+| Verification | **40 suites, 5,833 assertions, 0 FAIL, 0 SKIP, every script exit 0** — one serial loop against live MariaDB. `npm test` wraps it as **6,043 cases**. A run killed partway no longer poisons the next: `scripts/kill-test.js`, 39 of 39 killable suites SAFE in one full run after the last code change of session 29, `verify-students.js` — the one suite session 30 changed — SAFE (killed at 145 of 171, rerun green, nothing left) after that change, and `verify-reports.js` — the one database-writing suite session 31 changed — SAFE (killed at 107 of 122, rerun green, 36 trail rows from the dead run cleaned) |
+| Deployment | Two targets. **A VPS** — `deploy/`, configuration never executed by the tools that consume it. **Hostinger's managed Node.js hosting** — `docs/DEPLOY-HOSTINGER.md`, added in session 31: its API configuration booted in production mode on an empty database (migrate, seed, schedule, owner sign-in over a Secure cookie) and the web build served through `frontend/server.js`; Hostinger itself not run. Backend production dependencies **0** advisories (were 7, 3 high), frontend **0** |
+| Checklist | **169 rows `Completed`, 2 `In Progress`, 1 `Implemented`, 1 `Will not be built`** — counted under each table's `Status` column, unchanged by sessions 29, 30 and 31, whose work deepened rows already `Completed`. It read 165 / 5 / 2 / 1 until the first round of owner decisions answered what §13.2 Wallet, FR-SUB-008, FR-STUDENT-001 and FR-BILL-001 were blocked on. None is blocked on engineering |
 | Known Issues | **4 open of 34** (#19 closed by D5, #18 by D21). Not one is waiting on code being written here |
 
 **The two `In Progress` rows and what each waits on.** **5.2** — the Anthropic adapter is exercised with
@@ -12015,6 +12016,122 @@ Session 16 (2026-09-02, same calendar day) opened on that stop and found it alre
      `next build` **103 routes** (89 static, 14 dynamic); **152 of 152** write routes with a caller — D38 adds none. The checklist still
      reads **169 / 2 / 1 / 1**. `msms_test` ends at one user, no school, 11 roles, 109 permissions,
      359 grants, 7 add-ons, 65 tables and an empty journal. Nothing was reproduced in a browser.
+
+**Session 31 — the screens made usable, one audit-trail untruth fixed, and a second deployment target:
+Hostinger's managed Node.js hosting.**
+
+Worked from the owner's screenshots, because no screen behind sign-in can be seen from here — that is
+stated wherever a result below is visual rather than measured.
+
+*Running it locally.* Port 3000 is held on this machine by another project, so the dev frontend runs on
+3001: `.claude/launch.json` and the untracked `backend/.env` (CORS_ORIGINS, FRONTEND_URL) — machine
+settings, **not committed**. The owner's sign-in failed with `.env`'s `SUPER_ADMIN_PASSWORD` because the
+seed had reported the account "already present" and never changes an existing password; recovered
+through the product's own forgot-password flow, reading the link from the log driver's output. No
+password was read, set or reset by hand.
+
+*Screens.*
+
+1. **Super Admin dashboard** — money band first (month, year, pending, with windows), then one compact
+   row of tenancy and people counts, each holding its own breakdown (`1 active · 0 suspended · 0
+   archived`), each linking to the list it summarises. All eleven §9.1 metrics stay on screen; a zero
+   money figure is muted, not hidden. With no school in scope a panel says why every figure is zero, and
+   offers Add a school only to a caller holding `schools.manage` — an organization admin holds only read
+   keys. `MetricCard` gained optional `href` (stretched link, valid `<dl>`) and `breakdown`.
+2. **Create forms** — `Field`, `SelectField` and `PasswordField` take `width` (`xs`/`sm`/`md`/`full`,
+   max-width only). One table sized **138** fields across the 19 create pages; **27** sections went to two
+   columns with **35** long fields spanning both; `FormSection` spacing tightened.
+3. **Navigation** — `Ctrl K` jump-to-screen (`components/quickJump.tsx`), searching the caller's own
+   `visibleNav()` output. Sidebar groups fold, remembered under `msms.nav.collapsed` in
+   `lib/navPreferences.ts` — its own file because `verify-frontend.js` forbids any file that writes to
+   storage from mentioning a token or password, and `shell.tsx` renders the change-password banner; the
+   allow-list was extended with its reason and mutation-tested. Only the **longest** matching entry is lit:
+   `/super-admin/plans/features` lit both Plans and Features.
+4. **The other dashboards** — the school dashboard puts shortcuts first, says the date its subscription
+   state turns on, and names limits and modules in §11's words instead of printing keys (`ai limit`);
+   `lib/limits.ts` mirrors `LIMIT_LABELS` and is asserted key for key, like `lib/modules.ts`. Teacher,
+   parent and student record cards use the shared card.
+5. **Logs** — activity 7 columns → 4 (action chip inside What; Request and School in the dialog), audit 8
+   → 4 (event on the record, reason under the change). It scrolled sideways at full width.
+6. **Landing page** — D37's four unbuilt modules (Online Exams, Laboratory, Transport, Hostel) carried the
+   same tick as Fees on a public page. Now marked Planned; which four is read from **D37's own row** in
+   `docs/OWNER-DECISIONS.md`. Verified visually — the one screen here that needs no sign-in.
+
+*One backend defect.* **A report read on screen was recorded as an export with no description.**
+`reports.routes.js` annotates every report route `action: 'export'`, and only the file branch described
+itself, so the Logs screen showed "Export · No description" for someone who had only looked. The JSON
+branch now records `view` — "Viewed the subscription report". `verify-reports.js` +3, mutation-tested.
+
+*Hostinger's managed Node.js hosting* (`docs/DEPLOY-HOSTINGER.md`). The owner deploys on a Business/Cloud
+plan, not a VPS: one process per app from an entry file, a host-assigned port, the app folder overwritten
+on every deploy, and no dependable way to run `node` by hand. The VPS kit in `deploy/` fits none of it.
+
+- `MIGRATE_ON_BOOT` — `server.js` applies pending migrations and the mandatory seed after connecting and
+  before listening.
+- `CRON_IN_API` and `CRON_SKIP` — `server.js` runs `cron.js`'s `schedule({ skip })`; an unknown name in
+  `CRON_SKIP` stops the boot. `cron.js` refuses resident mode while it is on.
+- Production now refuses `MAIL_DRIVER=log` (reset links written to a file, emailed to nobody — FR-AUTH-005
+  and -006 require them sent) and `CRON_IN_API` with `ENABLE_CRON`.
+- All three keys default off: `env.js` now reads **76** keys (was 73), documented in `.env.example` and
+  the VPS template with their VPS values.
+- `frontend/server.js` — Next's documented custom server, reading `PORT`, production unless
+  `NODE_ENV=development` is explicit. `package.json`'s `next start -p 3000` is untouched: PM2 and Nginx
+  agree on it.
+- `deploy/hostinger/api.env.example` and `app.env.example` — no `PORT` (it would override the host's),
+  absolute storage paths outside the app, smtp, `TRUST_PROXY=1`.
+- `.gitignore` ignores `.env.*` with the examples let back in. A full copy of the development `.env`,
+  written as a backup this session, sat untracked but **not ignored** in `backend/` until it was
+  noticed; it was moved out of the repository before any commit.
+
+*Security.* Backend production dependencies had **7** advisories, **3 high** (`multer` and `qs` denial of
+service, `nodemailer`, `js-yaml`); in-range `npm update` took them to **0** — `express` 4.22.3,
+`body-parser` 1.20.8, `qs` 6.16.0, `multer` 2.3.0, `nodemailer` 9.1.1, `morgan` 1.12.1, `js-yaml` 4.3.2;
+`package.json` unchanged. Frontend: **0**. `npm audit fix --omit=dev` was **not** used — its dry run
+removes every dev dependency, the test toolchain included.
+
+*Verification.*
+
+- **The Hostinger path, booted rather than read**, each run on a throwaway database created for it and
+  dropped after, never `msms` or `msms_test`. Development mode, 17/17: an empty database got 65 tables,
+  one owner and a scheduler without `database-backup`, migrated before listening, answered
+  `/health/ready`; a second start applied nothing; a misspelt `CRON_SKIP` stopped the boot; a resident
+  `cron.js` refused beside `CRON_IN_API`. **Production mode**, with the Hostinger template's settings,
+  17/17: the three production refusals (log mail driver, both schedulers, the example owner password);
+  a start logging plain timestamped lines to stdout and to an absolute `LOG_DIR`; owner sign-in with the
+  deployment's password, sent to change it, refresh cookie `HttpOnly; Secure; SameSite=Lax` and absent
+  from the body; errors without stacks; a redeploy with `SUPER_ADMIN_PASSWORD` removed still starting.
+  **Its first run failed four checks, and one failure was real**: production's logger wrote no console
+  output, so on a host whose only log view is stdout a healthy start showed nothing. That is
+  `LOG_CONSOLE`. The other three were the probe's own wrong assumptions — two waited for that same line;
+  one expected 404 where an unauthenticated request meets the authentication boundary first (§2c), by
+  design.
+- `next build`: 103 routes (89 static, 14 dynamic), unchanged; `server.js` served it in production mode
+  on an assigned port with `NODE_ENV` unset, and the HTML carried no dev-server markers.
+- `git archive … HEAD:backend` / `HEAD:frontend`: `package.json` at the archive root, no
+  `node_modules`, `.env` or uploads.
+- `verify-deploy.js` **79 → 105**: Part 7 +2 (every `.env` variant ignored, every example committable),
+  Part 8 +24 (the Hostinger templates, the refusals against the real `assertRuntimeConfig()`, `CRON_SKIP`
+  validation, the boot order in `server.js`, `cron.js`'s refusal, `frontend/server.js`, the guide naming
+  files that exist). **Mutation-tested, 5/5 caught**, every file restored byte-identical: mail guard
+  removed, migration moved out of the boot path, the web entry back to dev-by-default, Hostinger uploads
+  inside the app folder, `.gitignore` back to the old patterns.
+- `verify-frontend.js` **294 → 300** (limit labels ×2, the lit sidebar entry ×2, D37 ×2) and
+  `verify-reports.js` **119 → 122**, each mutation-tested when written.
+- Baseline re-recorded twice with `record-baseline.js`, whose delta showed exactly those three suites and
+  nothing else. `scripts/kill-test.js reports`: **SAFE** (killed at 107 of 122, rerun green, the dead
+  run's 36 trail rows cleaned). The first full `npm test` after that failed **one** case — the harness's
+  check that the checklist's quoted suite figures match the baseline, which still read 79, 294 and 119 —
+  and after `docs/IMPLEMENTATION_CHECKLIST.md` was corrected it passed **6,043 of 6,043**, exit 0.
+- Lint clean in both halves, `tsc` clean.
+
+*What was not verified.* **Hostinger itself** — no access to the owner's hPanel; the guide lists what
+to confirm on the setup screen (a root directory for GitHub deploys, `PORT`, the database host), each
+with a fallback. **Any screen behind sign-in, visually** — built from screenshots and verified by types,
+lint, the contract suite and compiling every route; the landing page is the exception. **Real SMTP
+delivery and a live Anthropic call**, as before.
+
+*Not committed, deliberately.* `.claude/launch.json` (port 3001, this machine) and the ignored
+`backend/.env`. **No git remote is configured**, so nothing was pushed.
 
 ### Next task — what is left, and why each item is where it is
 

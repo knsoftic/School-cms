@@ -36,7 +36,7 @@ The six legend words are used with these specific meanings, so a row cannot be r
 | `Will not be built` | Optional, and building it would mean inventing what §35 says this SRS does not decide. A terminal state, not a backlog entry — added in session 28 for row 3.S.1, which had sat at `Pending` while its own note said the work must not be done. A row here must name the §35 clause it rests on |
 
 "An executable check" means one of the forty `backend/scripts/verify-*.js` suites or
-`scripts/check-models.js`. As of **2026-09-11 (end of session 30)** they total **5,798 assertions, 0 failures,
+`scripts/check-models.js`. As of **2026-09-14 (end of session 31)** they total **5,833 assertions, 0 failures,
 0 skips**, every script exit 0, measured as one loop against live MariaDB:
 
 | Script | Checks |
@@ -50,14 +50,14 @@ The six legend words are used with these specific meanings, so a row cannot be r
 | `verify-auth-module.js` | 237 |
 | `verify-billing.js` | 280 |
 | `verify-concurrency.js` | 19 |
-| `verify-deploy.js` | 79 |
+| `verify-deploy.js` | 105 |
 | `verify-documents.js` | 146 |
 | `verify-entitlement.js` | 272 |
 | `verify-error-handler.js` | 54 |
 | `verify-exams.js` | 230 |
 | `verify-fees.js` | 188 |
 | `verify-finance.js` | 165 |
-| `verify-frontend.js` | 294 |
+| `verify-frontend.js` | 300 |
 | `verify-homework.js` | 114 |
 | `verify-jobs.js` | 61 |
 | `verify-library.js` | 162 |
@@ -70,7 +70,7 @@ The six legend words are used with these specific meanings, so a row cannot be r
 | `verify-plans.js` | 181 |
 | `verify-quotations.js` | 11 |
 | `verify-platform-modules.js` | 321 |
-| `verify-reports.js` | 119 |
+| `verify-reports.js` | 122 |
 | `verify-school-setup.js` | 175 |
 | `verify-security.js` | 28 |
 | `verify-seed.js` | 25 |
@@ -81,10 +81,10 @@ The six legend words are used with these specific meanings, so a row cannot be r
 | `verify-timetable.js` | 117 |
 | `verify-users-roles.js` | 262 |
 | `verify-validate.js` | 35 |
-| **Total** | **5,798** |
+| **Total** | **5,833** |
 
 Regenerated from `backend/tests/baseline.json`, the manifest `npm test` checks each run
-against — last by script in session 30, when one row moved (5,792 → 5,798, `verify-students.js` +6 for D38); before that at the end of session 29, when twenty-eight had (5,573 → 5,792).
+against — last by script in session 31, when three rows moved (5,798 → 5,833: `verify-deploy.js` +26 for Hostinger web hosting and the `.env` ignore rules, `verify-frontend.js` +6, `verify-reports.js` +3); in session 30 one had (5,792 → 5,798, `verify-students.js` +6 for D38); before that at the end of session 29, when twenty-eight had (5,573 → 5,792).
 An earlier version listed **30** suites totalling **4,613** — stale by 8 suites and 533
 assertions, with individual rows out by as much as 23 (`verify-entitlement.js` read 249 against
 a measured 272). Nine further rows elsewhere in this file cited suite figures the manifest
@@ -600,7 +600,7 @@ and nothing in the request path reads it, so every module in this phase must mou
 
 | ID | Requirement | Status | Notes |
 |---|---|---|---|
-| FR-REPORT-001 | 7 reports: student, attendance, fee, expense, exam, teacher, subscription | Completed | `src/modules/reports/`, seven GET endpoints at `/api/v1/reports` — the **first read-only module**, because §29 gives §22 no table. Two of the seven **delegate** rather than reimplement: the Attendance Report calls `attendanceService.report()` and the Expense Report calls `financeService.report()`, and both routes validate against the owning module's own schema, so the paired endpoints cannot drift. The suite compares the payloads field for field. The Exam Report aggregates §19's **stored** columns and recomputes no position. Every route requires **two** permissions — `reports.view` plus the owning module's read — because `reports.view` reaches Teacher and Librarian whom `finance.view` and `fees.view` do not. `verify-reports.js` → **119 / 119, exit 0**, twenty-three deliberate regressions **Session 29:** the Student Report names each class’s session beside it, since every year has a Grade 1; reports are headed with the school’s display name (D35). |
+| FR-REPORT-001 | 7 reports: student, attendance, fee, expense, exam, teacher, subscription | Completed | `src/modules/reports/`, seven GET endpoints at `/api/v1/reports` — the **first read-only module**, because §29 gives §22 no table. Two of the seven **delegate** rather than reimplement: the Attendance Report calls `attendanceService.report()` and the Expense Report calls `financeService.report()`, and both routes validate against the owning module's own schema, so the paired endpoints cannot drift. The suite compares the payloads field for field. The Exam Report aggregates §19's **stored** columns and recomputes no position. Every route requires **two** permissions — `reports.view` plus the owning module's read — because `reports.view` reaches Teacher and Librarian whom `finance.view` and `fees.view` do not. `verify-reports.js` → **122 / 122, exit 0**, twenty-three deliberate regressions **Session 29:** the Student Report names each class’s session beside it, since every year has a Grade 1; reports are headed with the school’s display name (D35). **Session 31:** a report read on screen is recorded in the activity trail as a view — “Viewed the subscription report” — where it had been recorded as an export with no description; +3 assertions, mutation-tested. |
 | FR-REPORT-002 | Export PDF / Excel / Print | Completed | **Excel is delivered.** `?format=excel` on any of the seven returns a real workbook — proved by its zip magic and by reading the cells back through exceljs and matching them to the JSON. `exceljs` had been installed and unused since `package.json` was written; `writeBuffer()` returns a Buffer, so nothing touches disk and no upload profile or storage accounting is involved. What was actually missing was a **non-JSON response** — `ApiResponse` emits only `res.status().json()`. `reports.export` is required only when a format is asked for. **PDF also ships** (row 5.4): `src/utils/pdf.js` renders it from `toRows()`, the same walk `toExcel()` consumes, so the two exports cannot disagree about what a report contains. **Print is client-side and now exists.** `?format=print` stays **refused 422** — there is no view engine here to produce a print-ready payload, and `constants.js` no longer claims otherwise — while FR-REPORT-002’s own words are an actor’s action, *"User prints the report"*, which the Reports screen’s print control and the `@media print` block in `globals.css` satisfy. **And until session 26 the two file formats had no reachable caller.** `apiClient.request()` ended unconditionally in `response.json()`, and the documented workaround of typing `?format=excel` into the address bar could not work either — the access token is held in memory and travels as a header, so a pasted URL is unauthenticated. `api.download()` is the binary path; the Reports screen offers both exports, gated on `reports.export` exactly as the router’s conditional guard is **Session 29, owner decision D36:** exports stay synchronous, inside the request, and recorded in the activity trail — a queued report would need somewhere to store it and a route to fetch it. |
 
 ### 3.R Notifications — §23
@@ -730,7 +730,7 @@ twenty of the fifty status words; and `pass`/`fail` untoned because `RESULT_OUTC
 
 `frontend/` is scaffolded and **builds** — Next.js 16.3.4 App Router, React 19.2.8, Tailwind 4.3.3,
 TypeScript 5.9.3. `npm run build` and `tsc --noEmit` both pass. Verified by
-`backend/scripts/verify-frontend.js` (294 assertions, 43 deliberate regressions all caught), which
+`backend/scripts/verify-frontend.js` (300 assertions, 43 deliberate regressions all caught), which
 checks the client against the **generated OpenAPI document** rather than a hand-written list, so a
 renamed route fails the suite the same day and names the frontend file still calling the old path.
 
@@ -947,13 +947,13 @@ were covered only implicitly, by numbered Phase 5/6/7 rows that never cite them.
 | FR-PERF-001 | Performance Optimization Implementation | §25 | Completed | Indexes declared on every model; `utils/pagination.js` on every list endpoint; entitlement caching with a TTL; background jobs and the queue system — four of the eight `JOB_NAMES` registered by `registerAll()`, called from `createApp()`, with the unregistered four each carrying its reason in `handlers/index.js` — (§2ab, §2ad). §25 states no numeric targets and none is invented |
 | FR-BKP-001 | Database Backup & Retention | §26 | Completed | `src/jobs/tasks/databaseBackup.js` — real `mysqldump`, `BACKUP_RETENTION_DAYS` pruning by mtime, a part-written dump deleted rather than kept. `verify-jobs.js` asserts the dump contains all 64 model tables plus `sequelize_meta` **Session 29:** restorability is now proven by restoring, not by reading the dump — `scripts/restore-drill.js`, run for real; see 7.9. |
 | FR-LOG-001 | Error & Activity Logging | §26 | Completed | `config/logger.js` (winston, daily rotation, separate error log) and `middlewares/activityLog.js` (`activity_logs` + `audit_logs`, written on `res.on('finish')` so a logging failure cannot turn a save into a 500) **Session 29 — the logs are readable.** Both trails had been written since §26 was built and nothing could read them without the database, although `logs.view` had been granted to school leadership, the Organization Admin and the Super Admin from the start. `GET /logs/activity` and `/logs/audit` (`src/modules/logs/`), read-only and confined by the tenant layer — a school to its rows, an Organization Admin to its organization’s, the Super Admin to all — with a `school_id` filter through `resolveSchool()`; asserted in `verify-users-roles.js`. Screens at `/school/logs` and `/super-admin/logs`: Activity and Audit tabs with every filter the schemas accept, an audit row’s before and after shown field by field. Built without a browser run. |
-| FR-DEPLOY-001 | Production Environment Setup | §27 | Completed | `deploy/` — six artifacts, 5,332 lines, verified by `scripts/verify-deploy.js` (79 assertions, 23 deliberate regressions all caught). Nginx reverse proxy + TLS + ACME renewal, the PM2 ecosystem (two apps: API and cron; the worker is deliberately unmanaged because it runs one job and exits), MySQL production config, the production env template covering every key `env.js` reads, logrotate for the PM2 logs only, and a monitoring runbook built from the health endpoints, PM2 and the log files — nothing off §27's list. **Complete as configuration, never executed:** nginx, pm2, mysql and logrotate are all absent from this machine, so no file was validated by its own tool. The suite checks agreement with the application instead. **Session 29 — the dashboard is deployable.** `deploy/pm2/ecosystem.config.js` gains `msms-web` (`next start -p 3000 -H 127.0.0.1` from `frontend/`), `deploy/nginx/msms.conf` a second origin in front of it with its own certificate and the security headers Next does not set, and `frontend/.env.example` documents `NEXT_PUBLIC_API_URL`, which Next inlines at build time; the env template’s origins now agree with nginx’s. `verify-deploy.js` cross-checks all of it — the port, loopback, one HSTS header, the API URL against the API site and prefix, the dashboard origin against CORS. The backup runbook and restore drill are 7.9. |
+| FR-DEPLOY-001 | Production Environment Setup | §27 | Completed | `deploy/` — six artifacts, 5,332 lines, verified by `scripts/verify-deploy.js` (105 assertions, 28 deliberate regressions all caught). **Session 31** added a second target, Hostinger’s managed Node.js hosting — `deploy/hostinger/` and `docs/DEPLOY-HOSTINGER.md` — whose API configuration was booted in production mode against an empty database. Nginx reverse proxy + TLS + ACME renewal, the PM2 ecosystem (two apps: API and cron; the worker is deliberately unmanaged because it runs one job and exits), MySQL production config, the production env template covering every key `env.js` reads, logrotate for the PM2 logs only, and a monitoring runbook built from the health endpoints, PM2 and the log files — nothing off §27's list. **Complete as configuration, never executed:** nginx, pm2, mysql and logrotate are all absent from this machine, so no file was validated by its own tool. The suite checks agreement with the application instead. **Session 29 — the dashboard is deployable.** `deploy/pm2/ecosystem.config.js` gains `msms-web` (`next start -p 3000 -H 127.0.0.1` from `frontend/`), `deploy/nginx/msms.conf` a second origin in front of it with its own certificate and the security headers Next does not set, and `frontend/.env.example` documents `NEXT_PUBLIC_API_URL`, which Next inlines at build time; the env template’s origins now agree with nginx’s. `verify-deploy.js` cross-checks all of it — the port, loopback, one HSTS header, the API URL against the API site and prefix, the dashboard origin against CORS. The backup runbook and restore drill are 7.9. |
 | FR-APIDOC-001 | Swagger / OpenAPI Documentation | §28 | Completed | `src/docs/` — `GET /docs` (Swagger UI) and `GET /docs/openapi.json`, both above the authentication boundary. The document is **generated from the mounted Express stack**: six of §28's seven fields are read from the routes, the guards and the Joi schemas that enforce them, so it cannot drift. The seventh — the shape of a success payload — has no machine-readable source, and the document says so rather than guessing. 195 paths, 266 operations. `verify-openapi.js` → 101 checks, 17 deliberate regressions all caught **Corrected in the §36 final pass:** the generated document described the success envelope’s `meta` as a **flat** object of four keys; `ApiResponse.paginated()` has always nested under `meta.pagination` and emitted **six**, adding `hasNextPage`/`hasPreviousPage`. A client trusting it would have read `meta.totalPages` as `undefined` and built a broken pager — the exact bug this project’s own frontend had. 101 of the suite’s assertions checked the document is well-formed and that its guards match the routers; **none checked that a shape it describes is one the application emits**. `verify-openapi.js` now captures a real `paginated()` envelope and compares its keys to the document’s, neither side a literal (101 -> 104). **Session 29:** the document now describes the fifteen file responses (five stored uploads, ten PDF/Excel exports chosen by `format`, marked in the route file by `routeMeta.respondsWithFile()` and held there by a check that reads the controllers), the six upload routes as `multipart/form-data` from the upload chain’s own arguments, and the guards that take no arguments — platform scope, active subscription, plan features, and the conditional export guards — with the 403 codes the guards actually send: it had said `FORBIDDEN` on 265 operations, a code no guard emits. `verify-openapi.js` part 2c. |
 
 ## Phase 7 — Deployment, Docs & Final Review
 
 **`deploy/` exists** — six artifacts, 5,312 lines, written in session 26 and verified by
-`scripts/verify-deploy.js` (79 assertions). **Nothing in it has been executed**: nginx, pm2,
+`scripts/verify-deploy.js` (105 assertions). **Nothing in it has been executed**: nginx, pm2,
 mysql and logrotate are all absent from this machine, so no file was validated by the tool that
 will consume it. What the suite checks instead is that each config **agrees with the application**
 — the proxy port against `config.app.port`, the body caps against `MAX_UPLOAD_MB`, PM2's

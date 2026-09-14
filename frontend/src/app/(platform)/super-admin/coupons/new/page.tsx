@@ -86,6 +86,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
   MultiSelectField,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
@@ -390,6 +391,7 @@ export default function NewCouponPage() {
         >
           <Field
             id="code"
+            width="sm"
             label="Code"
             required
             value={values.code}
@@ -400,6 +402,7 @@ export default function NewCouponPage() {
 
           <Field
             id="name"
+            width="md"
             label="Name"
             value={values.name}
             onChange={set('name')}
@@ -419,11 +422,13 @@ export default function NewCouponPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Discount"
           description="How much comes off, and the order values it applies between."
         >
           <SelectField
             id="discount_type"
+            width="sm"
             label="Discount type"
             required
             value={values.discount_type}
@@ -437,29 +442,32 @@ export default function NewCouponPage() {
             <option value={FIXED_AMOUNT}>Fixed amount</option>
           </SelectField>
 
-          <Field
-            id="discount_value"
-            label="Discount value"
-            type="number"
-            step="0.01"
-            required
-            value={values.discount_value}
-            onChange={set('discount_value')}
-            error={fieldErrors.discount_value}
-            /* The column comment — *"Percent when percentage, currency amount when fixed_amount"* — is
-               the whole reason the bound changes with the control above it. */
-            hint={
-              values.discount_type === PERCENTAGE
-                ? '0.01 to 100, to two decimal places. A 0% coupon is refused — it discounts nothing.'
-                : values.discount_type === FIXED_AMOUNT
-                  ? 'Greater than 0, in the currency below.'
-                  : 'A percentage or a currency amount, depending on the discount type above.'
-            }
-          />
+          <FormSpan>
+            <Field
+              id="discount_value"
+              label="Discount value"
+              type="number"
+              step="0.01"
+              required
+              value={values.discount_value}
+              onChange={set('discount_value')}
+              error={fieldErrors.discount_value}
+              /* The column comment — *"Percent when percentage, currency amount when fixed_amount"* — is
+                 the whole reason the bound changes with the control above it. */
+              hint={
+                values.discount_type === PERCENTAGE
+                  ? '0.01 to 100, to two decimal places. A 0% coupon is refused — it discounts nothing.'
+                  : values.discount_type === FIXED_AMOUNT
+                    ? 'Greater than 0, in the currency below.'
+                    : 'A percentage or a currency amount, depending on the discount type above.'
+              }
+            />
+          </FormSpan>
 
           {values.discount_type === FIXED_AMOUNT ? (
             <Field
               id="currency"
+              width="xs"
               label="Currency"
               required
               value={values.currency}
@@ -469,19 +477,22 @@ export default function NewCouponPage() {
             />
           ) : null}
 
-          <Field
-            id="max_discount_amount"
-            label="Maximum discount"
-            type="number"
-            step="0.01"
-            value={values.max_discount_amount}
-            onChange={set('max_discount_amount')}
-            error={fieldErrors.max_discount_amount}
-            hint="A ceiling on what the coupon takes off. On a percentage coupon it has no currency of its own and is compared against the invoice's. Blank means no ceiling."
-          />
+          <FormSpan>
+            <Field
+              id="max_discount_amount"
+              label="Maximum discount"
+              type="number"
+              step="0.01"
+              value={values.max_discount_amount}
+              onChange={set('max_discount_amount')}
+              error={fieldErrors.max_discount_amount}
+              hint="A ceiling on what the coupon takes off. On a percentage coupon it has no currency of its own and is compared against the invoice's. Blank means no ceiling."
+            />
+          </FormSpan>
 
           <Field
             id="min_order_amount"
+            width="sm"
             label="Minimum order amount"
             type="number"
             step="0.01"
@@ -493,11 +504,13 @@ export default function NewCouponPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="When it can be used"
           description="The window it is valid in, and how many times it may be redeemed."
         >
           <Field
             id="starts_at"
+            width="sm"
             label="Starts"
             type="datetime-local"
             value={values.starts_at}
@@ -508,6 +521,7 @@ export default function NewCouponPage() {
 
           <Field
             id="expires_at"
+            width="sm"
             label="Expires"
             type="datetime-local"
             value={values.expires_at}
@@ -518,6 +532,7 @@ export default function NewCouponPage() {
 
           <Field
             id="max_uses"
+            width="xs"
             label="Maximum uses"
             type="number"
             step="1"
@@ -529,6 +544,7 @@ export default function NewCouponPage() {
 
           <Field
             id="max_uses_per_school"
+            width="xs"
             label="Maximum uses per school"
             type="number"
             step="1"
@@ -571,6 +587,7 @@ export default function NewCouponPage() {
         >
           <SelectField
             id="status"
+            width="sm"
             label="Status"
             value={values.status}
             onChange={set('status')}

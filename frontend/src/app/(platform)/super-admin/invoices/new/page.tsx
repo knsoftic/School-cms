@@ -79,6 +79,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
 import { PageHeader, RefusalNotice } from '@/components/table';
@@ -421,60 +422,66 @@ export default function GenerateInvoicePage() {
 
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
+          columns={2}
           title="Subscription and period"
           description="The subscription being billed, and the span of service this invoice covers."
         >
           {/* The only `.required()` field in `schemas.generate`, so `SelectField` says the word
               "required" where this used to carry a bare `aria-hidden` asterisk — a convention nobody
               not looking at the colour can read. */}
-          <SelectField
-            id="subscription_id"
-            label="Subscription"
-            required
-            value={values.subscription_id}
-            onChange={set('subscription_id')}
-            /*
-             * A failed lookup is an error, not a hint: without this list the one required field cannot be
-             * filled at all. It ranks below a 422 on the same field, which is the more recent news.
-             */
-            error={fieldErrors.subscription_id || subscriptionsError}
-            /*
-             * Said plainly rather than papered over: `MAX_LIMIT` is 100, so beyond that this picker
-             * cannot show every subscription and there is no id box to fall back on. Narrowing the
-             * subscriptions list and coming back is the way through.
-             */
-            hint={
-              subscriptionTotal !== null && subscriptionTotal > subscriptions.length
-                ? `Showing the ${subscriptions.length} most recent of ${subscriptionTotal} subscriptions. If the one you want is not here, find it on the Subscriptions screen first.`
-                : 'The invoice is derived from the subscription: its items, its currency and its period.'
-            }
-          >
-            <option value="">
-              {loadingOptions ? 'Loading subscriptions…' : 'Select a subscription'}
-            </option>
-            {subscriptions.map((row) => (
-              <option key={row.id} value={row.id}>
-                {subscriptionLabel(row)}
+          <FormSpan>
+            <SelectField
+              id="subscription_id"
+              label="Subscription"
+              required
+              value={values.subscription_id}
+              onChange={set('subscription_id')}
+              /*
+               * A failed lookup is an error, not a hint: without this list the one required field cannot be
+               * filled at all. It ranks below a 422 on the same field, which is the more recent news.
+               */
+              error={fieldErrors.subscription_id || subscriptionsError}
+              /*
+               * Said plainly rather than papered over: `MAX_LIMIT` is 100, so beyond that this picker
+               * cannot show every subscription and there is no id box to fall back on. Narrowing the
+               * subscriptions list and coming back is the way through.
+               */
+              hint={
+                subscriptionTotal !== null && subscriptionTotal > subscriptions.length
+                  ? `Showing the ${subscriptions.length} most recent of ${subscriptionTotal} subscriptions. If the one you want is not here, find it on the Subscriptions screen first.`
+                  : 'The invoice is derived from the subscription: its items, its currency and its period.'
+              }
+            >
+              <option value="">
+                {loadingOptions ? 'Loading subscriptions…' : 'Select a subscription'}
               </option>
-            ))}
-          </SelectField>
+              {subscriptions.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {subscriptionLabel(row)}
+                </option>
+              ))}
+            </SelectField>
+          </FormSpan>
 
-          <Field
-            id="billing_period_start"
-            label="Billing period start"
-            type="date"
-            value={values.billing_period_start}
-            onChange={set('billing_period_start')}
-            error={fieldErrors.billing_period_start}
-            hint={
-              selected
-                ? `Defaults to the subscription's current period, starting ${isoDay(selected.current_period_start)}.`
-                : "Defaults to the subscription's current period."
-            }
-          />
+          <FormSpan>
+            <Field
+              id="billing_period_start"
+              label="Billing period start"
+              type="date"
+              value={values.billing_period_start}
+              onChange={set('billing_period_start')}
+              error={fieldErrors.billing_period_start}
+              hint={
+                selected
+                  ? `Defaults to the subscription's current period, starting ${isoDay(selected.current_period_start)}.`
+                  : "Defaults to the subscription's current period."
+              }
+            />
+          </FormSpan>
 
           <Field
             id="billing_period_end"
+            width="sm"
             label="Billing period end"
             type="date"
             value={values.billing_period_end}
@@ -485,6 +492,7 @@ export default function GenerateInvoicePage() {
 
           <Field
             id="issue_date"
+            width="sm"
             label="Issue date"
             type="date"
             value={values.issue_date}
@@ -495,6 +503,7 @@ export default function GenerateInvoicePage() {
 
           <Field
             id="due_date"
+            width="sm"
             label="Due date"
             type="date"
             value={values.due_date}
@@ -540,6 +549,7 @@ export default function GenerateInvoicePage() {
 
           <SelectField
             id="tax_id"
+            width="md"
             label="Tax rate"
             value={values.tax_id}
             onChange={set('tax_id')}
@@ -558,6 +568,7 @@ export default function GenerateInvoicePage() {
           {/* Tri-state, not a checkbox — header note 3. The empty option is the service's inference. */}
           <SelectField
             id="first_cycle"
+            width="sm"
             label="First cycle"
             value={values.first_cycle}
             onChange={set('first_cycle')}
@@ -571,6 +582,7 @@ export default function GenerateInvoicePage() {
 
           <SelectField
             id="status"
+            width="sm"
             label="Status"
             value={values.status}
             onChange={set('status')}

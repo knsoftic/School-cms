@@ -27,6 +27,7 @@ import { EXPLAINED_CODES } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
 import { useClassSections, useWholeList } from '@/lib/useTimetablePickers';
 import type { ClassOption } from '@/lib/useTimetablePickers';
+import { Icon } from '@/components/icon';
 import { ErrorNotice, LoadingBlock, MetricCard, PageHeader, RefusalNotice } from '@/components/table';
 
 interface NamedRow {
@@ -183,16 +184,16 @@ export default function TeacherDashboard() {
      * The teacher's own week, first because it is the one screen here that is theirs alone. It asks
      * `GET /timetable/teacher/:teacherId` with the id this dashboard's payload carries.
      */
-    { href: '/teacher/timetable', label: 'My timetable', description: 'Your own teaching periods, day by day.', permission: 'timetable.view', module: 'timetable' },
-    { href: '/school/attendance', label: 'Attendance', description: 'Mark and review attendance for your classes.', permission: 'attendance.view', module: 'attendance' },
-    { href: '/school/exams', label: 'Exams and marks', description: 'Enter and submit marks for your subjects.', permission: 'exams.view', module: 'exams' },
-    { href: '/school/homework', label: 'Homework', description: 'Set homework and see what is due.', permission: 'homework.view', module: 'homework' },
+    { href: '/teacher/timetable', label: 'My timetable', description: 'Your own teaching periods, day by day.', icon: 'calendar' as const, permission: 'timetable.view', module: 'timetable' },
+    { href: '/school/attendance', label: 'Attendance', description: 'Mark and review attendance for your classes.', icon: 'clipboard' as const, permission: 'attendance.view', module: 'attendance' },
+    { href: '/school/exams', label: 'Exams and marks', description: 'Enter and submit marks for your subjects.', icon: 'file-text' as const, permission: 'exams.view', module: 'exams' },
+    { href: '/school/homework', label: 'Homework', description: 'Set homework and see what is due.', icon: 'book' as const, permission: 'homework.view', module: 'homework' },
     /*
      * FR-ASG-001 (SRS:1107) and FR-AI-001 (SRS:1152) both name Teacher, and both screens used to be
      * reachable only from the principal's dashboard. Gated on the same keys and modules as the
      * shortcuts there, so the two dashboards cannot disagree about who may open them.
      */
-    { href: '/school/assignments', label: 'Assignments', description: 'Set assignments and mark the work students hand in.', permission: 'assignments.view', module: 'assignments' },
+    { href: '/school/assignments', label: 'Assignments', description: 'Set assignments and mark the work students hand in.', icon: 'paperclip' as const, permission: 'assignments.view', module: 'assignments' },
     /*
      * Captioned for where it goes. It said "Your teaching periods", and it opens the whole-school
      * register: `/school/timetable` sends no teacher filter, and its search matches period labels and
@@ -200,8 +201,8 @@ export default function TeacherDashboard() {
      * the tab only to a caller holding `teachers.view`, which a teacher does not — so the teacher's
      * own week is the "My timetable" shortcut above, and this one is labelled as the school's.
      */
-    { href: '/school/timetable', label: 'School timetable', description: 'The whole school’s periods, by day — not only yours.', permission: 'timetable.view', module: 'timetable' },
-    { href: '/school/ai', label: 'AI questions', description: 'Generate multiple-choice questions from a PDF, image or syllabus, then review them.', permission: 'ai.generate', module: 'ai' },
+    { href: '/school/timetable', label: 'School timetable', description: 'The whole school’s periods, by day — not only yours.', icon: 'grid' as const, permission: 'timetable.view', module: 'timetable' },
+    { href: '/school/ai', label: 'AI questions', description: 'Generate multiple-choice questions from a PDF, image or syllabus, then review them.', icon: 'layers' as const, permission: 'ai.generate', module: 'ai' },
   ].filter((item) => can(item.permission) && hasModule(item.module));
 
   return (
@@ -315,18 +316,21 @@ export default function TeacherDashboard() {
 
           {shortcuts.length > 0 ? (
             <section>
-              <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
-                Where the work happens
-              </h2>
-              <ul className="grid gap-3 sm:grid-cols-2">
+              <div className="mb-3 flex items-center gap-3">
+                <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">
+                  Where the work happens
+                </h2>
+                <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
+              </div>
+              <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {shortcuts.map((item) => (
                   <li key={item.href}>
-                    <Link
-                      href={item.href}
-                      className="surface block p-4 transition-transform duration-200 hover:-translate-y-0.5 hover:border-teal"
-                    >
-                      <span className="font-semibold text-ink">{item.label}</span>
-                      <p className="mt-1 text-xs text-muted">{item.description}</p>
+                    <Link href={item.href} className="card card-interactive block p-4">
+                      <span className="flex items-center gap-2 font-semibold text-ink">
+                        <Icon name={item.icon} size={16} className="shrink-0 text-muted-soft" />
+                        {item.label}
+                      </span>
+                      <p className="mt-1.5 text-xs leading-relaxed text-muted">{item.description}</p>
                     </Link>
                   </li>
                 ))}

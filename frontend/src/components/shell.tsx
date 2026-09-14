@@ -45,12 +45,14 @@ import type { ReactNode } from 'react';
 
 import { Icon } from '@/components/icon';
 import { Dropdown, DropdownItem } from '@/components/overlay';
+import { QuickJump } from '@/components/quickJump';
 import { ThemeToggle } from '@/components/theme';
 import { useToast } from '@/components/toast';
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { useEntitlements } from '@/lib/entitlements';
 import { visibleNav, landingRouteFor } from '@/lib/nav';
+import { readCollapsedGroups, writeCollapsedGroups } from '@/lib/navPreferences';
 import type { NavSection } from '@/lib/nav';
 
 /** Each portal's dashboard route: every other route of that portal starts with it. See `NavList`. */
@@ -162,14 +164,45 @@ function initialsOf(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+/**
+ * Which one navigation entry is current.
+ *
+ * An entry matches its own route and every route below it, so `/school/exams` stays lit on
+ * `/school/exams/12` — but **only the longest match is lit**, because these entries are siblings on
+ * screen, not a tree. `/super-admin/plans/modules` matched both Plans and Modules, and
+ * `/school/classes/sections` matched both Classes and Sections, so two items in the same group lit at
+ * once and the sidebar read as though it had lost track of where you were. The longest matching href
+ * is the page you are actually on; every shorter one is a prefix of it.
+ *
+ * The dashboards are excluded from prefix matching entirely — every route in a portal starts with its
+ * dashboard, so `/parent/results` would otherwise light "Dashboard" as well.
+ */
+function currentHrefFor(sections: NavSection[], pathname: string): string | null {
+  let best: string | null = null;
+  for (const section of sections) {
+    for (const item of section.items) {
+      const matches =
+        pathname === item.href ||
+        (!DASHBOARD_ROOTS.has(item.href) && pathname.startsWith(`${item.href}/`));
+      if (matches && (best === null || item.href.length > best.length)) best = item.href;
+    }
+  }
+  return best;
+}
+
 function NavList({
   sections,
   pathname,
   onNavigate,
+  collapsedHeadings,
+  onToggleHeading,
 }: {
   sections: NavSection[];
   pathname: string;
   onNavigate?: () => void;
+  /** Section headings the reader has folded away. */
+  collapsedHeadings: string[];
+  onToggleHeading?: (heading: string) => void;
 }) {
   if (sections.length === 0) {
     return (
@@ -184,28 +217,39 @@ function NavList({
     );
   }
 
+  const currentHref = currentHrefFor(sections, pathname);
+
   return (
-    <div className="space-y-6 px-3 py-4">
-      {sections.map((section) => (
+    <div className="space-y-4 px-3 py-3">
+      {sections.map((section) => {
+        const collapsed = collapsedHeadings.includes(section.heading);
+        return (
         <div key={section.heading}>
-          <h2 className="mb-1.5 px-2.5 text-2xs font-semibold uppercase tracking-[0.14em] text-muted-soft">
-            {section.heading}
+          {/*
+            * The heading is the toggle. §33 fixes the screen list, so the way to shorten the sidebar
+            * is to let a reader fold away the groups they are not working in — a Super Admin doing
+            * billing all afternoon has no use for four catalogue screens in view. The state is the
+            * reader's and is remembered; nothing is hidden by default.
+            */}
+          <h2 className="px-0.5">
+            <button
+              type="button"
+              onClick={() => onToggleHeading?.(section.heading)}
+              aria-expanded={!collapsed}
+              className="mb-1 flex w-full items-center gap-1 rounded px-2 py-0.5 text-2xs font-semibold uppercase tracking-[0.14em] text-muted-soft transition-colors hover:text-muted"
+            >
+              <Icon
+                name="chevron-down"
+                size={12}
+                className={`transition-transform ${collapsed ? '-rotate-90' : ''}`}
+              />
+              <span className="truncate">{section.heading}</span>
+            </button>
           </h2>
-          <ul className="space-y-px">
+          <ul className={`space-y-px ${collapsed ? 'hidden' : ''}`}>
             {section.items.map((item) => {
-              /*
-               * An item is current on its own route and on every route below it, so `/school/exams`
-               * stays lit on `/school/exams/12`. That includes a child that is a nav item of its
-               * own: on `/school/classes/sections` both Classes and Sections are lit, and on
-               * `/super-admin/plans/modules` both Plans and Modules. The dashboards are the one
-               * exception, excluded from prefix matching entirely, since every route in their portal
-               * starts with them — the teacher, parent and student portals now have screens of their
-               * own below their dashboards, so "My children" lit up beside "Results" on
-               * `/parent/results`.
-               */
-              const current =
-                pathname === item.href ||
-                (!DASHBOARD_ROOTS.has(item.href) && pathname.startsWith(`${item.href}/`));
+              /* One entry is lit, and it is the most specific match — see `currentHref` above. */
+              const current = item.href === currentHref;
 
               return (
                 <li key={item.href}>
@@ -213,7 +257,7 @@ function NavList({
                     href={item.href}
                     onClick={onNavigate}
                     aria-current={current ? 'page' : undefined}
-                    className={`group relative flex items-center gap-2.5 rounded-md py-2 pl-2.5 pr-2 text-sm transition-colors ${
+                    className={`group relative flex items-center gap-2.5 rounded-md py-1.5 pl-2.5 pr-2 text-sm transition-colors ${
                       current
                         ? 'bg-brand-subtle font-semibold text-brand-text'
                         : 'font-medium text-ink-soft hover:bg-surface-3 hover:text-ink'
@@ -241,7 +285,8 @@ function NavList({
             })}
           </ul>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -296,6 +341,43 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
   }, [drawerOpen]);
 
   const sections = useMemo(() => visibleNav(nav, can, hasModule), [nav, can, hasModule]);
+
+  /*
+   * Which sidebar groups the reader has folded away, and the jump palette.
+   *
+   * Read in an effect rather than in render: render must stay pure (the lint rule says so, and a
+   * server render has no store to read), and the first paint showing every group open is the right
+   * default anyway — nothing is ever hidden without the reader asking. The store itself is
+   * `lib/navPreferences`, which is a separate file for the reason its header gives.
+   */
+  const [collapsedHeadings, setCollapsedHeadings] = useState<string[]>([]);
+  const [jumpOpen, setJumpOpen] = useState(false);
+
+  useEffect(() => {
+    setCollapsedHeadings(readCollapsedGroups());
+  }, []);
+
+  const toggleHeading = useCallback((heading: string) => {
+    setCollapsedHeadings((current) => {
+      const next = current.includes(heading)
+        ? current.filter((name) => name !== heading)
+        : [...current, heading];
+      writeCollapsedGroups(next);
+      return next;
+    });
+  }, []);
+
+  /* `Ctrl K` / `Cmd K` — the shortcut every product with more than a handful of screens carries. */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setJumpOpen(true);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   /* D35 — the school's name and logo, from the profile. See the header. */
   const brand = useSchoolBrand();
@@ -373,6 +455,24 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
           </Link>
 
           <div className="ml-auto flex items-center gap-2">
+            {/*
+              * The shortcut needs somewhere to be seen. A control nobody knows about helps nobody, so
+              * the button carries its own keystroke — and on a phone, where there is no Ctrl, it is the
+              * only way in.
+              */}
+            <button
+              type="button"
+              onClick={() => setJumpOpen(true)}
+              className="btn btn-ghost h-9 gap-2 text-muted"
+              aria-keyshortcuts="Control+K"
+            >
+              <Icon name="search" size={16} />
+              <span className="hidden sm:inline">Go to screen</span>
+              <kbd className="hidden rounded border border-border px-1 text-2xs font-medium lg:inline">
+                Ctrl K
+              </kbd>
+            </button>
+
             <ThemeToggle className="hidden sm:inline-flex" />
 
             <Dropdown
@@ -445,7 +545,12 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
           aria-label="Main"
           className="app-sidebar sticky top-14 hidden h-[calc(100vh-3.5rem)] w-60 shrink-0 overflow-y-auto md:block"
         >
-          <NavList sections={sections} pathname={pathname} />
+          <NavList
+            sections={sections}
+            pathname={pathname}
+            collapsedHeadings={collapsedHeadings}
+            onToggleHeading={toggleHeading}
+          />
         </nav>
 
         {/* Mobile drawer. Rendered only while open, so nothing focusable hides off-screen. */}
@@ -479,6 +584,8 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
                 sections={sections}
                 pathname={pathname}
                 onNavigate={() => setDrawerOpen(false)}
+                collapsedHeadings={collapsedHeadings}
+                onToggleHeading={toggleHeading}
               />
             </div>
           </div>
@@ -488,6 +595,9 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
           {children}
         </main>
       </div>
+
+      {/* Mounted once, above everything, so the shortcut works on every screen the shell wraps. */}
+      <QuickJump open={jumpOpen} onClose={() => setJumpOpen(false)} sections={sections} />
     </div>
   );
 }

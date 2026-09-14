@@ -107,6 +107,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
 import { PageHeader, RefusalNotice } from '@/components/table';
@@ -370,6 +371,7 @@ export default function NewClassPage() {
 
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
+          columns={2}
           title="Session and class"
           description="The academic session this class belongs to, and what it is called."
         >
@@ -390,49 +392,52 @@ export default function NewClassPage() {
               </p>
             </div>
           ) : (
-            <SelectField
-              id="academic_session_id"
-              label="Academic session"
-              required
-              disabled={sessions.state === 'loading'}
-              value={values.academic_session_id}
-              onChange={set('academic_session_id')}
-              error={fieldErrors.academic_session_id}
-              /* Every fallback is the one `hint` rather than a paragraph of its own: `SelectField`
-                 swaps the 422 in for the hint, so a message and a hint can never stack. */
-              hint={
-                sessions.state === 'failed'
-                  ? 'The academic session list could not be loaded, so only the school’s current session is offered. Reading the list needs the separate “View academic sessions” permission.'
-                  : sessions.state === 'ready' && sessions.rows.length === 0
-                    ? 'This school has no academic session yet. One has to exist before a class can belong to it — a class is unique per session, so the same name may be reused next year.'
-                    : sessions.state === 'ready' && openSessions.length === 0
-                      ? 'Every academic session of this school is closed, and a closed session takes no new class. Create or activate a session first.'
-                      : `Defaults to the school’s current session. An upcoming session is a valid choice too — next year’s classes can be prepared before it is activated — but a closed one takes no new class and is not offered.${
-                          sessions.state === 'ready' && sessions.total > sessions.rows.length
-                            ? ` Showing the first ${sessions.rows.length} of ${sessions.total}, newest first.`
-                            : ''
-                        }`
-              }
-            >
-              <option value="">
-                {sessions.state === 'loading' ? 'Loading…' : 'Choose a session'}
-              </option>
-              {openSessions.map((session) => (
-                /*
-                 * Status and "current" are shown beside each name. A closed session is left out
-                 * rather than disabled: D20 refuses a class on one, and a form for a new class has
-                 * no use for it. See the header.
-                 */
-                <option key={session.id} value={session.id}>
-                  {session.name} · {session.status}
-                  {session.is_current ? ' · current' : ''}
+            <FormSpan>
+              <SelectField
+                id="academic_session_id"
+                label="Academic session"
+                required
+                disabled={sessions.state === 'loading'}
+                value={values.academic_session_id}
+                onChange={set('academic_session_id')}
+                error={fieldErrors.academic_session_id}
+                /* Every fallback is the one `hint` rather than a paragraph of its own: `SelectField`
+                   swaps the 422 in for the hint, so a message and a hint can never stack. */
+                hint={
+                  sessions.state === 'failed'
+                    ? 'The academic session list could not be loaded, so only the school’s current session is offered. Reading the list needs the separate “View academic sessions” permission.'
+                    : sessions.state === 'ready' && sessions.rows.length === 0
+                      ? 'This school has no academic session yet. One has to exist before a class can belong to it — a class is unique per session, so the same name may be reused next year.'
+                      : sessions.state === 'ready' && openSessions.length === 0
+                        ? 'Every academic session of this school is closed, and a closed session takes no new class. Create or activate a session first.'
+                        : `Defaults to the school’s current session. An upcoming session is a valid choice too — next year’s classes can be prepared before it is activated — but a closed one takes no new class and is not offered.${
+                            sessions.state === 'ready' && sessions.total > sessions.rows.length
+                              ? ` Showing the first ${sessions.rows.length} of ${sessions.total}, newest first.`
+                              : ''
+                          }`
+                }
+              >
+                <option value="">
+                  {sessions.state === 'loading' ? 'Loading…' : 'Choose a session'}
                 </option>
-              ))}
-            </SelectField>
+                {openSessions.map((session) => (
+                  /*
+                   * Status and "current" are shown beside each name. A closed session is left out
+                   * rather than disabled: D20 refuses a class on one, and a form for a new class has
+                   * no use for it. See the header.
+                   */
+                  <option key={session.id} value={session.id}>
+                    {session.name} · {session.status}
+                    {session.is_current ? ' · current' : ''}
+                  </option>
+                ))}
+              </SelectField>
+            </FormSpan>
           )}
 
           <Field
             id="name"
+            width="md"
             label="Name"
             required
             value={values.name}
@@ -443,6 +448,7 @@ export default function NewClassPage() {
 
           <Field
             id="code"
+            width="sm"
             label="Code"
             maxLength={40}
             value={values.code}
@@ -451,19 +457,21 @@ export default function NewClassPage() {
             hint="Up to 40 characters. A short label of the school's own; nothing checks it for uniqueness."
           />
 
-          <Field
-            id="numeric_order"
-            label="Order"
-            type="number"
-            min={0}
-            step={1}
-            value={values.numeric_order}
-            onChange={set('numeric_order')}
-            error={fieldErrors.numeric_order}
-            /* The model comment: "drives default promotion target (FR-STUDENT-002)" — next class is the
-               same school at `numeric_order + 1`, which is why a gap or a duplicate here is worth care. */
-            hint="Whole number from 0. Sets the promotion sequence: the next class up is this order plus one. Blank means 0."
-          />
+          <FormSpan>
+            <Field
+              id="numeric_order"
+              label="Order"
+              type="number"
+              min={0}
+              step={1}
+              value={values.numeric_order}
+              onChange={set('numeric_order')}
+              error={fieldErrors.numeric_order}
+              /* The model comment: "drives default promotion target (FR-STUDENT-002)" — next class is the
+                 same school at `numeric_order + 1`, which is why a gap or a duplicate here is worth care. */
+              hint="Whole number from 0. Sets the promotion sequence: the next class up is this order plus one. Blank means 0."
+            />
+          </FormSpan>
         </FormSection>
 
         <FormSection
@@ -523,6 +531,7 @@ export default function NewClassPage() {
 
           <Field
             id="capacity"
+            width="xs"
             label="Capacity"
             type="number"
             min={0}
@@ -540,6 +549,7 @@ export default function NewClassPage() {
         >
           <SelectField
             id="is_active"
+            width="sm"
             label="Status"
             value={values.is_active}
             onChange={set('is_active')}

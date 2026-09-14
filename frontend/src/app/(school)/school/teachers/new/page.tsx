@@ -103,6 +103,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
   SearchField,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
@@ -411,11 +412,13 @@ export default function NewTeacherPage() {
 
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
+          columns={2}
           title="Employment"
           description="The teacher’s position at the school and the terms of their appointment."
         >
           <Field
             id="employee_id"
+            width="sm"
             label="Employee ID"
             required
             maxLength={60}
@@ -429,6 +432,7 @@ export default function NewTeacherPage() {
 
           <Field
             id="first_name"
+            width="md"
             label="First name"
             required
             maxLength={90}
@@ -439,6 +443,7 @@ export default function NewTeacherPage() {
 
           <Field
             id="last_name"
+            width="md"
             label="Last name"
             maxLength={90}
             value={values.last_name}
@@ -455,6 +460,7 @@ export default function NewTeacherPage() {
            */}
           <Field
             id="joining_date"
+            width="sm"
             label="Joining date"
             type="date"
             required
@@ -466,6 +472,7 @@ export default function NewTeacherPage() {
 
           <SelectField
             id="is_active"
+            width="sm"
             label="Employment status"
             value={isActive}
             onChange={(event) => setIsActive(event.target.value)}
@@ -477,20 +484,23 @@ export default function NewTeacherPage() {
             <option value="false">Inactive</option>
           </SelectField>
 
-          <Field
-            id="designation"
-            label="Designation"
-            maxLength={120}
-            value={values.designation}
-            onChange={set('designation')}
-            error={fieldErrors.designation}
-            /* `teachers.service.list()` applies `?designation=` as an equality, not a `LIKE`, so the
-               capitalisation entered here is the capitalisation a filter would have to match exactly. */
-            hint="The job title — Head of Department, Senior Teacher. Matched exactly when filtered, so keep the wording consistent between records."
-          />
+          <FormSpan>
+            <Field
+              id="designation"
+              label="Designation"
+              maxLength={120}
+              value={values.designation}
+              onChange={set('designation')}
+              error={fieldErrors.designation}
+              /* `teachers.service.list()` applies `?designation=` as an equality, not a `LIKE`, so the
+                 capitalisation entered here is the capitalisation a filter would have to match exactly. */
+              hint="The job title — Head of Department, Senior Teacher. Matched exactly when filtered, so keep the wording consistent between records."
+            />
+          </FormSpan>
 
           <Field
             id="qualification"
+            width="md"
             label="Qualification"
             maxLength={255}
             value={values.qualification}
@@ -499,32 +509,36 @@ export default function NewTeacherPage() {
             hint="SRS §15.3's Qualification. Up to 255 characters — the degrees, as they should read on a profile."
           />
 
-          <Field
-            id="specialization"
-            label="Specialization"
-            maxLength={160}
-            value={values.specialization}
-            onChange={set('specialization')}
-            error={fieldErrors.specialization}
-            /* The one of the pair the Teachers list gives a column to, because it answers "what does
-               this person teach" in a width a table can hold. */
-            hint="Up to 160 characters. The subject area this teacher actually teaches; this is the column the Teachers list shows."
-          />
+          <FormSpan>
+            <Field
+              id="specialization"
+              label="Specialization"
+              maxLength={160}
+              value={values.specialization}
+              onChange={set('specialization')}
+              error={fieldErrors.specialization}
+              /* The one of the pair the Teachers list gives a column to, because it answers "what does
+                 this person teach" in a width a table can hold. */
+              hint="Up to 160 characters. The subject area this teacher actually teaches; this is the column the Teachers list shows."
+            />
+          </FormSpan>
 
-          <Field
-            id="experience_years"
-            label="Years of experience"
-            type="number"
-            min={0}
-            max={80}
-            step="0.01"
-            value={values.experience_years}
-            onChange={set('experience_years')}
-            error={fieldErrors.experience_years}
-            /* `DECIMAL(5, 2)` on the model, `min(0).max(80)` in the schema — the ceiling is the
-               schema's, not the column's, which would hold three digits. */
-            hint="0 to 80, and fractions are kept to two decimal places. Blank leaves it unrecorded rather than zero."
-          />
+          <FormSpan>
+            <Field
+              id="experience_years"
+              label="Years of experience"
+              type="number"
+              min={0}
+              max={80}
+              step="0.01"
+              value={values.experience_years}
+              onChange={set('experience_years')}
+              error={fieldErrors.experience_years}
+              /* `DECIMAL(5, 2)` on the model, `min(0).max(80)` in the schema — the ceiling is the
+                 schema's, not the column's, which would hold three digits. */
+              hint="0 to 80, and fractions are kept to two decimal places. Blank leaves it unrecorded rather than zero."
+            />
+          </FormSpan>
 
           {/*
            * Salary is on this form and is deliberately absent from the Teachers list.
@@ -537,6 +551,7 @@ export default function NewTeacherPage() {
            */}
           <Field
             id="salary"
+            width="sm"
             label="Salary"
             type="number"
             min={0}
@@ -556,6 +571,7 @@ export default function NewTeacherPage() {
         >
           <SelectField
             id="gender"
+            width="sm"
             label="Gender"
             value={values.gender}
             onChange={set('gender')}
@@ -573,6 +589,7 @@ export default function NewTeacherPage() {
 
           <Field
             id="date_of_birth"
+            width="sm"
             label="Date of birth"
             type="date"
             value={values.date_of_birth}
@@ -582,11 +599,13 @@ export default function NewTeacherPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Contact"
           description="How the school reaches the teacher."
         >
           <Field
             id="email"
+            width="md"
             label="Email"
             type="email"
             maxLength={180}
@@ -600,6 +619,7 @@ export default function NewTeacherPage() {
 
           <Field
             id="phone"
+            width="sm"
             label="Phone"
             maxLength={40}
             value={values.phone}
@@ -607,15 +627,17 @@ export default function NewTeacherPage() {
             error={fieldErrors.phone}
           />
 
-          <Field
-            id="address"
-            label="Address"
-            maxLength={255}
-            value={values.address}
-            onChange={set('address')}
-            error={fieldErrors.address}
-            hint="Up to 255 characters."
-          />
+          <FormSpan>
+            <Field
+              id="address"
+              label="Address"
+              maxLength={255}
+              value={values.address}
+              onChange={set('address')}
+              error={fieldErrors.address}
+              hint="Up to 255 characters."
+            />
+          </FormSpan>
         </FormSection>
 
         <FormSection
@@ -657,6 +679,7 @@ export default function NewTeacherPage() {
               </div>
               <SelectField
                 id="user_id"
+                width="md"
                 label="Linked account"
                 value={values.user_id}
                 onChange={onUserChange}

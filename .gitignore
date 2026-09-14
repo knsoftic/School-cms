@@ -4,9 +4,13 @@ node_modules/
 .pnp.js
 
 # Environment — never commit real secrets (SRS §27)
+#
+# `.env.*`, not a list of the variants anyone thought of. The list was `.env`, `.env.local` and
+# `.env.*.local`, so `.env.production`, `.env.staging` or a backup such as `.env.bak` was committable —
+# and a full copy of a development `.env` sat untracked-but-not-ignored in `backend/` for a session
+# before anyone checked. Everything named `.env.<anything>` is ignored; the examples are let back in.
 .env
-.env.local
-.env.*.local
+.env.*
 !.env.example
 
 # Runtime storage (SRS §26)

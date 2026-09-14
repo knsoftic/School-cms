@@ -13,6 +13,14 @@
 const nextConfig = {
   reactStrictMode: true,
 
+  /*
+   * Next's development indicator defaults to `bottom-left`, which is exactly where this application's
+   * sidebar ends — it sat on top of the last navigation entry and read as part of the product. It is a
+   * development-only badge and cannot be switched off in Next 16, only moved, so it is moved to the
+   * corner nothing occupies. Absent from a production build either way.
+   */
+  devIndicators: { position: 'bottom-right' },
+
   /* The API's own errors are the contract; Next must not rewrite or swallow them. */
   poweredByHeader: false,
 };

@@ -109,6 +109,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
 import { PageHeader, RefusalNotice } from '@/components/table';
@@ -322,6 +323,7 @@ export default function NewTimetableEntryPage() {
 
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
+          columns={2}
           title="The slot"
           description="Which class, on which day, in which period."
         >
@@ -343,50 +345,52 @@ export default function NewTimetableEntryPage() {
               </p>
             </div>
           ) : (
-            <SelectField
-              id="class_id"
-              label="Class"
-              required
-              disabled={classes.state === 'loading'}
-              value={values.class_id}
-              onChange={onClassChange}
-              error={fieldErrors.class_id}
-              hint={
-                classes.state === 'ready' && classes.rows.length === 0
-                  ? 'This school has no classes yet. One has to exist before a period can be scheduled against it.'
-                  : `In promotion order.${
-                      classSessions.size > 0
-                        ? ' Each names its session, so two classes of the same name from consecutive years can be told apart.'
-                        : ''
-                    }${
-                      classes.state === 'ready' && classes.total > classes.rows.length
-                        ? ` Showing the first ${classes.rows.length} of ${classes.total}.`
-                        : ''
-                    }`
-              }
-            >
-              <option value="">
-                {classes.state === 'loading' ? 'Loading…' : 'Choose a class'}
-              </option>
-              {classes.state === 'ready'
-                ? classes.rows.map((option) => {
-                    const session =
-                      option.academic_session_id === null
-                        ? undefined
-                        : classSessions.get(option.academic_session_id);
-                    return (
-                      /* Retired classes are marked, not withheld — `loadClassInSchool()` checks the
-                         school and nothing else, so excluding them would be a rule of our own. */
-                      <option key={option.id} value={option.id}>
-                        {option.name}
-                        {option.code ? ` (${option.code})` : ''}
-                        {session ? ` · ${session}` : ''}
-                        {option.is_active ? '' : ' · inactive'}
-                      </option>
-                    );
-                  })
-                : null}
-            </SelectField>
+            <FormSpan>
+              <SelectField
+                id="class_id"
+                label="Class"
+                required
+                disabled={classes.state === 'loading'}
+                value={values.class_id}
+                onChange={onClassChange}
+                error={fieldErrors.class_id}
+                hint={
+                  classes.state === 'ready' && classes.rows.length === 0
+                    ? 'This school has no classes yet. One has to exist before a period can be scheduled against it.'
+                    : `In promotion order.${
+                        classSessions.size > 0
+                          ? ' Each names its session, so two classes of the same name from consecutive years can be told apart.'
+                          : ''
+                      }${
+                        classes.state === 'ready' && classes.total > classes.rows.length
+                          ? ` Showing the first ${classes.rows.length} of ${classes.total}.`
+                          : ''
+                      }`
+                }
+              >
+                <option value="">
+                  {classes.state === 'loading' ? 'Loading…' : 'Choose a class'}
+                </option>
+                {classes.state === 'ready'
+                  ? classes.rows.map((option) => {
+                      const session =
+                        option.academic_session_id === null
+                          ? undefined
+                          : classSessions.get(option.academic_session_id);
+                      return (
+                        /* Retired classes are marked, not withheld — `loadClassInSchool()` checks the
+                           school and nothing else, so excluding them would be a rule of our own. */
+                        <option key={option.id} value={option.id}>
+                          {option.name}
+                          {option.code ? ` (${option.code})` : ''}
+                          {session ? ` · ${session}` : ''}
+                          {option.is_active ? '' : ' · inactive'}
+                        </option>
+                      );
+                    })
+                  : null}
+              </SelectField>
+            </FormSpan>
           )}
 
           {sections.state === 'failed' ? (
@@ -401,6 +405,7 @@ export default function NewTimetableEntryPage() {
           ) : (
             <SelectField
               id="section_id"
+              width="md"
               label="Section"
               disabled={!values.class_id || sections.state === 'loading'}
               value={values.section_id}
@@ -434,6 +439,7 @@ export default function NewTimetableEntryPage() {
 
           <SelectField
             id="day_of_week"
+            width="sm"
             label="Day"
             required
             value={values.day_of_week}
@@ -448,21 +454,23 @@ export default function NewTimetableEntryPage() {
             ))}
           </SelectField>
 
-          <Field
-            id="period_number"
-            label="Period number"
-            type="number"
-            required
-            min={1}
-            max={50}
-            step={1}
-            value={values.period_number}
-            onChange={set('period_number')}
-            error={fieldErrors.period_number}
-            /* All three of FR-TT-002's conflict indexes key on this number and none keys on the clock,
-               which is what makes it the field that decides whether two entries collide. */
-            hint="Whole number from 1 to 50. This is the slot the conflict checks use — not the clock times — so two entries sharing a period number clash even if their times differ."
-          />
+          <FormSpan>
+            <Field
+              id="period_number"
+              label="Period number"
+              type="number"
+              required
+              min={1}
+              max={50}
+              step={1}
+              value={values.period_number}
+              onChange={set('period_number')}
+              error={fieldErrors.period_number}
+              /* All three of FR-TT-002's conflict indexes key on this number and none keys on the clock,
+                 which is what makes it the field that decides whether two entries collide. */
+              hint="Whole number from 1 to 50. This is the slot the conflict checks use — not the clock times — so two entries sharing a period number clash even if their times differ."
+            />
+          </FormSpan>
 
           {/*
             * `<input type="time">` for both, because the HTML value is always 24-hour `HH:MM` whatever
@@ -475,6 +483,7 @@ export default function NewTimetableEntryPage() {
           <div className="grid gap-4 sm:grid-cols-2">
             <Field
               id="start_time"
+              width="xs"
               label="Start time"
               type="time"
               required
@@ -484,6 +493,7 @@ export default function NewTimetableEntryPage() {
             />
             <Field
               id="end_time"
+              width="xs"
               label="End time"
               type="time"
               required
@@ -566,6 +576,7 @@ export default function NewTimetableEntryPage() {
           ) : (
             <SelectField
               id="teacher_id"
+              width="md"
               label="Teacher"
               disabled={teachers.state === 'loading'}
               value={values.teacher_id}
@@ -631,11 +642,13 @@ export default function NewTimetableEntryPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Details"
           description="Naming and location, and whether the slot is a break rather than a lesson."
         >
           <Field
             id="period_label"
+            width="sm"
             label="Period label"
             maxLength={60}
             value={values.period_label}
@@ -644,20 +657,23 @@ export default function NewTimetableEntryPage() {
             hint="Up to 60 characters — the school's own name for this slot, e.g. Assembly. Searchable on the timetable list."
           />
 
-          <Field
-            id="room"
-            label="Room"
-            maxLength={60}
-            value={values.room}
-            onChange={set('room')}
-            error={fieldErrors.room}
-            /* Trimmed and emptied to null by `normaliseRoom()`; matched case-insensitively because the
-               column's collation is, not because anything here lower-cases it. */
-            hint="Up to 60 characters. A named room is checked for double-booking in this slot; leaving it blank books no room at all."
-          />
+          <FormSpan>
+            <Field
+              id="room"
+              label="Room"
+              maxLength={60}
+              value={values.room}
+              onChange={set('room')}
+              error={fieldErrors.room}
+              /* Trimmed and emptied to null by `normaliseRoom()`; matched case-insensitively because the
+                 column's collation is, not because anything here lower-cases it. */
+              hint="Up to 60 characters. A named room is checked for double-booking in this slot; leaving it blank books no room at all."
+            />
+          </FormSpan>
 
           <SelectField
             id="is_break"
+            width="sm"
             label="Kind of period"
             value={values.is_break}
             onChange={set('is_break')}
@@ -672,6 +688,7 @@ export default function NewTimetableEntryPage() {
 
           <SelectField
             id="is_active"
+            width="sm"
             label="Status"
             value={values.is_active}
             onChange={set('is_active')}

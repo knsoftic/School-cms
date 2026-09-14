@@ -233,6 +233,7 @@ export default function NewSubjectPage() {
         >
           <Field
             id="name"
+            width="md"
             label="Name"
             required
             maxLength={120}
@@ -244,6 +245,7 @@ export default function NewSubjectPage() {
 
           <Field
             id="code"
+            width="sm"
             label="Code"
             required
             maxLength={40}
@@ -268,6 +270,7 @@ export default function NewSubjectPage() {
           */}
           <SelectField
             id="type"
+            width="sm"
             label="Type"
             value={values.type}
             onChange={set('type')}

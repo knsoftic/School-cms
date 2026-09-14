@@ -65,6 +65,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
 import { PageHeader, RefusalNotice } from '@/components/table';
@@ -389,6 +390,7 @@ export default function NewSubscriptionPage() {
 
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
+          columns={2}
           title="School and plan"
           description="Who is subscribing, and to what."
         >
@@ -399,6 +401,7 @@ export default function NewSubscriptionPage() {
            */}
           <SelectField
             id="school_id"
+            width="md"
             label="School"
             required
             value={values.school_id}
@@ -428,6 +431,7 @@ export default function NewSubscriptionPage() {
 
           <SelectField
             id="plan_id"
+            width="md"
             label="Plan"
             required
             value={values.plan_id}
@@ -452,6 +456,7 @@ export default function NewSubscriptionPage() {
            */}
           <SelectField
             id="plan_price_id"
+            width="md"
             label="Price"
             value={values.plan_price_id}
             onChange={set('plan_price_id')}
@@ -476,39 +481,44 @@ export default function NewSubscriptionPage() {
             ))}
           </SelectField>
 
-          <SelectField
-            id="billing_cycle"
-            label="Billing cycle"
-            value={values.billing_cycle}
-            onChange={set('billing_cycle')}
-            error={fieldErrors.billing_cycle}
-            hint="With no price chosen, this narrows which of the plan’s prices the server picks. Given alongside a price, the two must name the same cycle — the service refuses the pair rather than preferring one of them."
-          >
-            <option value="">From the chosen price</option>
-            {BILLING_CYCLES.map((cycle) => (
-              <option key={cycle} value={cycle}>
-                {humanise(cycle)}
-              </option>
-            ))}
-          </SelectField>
+          <FormSpan>
+            <SelectField
+              id="billing_cycle"
+              label="Billing cycle"
+              value={values.billing_cycle}
+              onChange={set('billing_cycle')}
+              error={fieldErrors.billing_cycle}
+              hint="With no price chosen, this narrows which of the plan’s prices the server picks. Given alongside a price, the two must name the same cycle — the service refuses the pair rather than preferring one of them."
+            >
+              <option value="">From the chosen price</option>
+              {BILLING_CYCLES.map((cycle) => (
+                <option key={cycle} value={cycle}>
+                  {humanise(cycle)}
+                </option>
+              ))}
+            </SelectField>
+          </FormSpan>
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Term"
           description="How many seats, when it starts, and the trial and grace periods that apply."
         >
-          <Field
-            id="quantity"
-            label="Quantity"
-            type="number"
-            min={1}
-            max={1000000}
-            step={1}
-            value={values.quantity}
-            onChange={set('quantity')}
-            error={fieldErrors.quantity}
-            hint="Seats, for a Seat-Based price. A Per-Student or Student-Based price ignores it and bills the school’s active-student count, counted now and again at every renewal (owner decision D26). Blank means 1."
-          />
+          <FormSpan>
+            <Field
+              id="quantity"
+              label="Quantity"
+              type="number"
+              min={1}
+              max={1000000}
+              step={1}
+              value={values.quantity}
+              onChange={set('quantity')}
+              error={fieldErrors.quantity}
+              hint="Seats, for a Seat-Based price. A Per-Student or Student-Based price ignores it and bills the school’s active-student count, counted now and again at every renewal (owner decision D26). Blank means 1."
+            />
+          </FormSpan>
 
           {/*
            * A date, not a datetime, and that was measured rather than assumed. `Joi.date().iso()` reads
@@ -519,6 +529,7 @@ export default function NewSubscriptionPage() {
            */}
           <Field
             id="starts_at"
+            width="sm"
             label="Start date"
             type="date"
             value={values.starts_at}
@@ -529,6 +540,7 @@ export default function NewSubscriptionPage() {
 
           <Field
             id="trial_days"
+            width="xs"
             label="Trial days"
             type="number"
             min={0}
@@ -540,21 +552,24 @@ export default function NewSubscriptionPage() {
             hint="Blank inherits the plan's trial length. 0 means no trial, and starts the subscription Pending rather than in Trial. SRS §12.1 offers 3, 7, 14 or 30 days, or any count up to 3650."
           />
 
-          <Field
-            id="grace_period_days"
-            label="Grace period days"
-            type="number"
-            min={0}
-            max={3650}
-            step={1}
-            value={values.grace_period_days}
-            onChange={set('grace_period_days')}
-            error={fieldErrors.grace_period_days}
-            hint="Blank inherits the plan's grace period. SRS §12.2 offers 1, 3, 7 or 15 days, or any count up to 3650."
-          />
+          <FormSpan>
+            <Field
+              id="grace_period_days"
+              label="Grace period days"
+              type="number"
+              min={0}
+              max={3650}
+              step={1}
+              value={values.grace_period_days}
+              onChange={set('grace_period_days')}
+              error={fieldErrors.grace_period_days}
+              hint="Blank inherits the plan's grace period. SRS §12.2 offers 1, 3, 7 or 15 days, or any count up to 3650."
+            />
+          </FormSpan>
 
           <SelectField
             id="renewal_mode"
+            width="sm"
             label="Renewal mode"
             value={values.renewal_mode}
             onChange={set('renewal_mode')}

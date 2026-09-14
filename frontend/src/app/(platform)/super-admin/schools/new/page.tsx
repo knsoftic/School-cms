@@ -86,6 +86,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
 import { PageHeader, RefusalNotice } from '@/components/table';
@@ -328,6 +329,7 @@ export default function NewSchoolPage() {
             */}
             <SelectField
               id="organization_id"
+              width="md"
               label="Organization"
               required
               value={values.organization_id}
@@ -396,11 +398,13 @@ export default function NewSchoolPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="The school"
           description="Its name, and the code that identifies it within its organization."
         >
           <Field
             id="name"
+            width="md"
             label="Name"
             required
             value={values.name}
@@ -411,6 +415,7 @@ export default function NewSchoolPage() {
 
           <Field
             id="code"
+            width="sm"
             label="Code"
             required
             value={values.code}
@@ -421,11 +426,13 @@ export default function NewSchoolPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Contact and address"
           description="How the platform and other schools reach it."
         >
           <Field
             id="email"
+            width="md"
             label="Email"
             type="email"
             value={values.email}
@@ -436,6 +443,7 @@ export default function NewSchoolPage() {
 
           <Field
             id="phone"
+            width="sm"
             label="Phone"
             value={values.phone}
             onChange={set('phone')}
@@ -443,17 +451,20 @@ export default function NewSchoolPage() {
             hint="Up to 40 characters."
           />
 
-          <Field
-            id="address"
-            label="Address"
-            value={values.address}
-            onChange={set('address')}
-            error={fieldErrors.address}
-            hint="Up to 255 characters."
-          />
+          <FormSpan>
+            <Field
+              id="address"
+              label="Address"
+              value={values.address}
+              onChange={set('address')}
+              error={fieldErrors.address}
+              hint="Up to 255 characters."
+            />
+          </FormSpan>
 
           <Field
             id="city"
+            width="sm"
             label="City"
             value={values.city}
             onChange={set('city')}
@@ -463,6 +474,7 @@ export default function NewSchoolPage() {
 
           <Field
             id="state"
+            width="sm"
             label="State"
             value={values.state}
             onChange={set('state')}
@@ -472,6 +484,7 @@ export default function NewSchoolPage() {
 
           <Field
             id="country"
+            width="sm"
             label="Country"
             value={values.country}
             onChange={set('country')}
@@ -486,6 +499,7 @@ export default function NewSchoolPage() {
         >
           <SelectField
             id="status"
+            width="sm"
             label="Status"
             value={values.status}
             onChange={set('status')}

@@ -162,11 +162,33 @@ function FieldMessage({
 
 /* ─────────────────────────────────── text input ─────────────────────────────────── */
 
+/**
+ * How wide an input should be, in the only terms that mean anything: **how much you type into it.**
+ *
+ * Every input was `width: 100%`, so a two-character school code got the same box as a postal address —
+ * and on a wide window that box is 670px of empty field for "PK". A box that size is a promise about
+ * the answer, and when the promise is wrong the form reads as unfinished. These caps are `max-width`
+ * only, so a narrow window still collapses everything to full width and nothing is ever cut off.
+ *
+ *   `xs`  a code, a year, a quantity        `sm`  a phone number, a date, an amount
+ *   `md`  a person's or an organization's name, an email      `full` an address, a URL (the default)
+ */
+export type FieldWidth = 'xs' | 'sm' | 'md' | 'full';
+
+const FIELD_WIDTH: Record<FieldWidth, string> = {
+  xs: 'max-w-[8rem]',
+  sm: 'max-w-[13rem]',
+  md: 'max-w-[24rem]',
+  full: '',
+};
+
 interface FieldProps extends InputHTMLAttributes<HTMLInputElement> {
   id: string;
   label: string;
   error?: string | null;
   hint?: string;
+  /** Cap the input at the length of its answer. Default `full`, as every field was. */
+  width?: FieldWidth;
 }
 
 /*
@@ -181,7 +203,7 @@ interface FieldProps extends InputHTMLAttributes<HTMLInputElement> {
  * So the three controls that need an icon have one built in, and the ordinary text field does not
  * offer the option.
  */
-export function Field({ id, label, error, hint, className, required, ...input }: FieldProps) {
+export function Field({ id, label, error, hint, className, required, width = 'full', ...input }: FieldProps) {
   const errorId = `${id}-error`;
   const hintId = `${id}-hint`;
 
@@ -196,7 +218,7 @@ export function Field({ id, label, error, hint, className, required, ...input }:
         required={required}
         aria-invalid={Boolean(error)}
         aria-describedby={error ? errorId : hint ? hintId : undefined}
-        className={`field-input ${className ?? ''}`}
+        className={`field-input ${FIELD_WIDTH[width]} ${className ?? ''}`}
         {...input}
       />
       <FieldMessage
@@ -234,12 +256,15 @@ export function PasswordField({
   error,
   hint,
   required,
+  width = 'full',
   ...input
 }: Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> & {
   id: string;
   label: string;
   error?: string | null;
   hint?: string;
+  /** As `Field`. The cap goes on the wrapper, so the reveal button stays pinned to the input's edge. */
+  width?: FieldWidth;
 }) {
   const errorId = `${id}-error`;
   const hintId = `${id}-hint`;
@@ -250,7 +275,7 @@ export function PasswordField({
       <FieldLabel htmlFor={id} required={required}>
         {label}
       </FieldLabel>
-      <div className="relative">
+      <div className={`relative ${FIELD_WIDTH[width]}`}>
         <input
           id={id}
           name={id}
@@ -297,6 +322,8 @@ interface SelectFieldProps extends SelectHTMLAttributes<HTMLSelectElement> {
   error?: string | null;
   hint?: string;
   children: ReactNode;
+  /** As `Field` — cap it at the width of its longest option, never past it. */
+  width?: FieldWidth;
 }
 
 export function SelectField({
@@ -307,6 +334,7 @@ export function SelectField({
   children,
   className,
   required,
+  width = 'full',
   ...select
 }: SelectFieldProps) {
   const errorId = `${id}-error`;
@@ -325,7 +353,7 @@ export function SelectField({
         required={required}
         aria-invalid={Boolean(error)}
         aria-describedby={error ? errorId : hint ? hintId : undefined}
-        className={`field-select ${className ?? ''}`}
+        className={`field-select ${FIELD_WIDTH[width]} ${className ?? ''}`}
         {...select}
       >
         {children}
@@ -1081,7 +1109,7 @@ export function FormSection({
   const headingId = useId();
 
   return (
-    <section aria-labelledby={headingId} className="border-t border-border-soft pt-6 first:border-0 first:pt-0">
+    <section aria-labelledby={headingId} className="border-t border-border-soft pt-5 first:border-0 first:pt-0">
       {/*
         * `text-base` and `font-semibold`, against a field label's `text-sm` at weight 550.
         *
@@ -1090,12 +1118,12 @@ export function FormSection({
         * rather than as a heading and the field it introduces. A section heading has to be legible
         * as a heading at a glance, or the grouping it announces does nothing.
         */}
-      <div className="mb-4 max-w-2xl">
+      <div className="mb-3 max-w-2xl">
         <h2 id={headingId} className="text-base font-semibold tracking-tight text-ink">
           {title}
         </h2>
         {description ? (
-          <p className="mt-1 text-sm leading-relaxed text-muted">{description}</p>
+          <p className="mt-0.5 text-sm leading-snug text-muted">{description}</p>
         ) : null}
       </div>
       {columns === 2 ? <FormGrid>{children}</FormGrid> : <div className="space-y-4">{children}</div>}

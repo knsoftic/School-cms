@@ -160,14 +160,16 @@ export default function NewOrganizationPage() {
       {refusal ? <RefusalNotice refusal={refusal} /> : null}
       {error ? <Notice tone="error">{error}</Notice> : null}
 
-      <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
+      <form onSubmit={onSubmit} className="mt-6 space-y-6" noValidate>
         <FormSection
+          columns={2}
           title="The organization"
           description="Its name and the code that identifies it across the platform."
         >
           <Field
             id="name"
             label="Name"
+            width="md"
             required
             value={values.name}
             onChange={set('name')}
@@ -177,6 +179,7 @@ export default function NewOrganizationPage() {
           <Field
             id="code"
             label="Code"
+            width="sm"
             required
             value={values.code}
             onChange={set('code')}
@@ -196,6 +199,7 @@ export default function NewOrganizationPage() {
         >
           <Field
             id="email"
+            width="md"
             label="Email"
             type="email"
             value={values.email}
@@ -206,6 +210,7 @@ export default function NewOrganizationPage() {
           <Field
             id="phone"
             label="Phone"
+            width="sm"
             value={values.phone}
             onChange={set('phone')}
             error={fieldErrors.phone}
@@ -243,6 +248,7 @@ export default function NewOrganizationPage() {
           <SelectField
             id="status"
             label="Status"
+            width="sm"
             value={values.status}
             onChange={set('status')}
             error={fieldErrors.status}

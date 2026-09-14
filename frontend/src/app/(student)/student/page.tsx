@@ -31,6 +31,7 @@
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
 
+import { Icon } from '@/components/icon';
 import { useAuth } from '@/lib/auth';
 import { useEntitlements } from '@/lib/entitlements';
 import { useCollection } from '@/lib/useCollection';
@@ -96,11 +97,11 @@ function figure(value: number, digits?: number) {
  * the module its router requires — so a card never leads to a refusal the nav would have spared.
  */
 const RECORDS = [
-  { href: '/student/attendance', label: 'Attendance', description: 'Your register for a day, a month or a year, with the percentage.', permission: 'attendance.self.view', module: 'attendance' },
-  { href: '/student/fees', label: 'Fees', description: 'What is charged, paid and still pending, with your receipts.', permission: 'fees.self.view', module: 'fees' },
-  { href: '/student/timetable', label: 'Timetable', description: 'Your class’s week, period by period.', permission: 'timetable.view', module: 'timetable' },
-  { href: '/student/homework', label: 'Homework', description: 'Homework published for your class, latest due date first.', permission: 'homework.view', module: 'homework' },
-  { href: '/student/record', label: 'My record', description: 'What your school holds on file about you.', permission: 'students.self.view', module: 'students' },
+  { href: '/student/attendance', label: 'Attendance', description: 'Your register for a day, a month or a year, with the percentage.', icon: 'clipboard' as const, permission: 'attendance.self.view', module: 'attendance' },
+  { href: '/student/fees', label: 'Fees', description: 'What is charged, paid and still pending, with your receipts.', icon: 'wallet' as const, permission: 'fees.self.view', module: 'fees' },
+  { href: '/student/timetable', label: 'Timetable', description: 'Your class’s week, period by period.', icon: 'calendar' as const, permission: 'timetable.view', module: 'timetable' },
+  { href: '/student/homework', label: 'Homework', description: 'Homework published for your class, latest due date first.', icon: 'book' as const, permission: 'homework.view', module: 'homework' },
+  { href: '/student/record', label: 'My record', description: 'What your school holds on file about you.', icon: 'user' as const, permission: 'students.self.view', module: 'students' },
 ];
 
 export default function StudentPortal() {
@@ -225,16 +226,19 @@ export default function StudentPortal() {
 
       {records.length > 0 ? (
         <section className="mt-8">
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">Your records</h2>
+          <div className="mb-3 flex items-center gap-3">
+            <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">Your records</h2>
+            <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
+          </div>
           <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {records.map((item) => (
               <li key={item.href}>
-                <Link
-                  href={item.href}
-                  className="surface block p-4 transition-transform duration-200 hover:-translate-y-0.5 hover:border-teal"
-                >
-                  <span className="font-semibold text-ink">{item.label}</span>
-                  <p className="mt-1 text-xs text-muted">{item.description}</p>
+                <Link href={item.href} className="card card-interactive block p-4">
+                  <span className="flex items-center gap-2 font-semibold text-ink">
+                    <Icon name={item.icon} size={16} className="shrink-0 text-muted-soft" />
+                    {item.label}
+                  </span>
+                  <p className="mt-1.5 text-xs leading-relaxed text-muted">{item.description}</p>
                 </Link>
               </li>
             ))}

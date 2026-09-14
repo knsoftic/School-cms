@@ -339,26 +339,31 @@ function ActivityTab({ names }: { names: SchoolNames | null }) {
         cell: (row) => <span className="whitespace-nowrap text-xs text-muted">{formatWhen(row.created_at)}</span>,
       },
       {
+        /*
+         * The action and the sentence are one cell.
+         *
+         * They were two columns, and with `Request` and `School` beside them the table was seven
+         * columns wide and scrolled sideways on a full-screen window — so a reader chasing "who did
+         * this" had to scroll right to find out, losing `When` and `What` off the left edge. The chip
+         * qualifies the sentence, so it belongs against it; the two columns that moved are both in the
+         * Details dialog already, spelled out in full rather than truncated with an ellipsis.
+         */
         key: 'what',
         header: 'What',
         primary: true,
         cell: (row) => (
-          <div className="max-w-md">
-            <span className="block">{row.description || <span className="text-muted-soft">No description</span>}</span>
+          <div className="max-w-lg">
+            <span className="flex flex-wrap items-center gap-2">
+              <StatusBadge status={row.action} tone={REFUSED_ACTIONS.has(row.action) ? 'bad' : 'neutral'} />
+              <span>{row.description || <span className="text-muted-soft">No description</span>}</span>
+            </span>
             {row.entity_type ? (
-              <span className="block text-xs text-muted-soft">
+              <span className="mt-0.5 block text-xs text-muted-soft">
                 {row.entity_type}
                 {row.entity_id !== null ? ` #${row.entity_id}` : ''}
               </span>
             ) : null}
           </div>
-        ),
-      },
-      {
-        key: 'action',
-        header: 'Action',
-        cell: (row) => (
-          <StatusBadge status={row.action} tone={REFUSED_ACTIONS.has(row.action) ? 'bad' : 'neutral'} />
         ),
       },
       {
@@ -385,38 +390,10 @@ function ActivityTab({ names }: { names: SchoolNames | null }) {
           </div>
         ),
       },
-      {
-        key: 'request',
-        header: 'Request',
-        hideOnMobile: true,
-        cell: (row) =>
-          row.method || row.path ? (
-            <div className="max-w-[18rem]">
-              <code className="block truncate text-xs" title={row.path ?? undefined}>
-                {[row.method, row.path].filter(Boolean).join(' ')}
-              </code>
-              {row.status_code !== null ? (
-                <span className="block text-xs text-muted-soft">answered {row.status_code}</span>
-              ) : null}
-            </div>
-          ) : (
-            <span className="text-muted-soft">—</span>
-          ),
-      },
     ];
 
     return [
       ...base,
-      ...(names
-        ? [
-            {
-              key: 'school',
-              header: 'School',
-              hideOnMobile: true,
-              cell: (row: ActivityRow) => <span className="text-muted">{tenantOf(row, names)}</span>,
-            },
-          ]
-        : []),
       {
         key: 'details',
         header: 'Details',
@@ -427,7 +404,7 @@ function ActivityTab({ names }: { names: SchoolNames | null }) {
         ),
       },
     ];
-  }, [account, names]);
+  }, [account]);
 
   const activeCount = [search, action, typeText, from, to, schoolId, account].filter(Boolean).length;
   const clearFilters = () => {
@@ -687,6 +664,7 @@ function AuditTab({ names }: { names: SchoolNames | null }) {
               {row.table_name}
               {row.record_id !== null ? ` #${row.record_id}` : ''}
             </code>
+            <StatusBadge status={row.event} tone="neutral" />
             {row.record_id !== null && !(record && record.id === row.record_id && record.table === row.table_name) ? (
               <button
                 type="button"
@@ -702,11 +680,23 @@ function AuditTab({ names }: { names: SchoolNames | null }) {
           </div>
         ),
       },
-      { key: 'event', header: 'Event', cell: (row) => <StatusBadge status={row.event} tone="neutral" /> },
       {
+        /*
+         * What changed, and why underneath it. `Reason` was a column of its own and `Event` another,
+         * which took this table to eight columns — wider than the window, so the rightmost three were
+         * only reachable by scrolling. The event is now a chip on the record it happened to, and the
+         * reason sits under the change it explains, which is where it reads anyway.
+         */
         key: 'changed',
         header: 'Changed',
-        cell: (row) => <span className="block max-w-[18rem] break-words text-sm">{changeSummary(row)}</span>,
+        cell: (row) => (
+          <div className="max-w-lg">
+            <span className="block break-words text-sm">{changeSummary(row)}</span>
+            {row.reason ? (
+              <span className="mt-0.5 block break-words text-xs text-muted">“{row.reason}”</span>
+            ) : null}
+          </div>
+        ),
       },
       {
         key: 'who',
@@ -733,33 +723,10 @@ function AuditTab({ names }: { names: SchoolNames | null }) {
             </div>
           ),
       },
-      {
-        key: 'reason',
-        header: 'Reason',
-        hideOnMobile: true,
-        cell: (row) =>
-          row.reason ? (
-            <span className="block max-w-[16rem] truncate" title={row.reason}>
-              {row.reason}
-            </span>
-          ) : (
-            <span className="text-muted-soft">—</span>
-          ),
-      },
     ];
 
     return [
       ...base,
-      ...(names
-        ? [
-            {
-              key: 'school',
-              header: 'School',
-              hideOnMobile: true,
-              cell: (row: AuditRow) => <span className="text-muted">{tenantOf(row, names)}</span>,
-            },
-          ]
-        : []),
       {
         key: 'details',
         header: 'Changes',
@@ -770,7 +737,7 @@ function AuditTab({ names }: { names: SchoolNames | null }) {
         ),
       },
     ];
-  }, [account, record, names]);
+  }, [account, record]);
 
   const activeCount = [tableText, event, from, to, schoolId, account, record].filter(Boolean).length;
   const clearFilters = () => {

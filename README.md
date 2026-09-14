@@ -25,7 +25,8 @@ that there is exactly one place for them to go stale.
 ```
 backend/     Node.js + Express REST API, Sequelize over MySQL/MariaDB — everything under /api/v1
 frontend/    Next.js App Router + React + Tailwind — one route group per audience
-deploy/      nginx, PM2, MySQL, logrotate and the monitoring runbook (none of it run yet — see below)
+deploy/      nginx, PM2, MySQL, logrotate and the monitoring runbook for a VPS (none of it run yet — see
+             below), and hostinger/ — the env templates for Hostinger's managed Node.js hosting
 docs/        the SRS, the requirement checklist, the verification record, and the audit findings
 ```
 
@@ -113,6 +114,18 @@ Both halves lint (`npm run lint`) and the frontend typechecks (`npm run typechec
 | [`docs/SRS-TRIAGE-VERDICTS.md`](docs/SRS-TRIAGE-VERDICTS.md) | The open specification questions, and why each cannot be settled by reading the SRS again |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How the pieces fit. A design document: where it and the code disagree, the code wins |
 | [`deploy/monitoring/README.md`](deploy/monitoring/README.md) | The operations runbook |
+| [`docs/DEPLOY-HOSTINGER.md`](docs/DEPLOY-HOSTINGER.md) | Deploying to Hostinger Business or Cloud web hosting — two Node.js apps, migrations and the scheduler inside the API, storage kept outside the folder each deploy overwrites |
+
+## Deploying
+
+Two targets, and they are different machines:
+
+- **A VPS you control** — `deploy/`: Nginx in front, PM2 running the API, the dashboard and the
+  scheduler as separate processes, migrations run by hand before the new code starts.
+- **Hostinger's managed Node.js hosting** (Business or any Cloud plan) — [`docs/DEPLOY-HOSTINGER.md`](docs/DEPLOY-HOSTINGER.md):
+  one process per app on a port the host assigns, so the API migrates itself at boot
+  (`MIGRATE_ON_BOOT`), runs the scheduler inside itself (`CRON_IN_API`) and logs to stdout
+  (`LOG_CONSOLE`), and the web app starts from `frontend/server.js`. All of those are off by default.
 
 ## Never run against a real deployment
 
@@ -120,3 +133,8 @@ Both halves lint (`npm run lint`) and the frontend typechecks (`npm run typechec
 PM2, MySQL's production config and logrotate have never been executed by the tools that consume them.
 Neither has a real SMTP delivery (development mail goes to the log) or a live Anthropic request. Treat
 the first real deployment as the first test of all four.
+
+The Hostinger path is closer: its API configuration has been booted **in production mode** against an
+empty database — migrating, seeding, scheduling, signing the owner in over a secure cookie — and the web
+app's production build served through `server.js` on an assigned port. What has not run is Hostinger
+itself.

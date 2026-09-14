@@ -107,11 +107,38 @@ async function start() {
   logger.info(`Database connected (${config.db.name})`);
 
   /*
+   * `MIGRATE_ON_BOOT` — for a host where nobody can run `npm run db:migrate` (docs/DEPLOY-HOSTINGER.md).
+   *
+   * Before `listen`, not after: a request served against a schema one migration behind is the failure
+   * this prevents, and a process that cannot migrate should not bind its port at all. A thrown error
+   * reaches `start().catch` below and exits non-zero, which the host shows as a failed start.
+   */
+  if (config.boot.migrate) {
+    const migrator = require('./database/migrator');
+    const applied = await migrator.up(sequelize);
+    await require('./database/seed').run(sequelize);
+    logger.info(`MIGRATE_ON_BOOT: applied ${applied.length} migration(s); mandatory seed complete`);
+  }
+
+  /*
    * A no-op unless CACHE_DRIVER=redis. It resolves rather than rejects when Redis is unreachable,
    * falling back to the in-memory driver — a cache is an optimisation, and losing it should not stop
    * the application from serving.
    */
   await initCache();
+
+  /*
+   * `CRON_IN_API` — the scheduler in this process, for a host that gives an app no second one.
+   *
+   * Started before `listen` so a bad `CRON_SKIP` fails the boot as a configuration error instead of
+   * surfacing later as an uncaught exception. The sweeps need the database, not the HTTP server, so
+   * nothing is lost by their first tick arriving before the port is bound. `assertRuntimeConfig()`
+   * has already refused this alongside `ENABLE_CRON` in production, and `cron.js` refuses resident
+   * mode while it is on — so there is one scheduler, whichever process owns it.
+   */
+  if (config.cron.inApi) {
+    require('./jobs/cron').schedule({ skip: config.cron.skip });
+  }
 
   const app = createApp();
   const server = app.listen(config.app.port, () => {

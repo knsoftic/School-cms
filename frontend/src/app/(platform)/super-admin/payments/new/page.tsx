@@ -404,6 +404,7 @@ export default function NewPaymentPage() {
           <div>
             <SelectField
               id="invoice_id"
+              width="md"
               label="Invoice"
               required
               value={invoice ? String(invoice.id) : ''}
@@ -457,6 +458,7 @@ export default function NewPaymentPage() {
           <FormGrid>
             <Field
               id="amount"
+              width="sm"
               label="Amount"
               type="number"
               step="0.01"
@@ -469,6 +471,7 @@ export default function NewPaymentPage() {
             />
             <SelectField
               id="method"
+              width="sm"
               label="Method"
               required
               value={method}
@@ -499,6 +502,7 @@ export default function NewPaymentPage() {
           <FormGrid>
             <Field
               id="transaction_id"
+              width="md"
               label="Transaction ID"
               value={transactionId}
               error={fieldErrors.transaction_id}
@@ -513,6 +517,7 @@ export default function NewPaymentPage() {
             />
             <Field
               id="paid_at"
+              width="sm"
               label="Paid on"
               type="date"
               value={paidAt}
@@ -524,6 +529,7 @@ export default function NewPaymentPage() {
 
           <Field
             id="reference"
+            width="md"
             label="Reference"
             value={reference}
             error={fieldErrors.reference}

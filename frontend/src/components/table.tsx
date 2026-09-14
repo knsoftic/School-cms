@@ -20,6 +20,7 @@
  *     means the second sends someone looking for a bug.
  */
 
+import Link from 'next/link';
 import type { ReactNode } from 'react';
 
 import { Icon } from '@/components/icon';
@@ -406,21 +407,45 @@ export function MetricCard({
   value,
   hint,
   icon,
+  href,
+  breakdown,
 }: {
   label: string;
   value: ReactNode;
   hint?: string;
   icon?: IconName;
+  /**
+   * Where the figure comes from. A number on a dashboard is a question — *which* school is suspended,
+   * *which* payment is pending — and the answer is always a list this product already has. With `href`
+   * the whole card is the link: the anchor sits on the label and stretches over the card with
+   * `after:absolute after:inset-0`, so the click target is the card while the accessible name stays
+   * the label and the markup stays a valid `<dl>`. Without it the card is inert, as it was.
+   */
+  href?: string;
+  /** A line under the figure for the parts it is made of — "1 active · 0 suspended" — not a second metric. */
+  breakdown?: ReactNode;
 }) {
   return (
-    <div className="card p-4">
+    <div className={`card p-4${href ? ' card-interactive relative' : ''}`}>
       <div className="flex items-start justify-between gap-2">
-        <dt className="text-2xs font-semibold uppercase tracking-[0.08em] text-muted">{label}</dt>
+        <dt className="text-2xs font-semibold uppercase tracking-[0.08em] text-muted">
+          {href ? (
+            <Link
+              href={href}
+              className="rounded-sm after:absolute after:inset-0 after:content-[''] hover:text-ink"
+            >
+              {label}
+            </Link>
+          ) : (
+            label
+          )}
+        </dt>
         {icon ? <Icon name={icon} size={15} className="text-muted-soft" /> : null}
       </div>
       <dd className="mt-2 font-display text-2xl font-semibold tabular-nums tracking-tight text-ink">
         {value}
       </dd>
+      {breakdown ? <div className="mt-1.5 text-xs tabular-nums text-muted">{breakdown}</div> : null}
       {hint ? <p className="mt-1 text-xs leading-relaxed text-muted">{hint}</p> : null}
     </div>
   );

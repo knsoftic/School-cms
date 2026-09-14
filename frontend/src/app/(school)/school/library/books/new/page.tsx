@@ -267,6 +267,7 @@ export default function NewBookPage() {
         >
           <Field
             id="title"
+            width="md"
             label="Title"
             required
             maxLength={255}
@@ -283,6 +284,7 @@ export default function NewBookPage() {
 
           <Field
             id="author"
+            width="md"
             label="Author"
             maxLength={255}
             value={values.author}
@@ -293,6 +295,7 @@ export default function NewBookPage() {
 
           <Field
             id="category"
+            width="sm"
             label="Category"
             maxLength={120}
             value={values.category}
@@ -318,6 +321,7 @@ export default function NewBookPage() {
 
           <Field
             id="publisher"
+            width="md"
             label="Publisher"
             maxLength={180}
             value={values.publisher}
@@ -327,6 +331,7 @@ export default function NewBookPage() {
 
           <Field
             id="edition"
+            width="xs"
             label="Edition"
             maxLength={60}
             value={values.edition}
@@ -348,6 +353,7 @@ export default function NewBookPage() {
 
           <Field
             id="rack_number"
+            width="xs"
             label="Rack number"
             maxLength={60}
             value={values.rack_number}

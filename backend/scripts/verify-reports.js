@@ -1103,6 +1103,23 @@ async function verifyHttp() {
     check('  naming which report and which format',
       exports_.some((r) => r.metadata && r.metadata.report === 'student' && r.metadata.format === 'excel'),
       true);
+    /*
+     * A screen read is a view, not an export. `reports.routes.js` annotates every report route
+     * `action: 'export'` — right for the file, wrong for the JSON — so a request that only rendered a
+     * report on screen was written to the trail as an export with no description at all. The logs
+     * screen showed it as "Export · No description", which is a trail accusing someone of a thing they
+     * did not do. Both halves are asserted: the view says what it was, and the export still says its
+     * own thing.
+     */
+    const viewed = exports_.filter((r) => r.action === 'view');
+    check('a report read on screen is recorded as a view, not as an export', viewed.length > 0, true);
+    check('  and says which report was viewed, so no row reads "No description"',
+      viewed.every((r) => typeof r.description === 'string' && /^Viewed the \w+ report$/.test(r.description)
+        && r.metadata && typeof r.metadata.report === 'string'),
+      true);
+    check('  while an export keeps the export action',
+      exports_.filter((r) => r.metadata && r.metadata.format).every((r) => r.action === 'export'),
+      true);
     /* An absence: there is no value to poll toward, so a grace period is waited out instead. */
     await quiesce();
     check('  and a report is never audited as a row change — §22 writes nothing',

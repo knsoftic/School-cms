@@ -89,6 +89,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
   SearchField,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
@@ -399,11 +400,13 @@ export default function NewStaffPage() {
 
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
+          columns={2}
           title="Employment"
           description="The role this person holds and the terms of their appointment."
         >
           <Field
             id="employee_id"
+            width="sm"
             label="Employee ID"
             required
             maxLength={60}
@@ -415,6 +418,7 @@ export default function NewStaffPage() {
 
           <SelectField
             id="category"
+            width="sm"
             label="Category"
             required
             value={values.category}
@@ -434,6 +438,7 @@ export default function NewStaffPage() {
 
           <Field
             id="first_name"
+            width="md"
             label="First name"
             required
             maxLength={90}
@@ -444,6 +449,7 @@ export default function NewStaffPage() {
 
           <Field
             id="last_name"
+            width="md"
             label="Last name"
             maxLength={90}
             value={values.last_name}
@@ -452,17 +458,19 @@ export default function NewStaffPage() {
             hint="Optional — the column is nullable, and the Staff list joins the two names without leaving a gap when this is empty."
           />
 
-          <Field
-            id="designation"
-            label="Designation"
-            maxLength={120}
-            value={values.designation}
-            onChange={set('designation')}
-            error={fieldErrors.designation}
-            /* `staff.service.list()` applies `?designation=` as an equality, not a `LIKE`, so the
-               capitalisation entered here is the capitalisation a filter has to match exactly. */
-            hint="The free-text job title that separates two people in the same category. Filtered by exact match, so keep the wording consistent between records."
-          />
+          <FormSpan>
+            <Field
+              id="designation"
+              label="Designation"
+              maxLength={120}
+              value={values.designation}
+              onChange={set('designation')}
+              error={fieldErrors.designation}
+              /* `staff.service.list()` applies `?designation=` as an equality, not a `LIKE`, so the
+                 capitalisation entered here is the capitalisation a filter has to match exactly. */
+              hint="The free-text job title that separates two people in the same category. Filtered by exact match, so keep the wording consistent between records."
+            />
+          </FormSpan>
 
           {/*
            * `DATEONLY`, so a plain `YYYY-MM-DD` is exactly what the column wants. Joi reads it as
@@ -472,6 +480,7 @@ export default function NewStaffPage() {
            */}
           <Field
             id="joining_date"
+            width="sm"
             label="Joining date"
             type="date"
             required
@@ -483,6 +492,7 @@ export default function NewStaffPage() {
 
           <SelectField
             id="is_active"
+            width="sm"
             label="Employment status"
             value={isActive}
             onChange={(event) => setIsActive(event.target.value)}
@@ -520,6 +530,7 @@ export default function NewStaffPage() {
 
           <Field
             id="salary"
+            width="sm"
             label="Salary"
             type="text"
             inputMode="decimal"
@@ -531,6 +542,7 @@ export default function NewStaffPage() {
 
           <Field
             id="qualification"
+            width="md"
             label="Qualification"
             maxLength={255}
             value={values.qualification}
@@ -547,6 +559,7 @@ export default function NewStaffPage() {
         >
           <SelectField
             id="gender"
+            width="sm"
             label="Gender"
             value={values.gender}
             onChange={set('gender')}
@@ -564,6 +577,7 @@ export default function NewStaffPage() {
 
           <Field
             id="date_of_birth"
+            width="sm"
             label="Date of birth"
             type="date"
             value={values.date_of_birth}
@@ -573,11 +587,13 @@ export default function NewStaffPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Contact"
           description="How the school reaches this member of staff."
         >
           <Field
             id="email"
+            width="md"
             label="Email"
             type="email"
             maxLength={180}
@@ -591,6 +607,7 @@ export default function NewStaffPage() {
 
           <Field
             id="phone"
+            width="sm"
             label="Phone"
             maxLength={40}
             value={values.phone}
@@ -598,15 +615,17 @@ export default function NewStaffPage() {
             error={fieldErrors.phone}
           />
 
-          <Field
-            id="address"
-            label="Address"
-            maxLength={255}
-            value={values.address}
-            onChange={set('address')}
-            error={fieldErrors.address}
-            hint="Up to 255 characters."
-          />
+          <FormSpan>
+            <Field
+              id="address"
+              label="Address"
+              maxLength={255}
+              value={values.address}
+              onChange={set('address')}
+              error={fieldErrors.address}
+              hint="Up to 255 characters."
+            />
+          </FormSpan>
         </FormSection>
 
         <FormSection
@@ -649,6 +668,7 @@ export default function NewStaffPage() {
                 />
                 <SelectField
                   id="user_id"
+                  width="md"
                   label="Linked account"
                   value={values.user_id}
                   onChange={onUserChange}

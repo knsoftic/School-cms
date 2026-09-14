@@ -3,14 +3,34 @@
 /**
  * Super Admin dashboard — SRS §9.1 (FR-SADMIN-001), §33's first Super Admin screen.
  *
- * Renders the eleven metrics `GET /platform/dashboard` returns, in source order, plus the derived
- * figures the service already exposes (archived schools, pending amount) and the per-currency lines
- * behind the three money figures.
+ * Renders the eleven metrics `GET /platform/dashboard` returns, plus the derived figures the service
+ * already exposes (archived schools, pending amount) and the per-currency lines behind the three
+ * money figures. Every one of the eleven is on the screen; what changed is the arrangement.
+ *
+ * ## Why they are not in source order any more
+ *
+ * They were, and it read as a readout rather than as an overview: thirteen cards of identical weight,
+ * four of them about the same fact — `Schools 1`, `Active 1`, `Suspended 0`, `Archived 0` — and one
+ * carrying the sentence "Schools = active + suspended + archived" to explain why. Money, the figure a
+ * platform owner opens this page for, sat below the fold behind counts of zero.
+ *
+ * So: **two bands.** Money first, at a larger size, because it is what the screen is for and because
+ * three figures deserve more room than a count. Then the tenancy and people counts as one compact row,
+ * each card holding its own parts — a school's states, a subscription's two — so a number and its
+ * decomposition are one object rather than four cards that must be added up. That retires the
+ * explanatory sentence: an arithmetic note is needed only when the arithmetic is spread across cards.
+ *
+ * **Each count links to the list it summarises.** A dashboard figure is a question — *which* school is
+ * suspended, *which* payment is pending — and every answer is a screen this product already has.
+ * Students and Teachers have no platform-level list to link to, so those two stay inert rather than
+ * pointing somewhere that half-answers.
  */
 
 import Link from 'next/link';
+import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 
+import { Icon } from '@/components/icon';
 import { ApiError, api } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
 import { formatMoney } from '@/lib/money';
@@ -74,7 +94,14 @@ interface PlatformDashboardData {
  * still fits a two-column card.
  */
 function PerCurrency({ lines }: { lines: CurrencyLine[] }) {
-  if (lines.length === 0) return <>{formatMoney(0)}</>;
+  /*
+   * Shown, and shown quietly. No lines means no payments in the window, and the figure is genuinely
+   * 0.00 — so it is not replaced with a dash, which would say "not known" about something known, and
+   * not hidden, because §9.1 asks for eleven metrics on the screen rather than eleven when convenient.
+   * Muted only: on a fresh install all three money cards are zero, and at this size three bold zeros
+   * read as the headline of the page.
+   */
+  if (lines.length === 0) return <span className="text-muted">{formatMoney(0)}</span>;
   return (
     <ul>
       {lines.map((line) => (
@@ -100,6 +127,71 @@ function count(value: number): string {
   return new Intl.NumberFormat().format(value);
 }
 
+/** "1 school" / "2 schools" — a count beside its noun, so a breakdown line reads as a sentence. */
+function plural(value: number, one: string, many: string): string {
+  return `${count(value)} ${value === 1 ? one : many}`;
+}
+
+/**
+ * A band of the dashboard: a quiet heading with a rule running out to the edge.
+ *
+ * The rule is the whole device — it separates the bands without a box around each, which is what made
+ * the old screen read as a grid of grids. `aria-label` rather than `aria-labelledby` because the
+ * heading is decorative shorthand for the section, and the cards inside carry their own names.
+ */
+function Band({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="mt-8 first:mt-6" aria-label={title}>
+      <div className="mb-3 flex items-center gap-3">
+        <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">{title}</h2>
+        <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * A money figure, larger than a count and with its window underneath.
+ *
+ * Not `MetricCard` with a bigger class: a money card holds a **list** — one line per currency, which is
+ * the only honest shape once a second currency appears — and the window it covers, which a reader has
+ * to have to check the figure against anything. `MetricCard`'s single-value layout would have to grow
+ * two more props to say those two things, on fifty-nine screens that do not need them.
+ */
+function MoneyCard({
+  label,
+  lines,
+  footer,
+  href,
+}: {
+  label: string;
+  lines: CurrencyLine[];
+  footer: string;
+  href?: string;
+}) {
+  return (
+    <div className={`card p-5${href ? ' card-interactive relative' : ''}`}>
+      <dt className="text-2xs font-semibold uppercase tracking-[0.08em] text-muted">
+        {href ? (
+          <Link
+            href={href}
+            className="rounded-sm after:absolute after:inset-0 after:content-[''] hover:text-ink"
+          >
+            {label}
+          </Link>
+        ) : (
+          label
+        )}
+      </dt>
+      <dd className="mt-2 font-display text-3xl font-semibold tabular-nums tracking-tight text-ink">
+        <PerCurrency lines={lines} />
+      </dd>
+      <p className="mt-2 text-xs leading-relaxed text-muted">{footer}</p>
+    </div>
+  );
+}
+
 /**
  * The revenue window, as days a person can check a figure against.
  *
@@ -120,7 +212,7 @@ function span(from: string, to: string): string {
 }
 
 export default function PlatformDashboard() {
-  const { profile } = useAuth();
+  const { profile, can } = useAuth();
   const [data, setData] = useState<PlatformDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -195,63 +287,117 @@ export default function PlatformDashboard() {
         <LoadingBlock label="Loading platform metrics…" />
       ) : (
         <>
-          <section aria-label="Schools and people">
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
-              Schools and people
-            </h2>
-            <dl className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-4">
-              <MetricCard label="Organizations" value={count(data.totalOrganizations)} />
-              <MetricCard label="Schools" value={count(data.totalSchools)} />
-              <MetricCard label="Active schools" value={count(data.activeSchools)} />
-              <MetricCard label="Suspended schools" value={count(data.suspendedSchools)} />
-              <MetricCard label="Students" value={count(data.totalStudents)} />
-              <MetricCard label="Teachers" value={count(data.totalTeachers)} />
-              {/*
-                * Not one of §9.1's eleven metrics — `platform.service.js` adds it so the schools figures
-                * reconcile, and says so in its own comment. The citation stays here; the card says the
-                * thing a reader needs.
-                */}
-              <MetricCard
-                label="Archived schools"
-                value={count(data.archivedSchools)}
-                hint="Schools = active + suspended + archived."
-              />
-            </dl>
-          </section>
+          {/*
+            * Every figure on this screen counts schools or what happens inside them, so with no school
+            * in scope all thirteen are zero — correctly, and unhelpfully. A new organization's admin
+            * landed here on a wall of zeros with nothing saying why or what comes next.
+            *
+            * The figures stay on screen: §9.1 asks for eleven metrics, and a zero is one of them. What
+            * is added is the reason, worded by what this caller may actually do — a platform
+            * administrator holds `schools.manage` and can add the school; an organization admin holds
+            * none of the write keys (`DEFAULT_ROLE_PERMISSIONS.organization_admin` is read-only), so
+            * offering them an Add button would be offering a refusal.
+            */}
+          {data.totalSchools === 0 ? (
+            <div className="surface mb-6 flex flex-wrap items-start gap-4 p-5">
+              <Icon name="school" size={20} className="mt-0.5 shrink-0 text-muted-soft" />
+              <div className="min-w-0 flex-1">
+                <p className="font-display text-lg font-semibold text-ink">
+                  {profile?.tenant.isPlatform === false
+                    ? 'This organization has no schools yet'
+                    : 'No schools yet'}
+                </p>
+                <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted">
+                  {profile?.tenant.isPlatform === false
+                    ? 'Every figure below counts schools in this organization, so each reads zero until one is added. Schools are created by a platform administrator.'
+                    : 'Every figure below counts schools and what happens inside them, so each reads zero until the first school is added and put on a plan.'}
+                </p>
+              </div>
+              {can('schools.manage') ? (
+                <Link href="/super-admin/schools/new" className="btn btn-primary shrink-0">
+                  Add a school
+                </Link>
+              ) : can('schools.view') ? (
+                <Link href="/super-admin/schools" className="btn btn-secondary shrink-0">
+                  View schools
+                </Link>
+              ) : null}
+            </div>
+          ) : null}
 
-          <section className="mt-8" aria-label="Subscriptions and revenue">
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
-              Subscriptions and revenue
-            </h2>
-            <dl className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-4">
-              <MetricCard label="Active subscriptions" value={count(data.activeSubscriptions)} />
-              <MetricCard label="Expired subscriptions" value={count(data.expiredSubscriptions)} />
-              <MetricCard
-                label="Monthly revenue"
-                value={<PerCurrency lines={data.revenueByCurrency.month} />}
-                hint={
+          <Band title="Revenue">
+            <dl className="grid gap-4 md:grid-cols-3">
+              <MoneyCard
+                label="Revenue this month"
+                lines={data.revenueByCurrency.month}
+                href="/super-admin/payments"
+                footer={
                   data.period
                     ? `${span(data.period.month.from, data.period.month.to)} (UTC). ${RECEIVED}`
                     : RECEIVED
                 }
               />
-              <MetricCard
-                label="Yearly revenue"
-                value={<PerCurrency lines={data.revenueByCurrency.year} />}
-                hint={
+              <MoneyCard
+                label="Revenue this year"
+                lines={data.revenueByCurrency.year}
+                href="/super-admin/payments"
+                footer={
                   data.period
                     ? `${span(data.period.year.from, data.period.year.to)} (UTC). ${RECEIVED}`
                     : RECEIVED
                 }
               />
-              <MetricCard label="Pending payments" value={count(data.pendingPayments)} />
-              <MetricCard
-                label="Pending amount"
-                value={<PerCurrency lines={data.revenueByCurrency.pending} />}
-                hint="The payments awaiting review, totalled per currency."
+              {/*
+                * §9.1's "pending payments" is the count; the amount is the service's own derived figure.
+                * The amount is the value because it is the one a person acts on, and the count is under
+                * it — two metrics, one object, rather than two cards that have to be read together.
+                */}
+              <MoneyCard
+                label="Pending payments"
+                lines={data.revenueByCurrency.pending}
+                href="/super-admin/payments"
+                footer={`${plural(data.pendingPayments, 'payment', 'payments')} awaiting review, totalled per currency.`}
               />
             </dl>
-          </section>
+          </Band>
+
+          <Band title="Tenants and people">
+            <dl className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+              <MetricCard
+                label="Organizations"
+                value={count(data.totalOrganizations)}
+                icon="building"
+                href="/super-admin/organizations"
+              />
+              {/*
+                * `archivedSchools` is not one of §9.1's eleven — `platform.service.js` adds it so the
+                * schools figures reconcile. As a breakdown of the total it needs no explaining: the
+                * three states are visibly the parts of the number above them.
+                */}
+              <MetricCard
+                label="Schools"
+                value={count(data.totalSchools)}
+                icon="school"
+                href="/super-admin/schools"
+                breakdown={
+                  <>
+                    {count(data.activeSchools)} active · {count(data.suspendedSchools)} suspended ·{' '}
+                    {count(data.archivedSchools)} archived
+                  </>
+                }
+              />
+              <MetricCard
+                label="Active subscriptions"
+                value={count(data.activeSubscriptions)}
+                icon="refresh"
+                href="/super-admin/subscriptions"
+                breakdown={`${count(data.expiredSubscriptions)} expired`}
+              />
+              {/* No platform-level list of either, so neither card pretends to lead anywhere. */}
+              <MetricCard label="Students" value={count(data.totalStudents)} icon="graduation" />
+              <MetricCard label="Teachers" value={count(data.totalTeachers)} icon="users" />
+            </dl>
+          </Band>
         </>
       )}
     </div>

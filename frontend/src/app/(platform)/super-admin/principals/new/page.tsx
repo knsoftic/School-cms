@@ -364,11 +364,13 @@ function NewPrincipalScreen() {
         */}
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
+          columns={2}
           title="The principal"
           description="Their name and the sign-in they will use."
         >
           <Field
             id="name"
+            width="md"
             label="Name"
             required
             maxLength={160}
@@ -379,6 +381,7 @@ function NewPrincipalScreen() {
 
           <Field
             id="email"
+            width="md"
             label="Email"
             type="email"
             required
@@ -391,6 +394,7 @@ function NewPrincipalScreen() {
 
           <Field
             id="username"
+            width="md"
             label="Username"
             required
             maxLength={80}
@@ -402,6 +406,7 @@ function NewPrincipalScreen() {
 
           <PasswordField
             id="password"
+            width="md"
             label="Password"
             required
             autoComplete="new-password"
@@ -418,6 +423,7 @@ function NewPrincipalScreen() {
         >
           <Field
             id="phone"
+            width="sm"
             label="Phone"
             maxLength={40}
             value={values.phone}
@@ -452,6 +458,7 @@ function NewPrincipalScreen() {
 
             <SelectField
               id="school_id"
+              width="md"
               label="School"
               required
               value={values.school_id}
@@ -525,6 +532,7 @@ function NewPrincipalScreen() {
         >
           <SelectField
             id="status"
+            width="sm"
             label="Status"
             value={values.status}
             onChange={set('status')}

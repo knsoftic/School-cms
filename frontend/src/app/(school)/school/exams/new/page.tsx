@@ -126,6 +126,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
 import { PageHeader, RefusalNotice } from '@/components/table';
@@ -432,6 +433,7 @@ export default function NewExamPage() {
         >
           <Field
             id="name"
+            width="md"
             label="Name"
             required
             maxLength={160}
@@ -502,6 +504,7 @@ export default function NewExamPage() {
 
           <SelectField
             id="section_id"
+            width="md"
             label="Section"
             value={values.section_id}
             onChange={set('section_id')}
@@ -555,12 +558,14 @@ export default function NewExamPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="When and how it is marked"
           description="The dates it runs between, and the scale results are graded on."
         >
           {/* Both are `DATEONLY`, and both round-trip as typed. See the header. */}
           <Field
             id="start_date"
+            width="sm"
             label="Start date"
             type="date"
             value={values.start_date}
@@ -571,6 +576,7 @@ export default function NewExamPage() {
 
           <Field
             id="end_date"
+            width="sm"
             label="End date"
             type="date"
             value={values.end_date}
@@ -579,34 +585,36 @@ export default function NewExamPage() {
             hint="The last day. Cannot be before the start date."
           />
 
-          <SelectField
-            id="grade_scale"
-            label="Grade scale"
-            value={values.grade_scale}
-            onChange={set('grade_scale')}
-            disabled={loadingOptions || bands.failed}
-            error={fieldErrors.grade_scale}
-            /*
-             * The consequence is spelled out because the API cannot warn about it: a scale that is
-             * *chosen* is checked for active bands, and the unchosen default is not.
-             */
-            hint={
-              bands.failed
-                ? 'The grade scales could not be loaded, so the exam will use the scale named “default”. Viewing exams is a separate permission from creating them.'
-                : `Scales that currently have at least one active band. A scale with no bands grades every percentage as blank, and the “default” fallback is not checked for one.${
-                    bands.total > bands.rows.length
-                      ? ` Read from the first ${bands.rows.length} of ${bands.total} bands, so a scale beyond that is not listed.`
-                      : ''
-                  }`
-            }
-          >
-            <option value="">Server default (the scale named “default”)</option>
-            {scaleNames.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </SelectField>
+          <FormSpan>
+            <SelectField
+              id="grade_scale"
+              label="Grade scale"
+              value={values.grade_scale}
+              onChange={set('grade_scale')}
+              disabled={loadingOptions || bands.failed}
+              error={fieldErrors.grade_scale}
+              /*
+               * The consequence is spelled out because the API cannot warn about it: a scale that is
+               * *chosen* is checked for active bands, and the unchosen default is not.
+               */
+              hint={
+                bands.failed
+                  ? 'The grade scales could not be loaded, so the exam will use the scale named “default”. Viewing exams is a separate permission from creating them.'
+                  : `Scales that currently have at least one active band. A scale with no bands grades every percentage as blank, and the “default” fallback is not checked for one.${
+                      bands.total > bands.rows.length
+                        ? ` Read from the first ${bands.rows.length} of ${bands.total} bands, so a scale beyond that is not listed.`
+                        : ''
+                    }`
+              }
+            >
+              <option value="">Server default (the scale named “default”)</option>
+              {scaleNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </SelectField>
+          </FormSpan>
         </FormSection>
 
         <FormSection

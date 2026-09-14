@@ -176,6 +176,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
   SearchField,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
@@ -621,11 +622,13 @@ export default function NewStudentPage() {
 
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
+          columns={2}
           title="Identity and admission"
           description="Who the student is, and the day they joined. With the class below, these are the fields this form requires."
         >
           <Field
             id="first_name"
+            width="md"
             label="First name"
             required
             maxLength={90}
@@ -637,6 +640,7 @@ export default function NewStudentPage() {
 
           <Field
             id="last_name"
+            width="md"
             label="Last name"
             maxLength={90}
             value={values.last_name}
@@ -646,29 +650,34 @@ export default function NewStudentPage() {
           />
 
           {/* `DATEONLY`, posted as typed. See the header on why this is not a `datetime-local`. */}
-          <Field
-            id="admission_date"
-            label="Admission date"
-            type="date"
-            required
-            value={values.admission_date}
-            onChange={set('admission_date')}
-            error={fieldErrors.admission_date}
-            hint="The day the student joined — the event this record exists to capture. Its year is also the year in a generated student ID, so back-dating an admission back-dates the identifier."
-          />
+          <FormSpan>
+            <Field
+              id="admission_date"
+              label="Admission date"
+              type="date"
+              required
+              value={values.admission_date}
+              onChange={set('admission_date')}
+              error={fieldErrors.admission_date}
+              hint="The day the student joined — the event this record exists to capture. Its year is also the year in a generated student ID, so back-dating an admission back-dates the identifier."
+            />
+          </FormSpan>
 
-          <Field
-            id="student_id"
-            label="Student ID"
-            maxLength={60}
-            value={values.student_id}
-            onChange={set('student_id')}
-            error={fieldErrors.student_id}
-            hint="Optional. Left blank, the server allocates one from the school's code, the admission year and a four-digit sequence. Unique within the school, so a duplicate is refused rather than renumbered."
-          />
+          <FormSpan>
+            <Field
+              id="student_id"
+              label="Student ID"
+              maxLength={60}
+              value={values.student_id}
+              onChange={set('student_id')}
+              error={fieldErrors.student_id}
+              hint="Optional. Left blank, the server allocates one from the school's code, the admission year and a four-digit sequence. Unique within the school, so a duplicate is refused rather than renumbered."
+            />
+          </FormSpan>
 
           <Field
             id="admission_number"
+            width="sm"
             label="Admission number"
             maxLength={60}
             value={values.admission_number}
@@ -679,36 +688,38 @@ export default function NewStudentPage() {
 
           {/* The failure branch is a hint rather than a paragraph of its own: `SelectField` swaps a
               server error in for the hint, so the two can never stack. */}
-          <SelectField
-            id="admission_session_id"
-            label="Admission session"
-            value={values.admission_session_id}
-            onChange={set('admission_session_id')}
-            disabled={loadingOptions || (sessions.failed && sessionOptions.length === 0)}
-            error={fieldErrors.admission_session_id}
-            hint={
-              sessions.failed
-                ? sessionOptions.length > 0
-                  ? 'The session list could not be loaded, so only the school’s current session is offered, here and below. Viewing academic sessions is a separate permission from admitting students.'
-                  : 'The session list could not be loaded, so neither session can be chosen here. Viewing academic sessions is a separate permission from admitting students, and the student can be admitted without either.'
-                : `The intake cohort — the session the student joined in, defaulting to the school’s current session. Promotion never moves it, which is what separates it from the current session below.${
-                    sessions.total > sessions.rows.length
-                      ? ` The first ${sessions.rows.length} of ${sessions.total}; a page cannot hold more.`
-                      : ''
-                  }`
-            }
-          >
-            <option value="">{loadingOptions ? 'Loading…' : 'Not recorded'}</option>
-            {sessionOptions.map((session) => (
-              /* Status and "current" are context, never acted on here: `loadSessionInSchool()` accepts
-                 a session of any status, and D20's guard checks the current session and the class,
-                 not this one — so disabling options would be a rule of this screen's own. */
-              <option key={session.id} value={session.id}>
-                {session.name} — {session.status}
-                {session.is_current ? ' — current' : ''}
-              </option>
-            ))}
-          </SelectField>
+          <FormSpan>
+            <SelectField
+              id="admission_session_id"
+              label="Admission session"
+              value={values.admission_session_id}
+              onChange={set('admission_session_id')}
+              disabled={loadingOptions || (sessions.failed && sessionOptions.length === 0)}
+              error={fieldErrors.admission_session_id}
+              hint={
+                sessions.failed
+                  ? sessionOptions.length > 0
+                    ? 'The session list could not be loaded, so only the school’s current session is offered, here and below. Viewing academic sessions is a separate permission from admitting students.'
+                    : 'The session list could not be loaded, so neither session can be chosen here. Viewing academic sessions is a separate permission from admitting students, and the student can be admitted without either.'
+                  : `The intake cohort — the session the student joined in, defaulting to the school’s current session. Promotion never moves it, which is what separates it from the current session below.${
+                      sessions.total > sessions.rows.length
+                        ? ` The first ${sessions.rows.length} of ${sessions.total}; a page cannot hold more.`
+                        : ''
+                    }`
+              }
+            >
+              <option value="">{loadingOptions ? 'Loading…' : 'Not recorded'}</option>
+              {sessionOptions.map((session) => (
+                /* Status and "current" are context, never acted on here: `loadSessionInSchool()` accepts
+                   a session of any status, and D20's guard checks the current session and the class,
+                   not this one — so disabling options would be a rule of this screen's own. */
+                <option key={session.id} value={session.id}>
+                  {session.name} — {session.status}
+                  {session.is_current ? ' — current' : ''}
+                </option>
+              ))}
+            </SelectField>
+          </FormSpan>
         </FormSection>
 
         <FormSection
@@ -759,6 +770,7 @@ export default function NewStudentPage() {
 
           <SelectField
             id="section_id"
+            width="md"
             label="Section"
             value={values.section_id}
             onChange={set('section_id')}
@@ -824,6 +836,7 @@ export default function NewStudentPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Personal details"
           description="Profile information held on the student record. Every field here is optional."
         >
@@ -831,6 +844,7 @@ export default function NewStudentPage() {
               nothing at all when neither hint nor error is present. */}
           <SelectField
             id="gender"
+            width="sm"
             label="Gender"
             value={values.gender}
             onChange={set('gender')}
@@ -847,6 +861,7 @@ export default function NewStudentPage() {
 
           <Field
             id="date_of_birth"
+            width="sm"
             label="Date of birth"
             type="date"
             value={values.date_of_birth}
@@ -855,19 +870,22 @@ export default function NewStudentPage() {
             hint="A plain date, with no time of day. The students list shows it because that table has no class column — it is what separates two students of the same name there."
           />
 
-          <Field
-            id="blood_group"
-            label="Blood group"
-            maxLength={10}
-            value={values.blood_group}
-            onChange={set('blood_group')}
-            error={fieldErrors.blood_group}
-            /* No select: `constants.js` closes an enum for gender and does not for this. */
-            hint="Free text, up to 10 characters. The source fixes no list of values, so nothing here invents one."
-          />
+          <FormSpan>
+            <Field
+              id="blood_group"
+              label="Blood group"
+              maxLength={10}
+              value={values.blood_group}
+              onChange={set('blood_group')}
+              error={fieldErrors.blood_group}
+              /* No select: `constants.js` closes an enum for gender and does not for this. */
+              hint="Free text, up to 10 characters. The source fixes no list of values, so nothing here invents one."
+            />
+          </FormSpan>
 
           <Field
             id="religion"
+            width="sm"
             label="Religion"
             maxLength={60}
             value={values.religion}
@@ -877,6 +895,7 @@ export default function NewStudentPage() {
 
           <Field
             id="nationality"
+            width="sm"
             label="Nationality"
             maxLength={60}
             value={values.nationality}
@@ -886,11 +905,13 @@ export default function NewStudentPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Contact"
           description="How the school reaches the student directly."
         >
           <Field
             id="email"
+            width="md"
             label="Email"
             type="email"
             maxLength={180}
@@ -902,6 +923,7 @@ export default function NewStudentPage() {
 
           <Field
             id="phone"
+            width="sm"
             label="Phone"
             maxLength={40}
             value={values.phone}
@@ -909,18 +931,21 @@ export default function NewStudentPage() {
             error={fieldErrors.phone}
           />
 
-          <Field
-            id="address"
-            label="Address"
-            maxLength={255}
-            value={values.address}
-            onChange={set('address')}
-            error={fieldErrors.address}
-            hint="Up to 255 characters."
-          />
+          <FormSpan>
+            <Field
+              id="address"
+              label="Address"
+              maxLength={255}
+              value={values.address}
+              onChange={set('address')}
+              error={fieldErrors.address}
+              hint="Up to 255 characters."
+            />
+          </FormSpan>
 
           <Field
             id="city"
+            width="sm"
             label="City"
             maxLength={90}
             value={values.city}
@@ -930,23 +955,27 @@ export default function NewStudentPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Guardian and emergency contact"
           description="Who to call, and who to call when the guardian cannot be reached."
         >
-          <Field
-            id="guardian_name"
-            label="Guardian name"
-            maxLength={160}
-            value={values.guardian_name}
-            onChange={set('guardian_name')}
-            error={fieldErrors.guardian_name}
-            /* Four plain columns on `students`, not a link to `parents`: §15.2's parent account is its
-               own record, related through `parent_students`, and is created on the Parents screen. */
-            hint="Recorded on the student row itself. A parent who signs in is a separate §15.2 record, created on the Parents screen and linked there."
-          />
+          <FormSpan>
+            <Field
+              id="guardian_name"
+              label="Guardian name"
+              maxLength={160}
+              value={values.guardian_name}
+              onChange={set('guardian_name')}
+              error={fieldErrors.guardian_name}
+              /* Four plain columns on `students`, not a link to `parents`: §15.2's parent account is its
+                 own record, related through `parent_students`, and is created on the Parents screen. */
+              hint="Recorded on the student row itself. A parent who signs in is a separate §15.2 record, created on the Parents screen and linked there."
+            />
+          </FormSpan>
 
           <Field
             id="guardian_phone"
+            width="sm"
             label="Guardian phone"
             maxLength={40}
             value={values.guardian_phone}
@@ -956,6 +985,7 @@ export default function NewStudentPage() {
 
           <Field
             id="guardian_relation"
+            width="sm"
             label="Guardian relation"
             maxLength={60}
             value={values.guardian_relation}
@@ -966,6 +996,7 @@ export default function NewStudentPage() {
 
           <Field
             id="emergency_contact"
+            width="sm"
             label="Emergency contact"
             maxLength={40}
             value={values.emergency_contact}
@@ -1016,6 +1047,7 @@ export default function NewStudentPage() {
               </div>
               <SelectField
                 id="user_id"
+                width="md"
                 label="Linked account"
                 value={values.user_id}
                 onChange={onUserChange}
@@ -1046,6 +1078,7 @@ export default function NewStudentPage() {
             */}
           <SelectField
             id="uses_transport"
+            width="sm"
             label="School transport"
             value={values.uses_transport}
             onChange={set('uses_transport')}

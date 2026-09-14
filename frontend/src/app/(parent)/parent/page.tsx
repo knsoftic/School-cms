@@ -35,6 +35,7 @@
 
 import Link from 'next/link';
 
+import { Icon } from '@/components/icon';
 import { useAuth } from '@/lib/auth';
 import { useEntitlements } from '@/lib/entitlements';
 import {
@@ -57,12 +58,12 @@ import type { ChildLink } from './children';
  * screen asks which child when there is more than one.
  */
 const RECORDS = [
-  { href: '/parent/results', label: 'Results', description: 'Exam results, once the school publishes them.', permission: 'results.self.view', module: 'exams' },
-  { href: '/parent/homework', label: 'Homework', description: 'Homework published for your children’s classes.', permission: 'homework.view', module: 'homework' },
-  { href: '/parent/attendance', label: 'Attendance', description: 'The register for a day, a month or a year, with the percentage.', permission: 'attendance.self.view', module: 'attendance' },
-  { href: '/parent/fees', label: 'Fees', description: 'What is charged, paid and still pending, with the receipts.', permission: 'fees.self.view', module: 'fees' },
-  { href: '/parent/timetable', label: 'Timetable', description: 'Each child’s class week, period by period.', permission: 'timetable.view', module: 'timetable' },
-  { href: '/parent/record', label: 'Student record', description: 'What the school holds on file about each child.', permission: 'students.self.view', module: 'students' },
+  { href: '/parent/results', label: 'Results', description: 'Exam results, once the school publishes them.', icon: 'bar-chart' as const, permission: 'results.self.view', module: 'exams' },
+  { href: '/parent/homework', label: 'Homework', description: 'Homework published for your children’s classes.', icon: 'book' as const, permission: 'homework.view', module: 'homework' },
+  { href: '/parent/attendance', label: 'Attendance', description: 'The register for a day, a month or a year, with the percentage.', icon: 'clipboard' as const, permission: 'attendance.self.view', module: 'attendance' },
+  { href: '/parent/fees', label: 'Fees', description: 'What is charged, paid and still pending, with the receipts.', icon: 'wallet' as const, permission: 'fees.self.view', module: 'fees' },
+  { href: '/parent/timetable', label: 'Timetable', description: 'Each child’s class week, period by period.', icon: 'calendar' as const, permission: 'timetable.view', module: 'timetable' },
+  { href: '/parent/record', label: 'Student record', description: 'What the school holds on file about each child.', icon: 'user' as const, permission: 'students.self.view', module: 'students' },
 ];
 
 export default function ParentDashboard() {
@@ -193,12 +194,12 @@ export default function ParentDashboard() {
               <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {records.map((item) => (
                   <li key={item.href}>
-                    <Link
-                      href={item.href}
-                      className="surface block p-4 transition-transform duration-200 hover:-translate-y-0.5 hover:border-teal"
-                    >
-                      <span className="font-semibold text-ink">{item.label}</span>
-                      <p className="mt-1 text-xs text-muted">{item.description}</p>
+                    <Link href={item.href} className="card card-interactive block p-4">
+                      <span className="flex items-center gap-2 font-semibold text-ink">
+                        <Icon name={item.icon} size={16} className="shrink-0 text-muted-soft" />
+                        {item.label}
+                      </span>
+                      <p className="mt-1.5 text-xs leading-relaxed text-muted">{item.description}</p>
                     </Link>
                   </li>
                 ))}

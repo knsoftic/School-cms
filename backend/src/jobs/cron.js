@@ -190,10 +190,21 @@ async function runOrdered(options = {}) {
  * on it, and why `notification-dispatch` runs four times an hour rather than relying on winning a
  * race.
  */
-function schedule() {
+function schedule({ skip = [] } = {}) {
   const scheduled = [];
 
+  /*
+   * A name here that is not a task is refused rather than ignored: `CRON_SKIP=databse-backup` would
+   * otherwise leave the backup scheduled on a host with no `mysqldump`, failing every night, while the
+   * setting looked as though it had been applied.
+   */
+  const unknown = skip.filter((name) => !TASKS[name]);
+  if (unknown.length) {
+    throw new Error(`cron: CRON_SKIP names unknown task(s): ${unknown.join(', ')}`);
+  }
+
   for (const task of ORDER) {
+    if (skip.includes(task.name)) continue;
     if (!cron.validate(task.schedule)) {
       throw new Error(`cron: task "${task.name}" has an invalid schedule "${task.schedule}"`);
     }
@@ -205,7 +216,10 @@ function schedule() {
     scheduled.push({ name: task.name, schedule: task.schedule, job });
   }
 
-  logger.info('cron: scheduler started', { tasks: scheduled.map((s) => `${s.name}@${s.schedule}`) });
+  logger.info('cron: scheduler started', {
+    tasks: scheduled.map((s) => `${s.name}@${s.schedule}`),
+    skipped: skip,
+  });
   return scheduled;
 }
 
@@ -252,6 +266,21 @@ if (require.main === module) {
         console.error(`cron --once failed: ${err.message}`);
         await finish(1);
       });
+  } else if (config.cron.inApi) {
+    /*
+     * The API is already the scheduler. A resident process as well would run every sweep twice against
+     * one database — two renewal passes racing, every notification sent twice.
+     *
+     * `--once` stays allowed, as a deliberate one-off. It is not protected from overlapping the API's
+     * own tick: `running` is a module-level Set, so it prevents overlap inside one process and knows
+     * nothing about another. An operator running `--once` beside a live `CRON_IN_API` API should pick
+     * a moment away from the schedule `--list` prints.
+     */
+    console.error(
+      '\nCRON_IN_API is true, so the API process runs the schedule and this resident scheduler will\n'
+      + 'not start. Unset CRON_IN_API to run cron as its own process, or use --once for a manual run.\n'
+    );
+    process.exit(1);
   } else if (!config.cron.enabled) {
     console.error(
       '\nENABLE_CRON is not true, so the resident scheduler will not start.\n'

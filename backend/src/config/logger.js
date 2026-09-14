@@ -4,7 +4,8 @@
  * Winston logger — SRS §26 "Error Logs", §27 "Logging".
  *
  * Two rotating files (`error-%DATE%.log`, `combined-%DATE%.log`) retained for
- * LOG_RETENTION_DAYS, plus a console transport outside production.
+ * LOG_RETENTION_DAYS, plus a console transport when `LOG_CONSOLE` is on — by default outside
+ * production, and in production on a host whose only log view is stdout (docs/DEPLOY-HOSTINGER.md).
  */
 
 const fs = require('fs');
@@ -41,10 +42,17 @@ const transports = [
   }),
 ];
 
-if (!config.isProduction && !config.isTest) {
+if (config.logging.console) {
   transports.push(
     new winston.transports.Console({
-      format: combine(colorize(), timestamp({ format: 'HH:mm:ss' }), consoleFormat),
+      /*
+       * Colour and a clock time for a developer's terminal; a full timestamp and no colour anywhere
+       * else. A hosting dashboard's log viewer renders ANSI colour codes as literal `[32m` noise, and a
+       * line with only `HH:mm:ss` cannot be placed on the right day once the log is more than one day old.
+       */
+      format: config.isProduction
+        ? combine(timestamp(), consoleFormat)
+        : combine(colorize(), timestamp({ format: 'HH:mm:ss' }), consoleFormat),
     })
   );
 }

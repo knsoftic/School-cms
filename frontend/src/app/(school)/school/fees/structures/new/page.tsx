@@ -180,6 +180,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
 import { PageHeader, RefusalNotice } from '@/components/table';
@@ -462,11 +463,13 @@ export default function NewFeeStructurePage() {
 
       <form onSubmit={onSubmit} className="mt-6 space-y-8" noValidate>
         <FormSection
+          columns={2}
           title="The fee"
           description="What is being charged, how much, and who it applies to."
         >
           <Field
             id="name"
+            width="md"
             label="Name"
             required
             maxLength={160}
@@ -478,6 +481,7 @@ export default function NewFeeStructurePage() {
 
           <SelectField
             id="component"
+            width="sm"
             label="Component"
             required
             value={values.component}
@@ -495,6 +499,7 @@ export default function NewFeeStructurePage() {
 
           <Field
             id="amount"
+            width="sm"
             label="Amount"
             type="number"
             required
@@ -508,6 +513,7 @@ export default function NewFeeStructurePage() {
 
           <Field
             id="currency"
+            width="xs"
             label="Currency"
             maxLength={10}
             value={values.currency}
@@ -522,91 +528,96 @@ export default function NewFeeStructurePage() {
             } Every fee raised from this structure inherits it.`}
           />
 
-          <SelectField
-            id="class_id"
-            label="Class"
-            value={values.class_id}
-            onChange={set('class_id')}
-            disabled={loadingOptions || classes.failed}
-            error={fieldErrors.class_id}
-            hint={
-              classes.failed
-                ? 'The class list could not be loaded, so a class cannot be chosen here — reading it needs the separate “View classes” permission. The structure can be created without one, and applies school-wide.'
-                : !loadingOptions && classes.rows.length === 0
-                  ? 'This school has no classes yet, so the structure will apply school-wide.'
-                  : `Leave it on “All classes” for a school-wide charge such as an admission fee.${
-                      classes.total > classes.rows.length
-                        ? ` Showing the first ${classes.rows.length} of ${classes.total}; a page cannot hold more.`
-                        : ''
-                    }${
-                      classes.rows.some(inClosedSession)
-                        ? ' A class of a closed session is shown and cannot be chosen: a closed session takes no new fee structure.'
+          <FormSpan>
+            <SelectField
+              id="class_id"
+              label="Class"
+              value={values.class_id}
+              onChange={set('class_id')}
+              disabled={loadingOptions || classes.failed}
+              error={fieldErrors.class_id}
+              hint={
+                classes.failed
+                  ? 'The class list could not be loaded, so a class cannot be chosen here — reading it needs the separate “View classes” permission. The structure can be created without one, and applies school-wide.'
+                  : !loadingOptions && classes.rows.length === 0
+                    ? 'This school has no classes yet, so the structure will apply school-wide.'
+                    : `Leave it on “All classes” for a school-wide charge such as an admission fee.${
+                        classes.total > classes.rows.length
+                          ? ` Showing the first ${classes.rows.length} of ${classes.total}; a page cannot hold more.`
+                          : ''
+                      }${
+                        classes.rows.some(inClosedSession)
+                          ? ' A class of a closed session is shown and cannot be chosen: a closed session takes no new fee structure.'
+                          : ''
+                      }`
+              }
+            >
+              {/* The empty option is an answer, not an absence — the column comment is "Null = applies
+                  school-wide", and the fees list renders it as "all classes". */}
+              <option value="">
+                {loadingOptions ? 'Loading…' : classes.failed ? 'Unavailable' : 'All classes'}
+              </option>
+              {classes.rows.map((row) => {
+                const session = row.academic_session_id
+                  ? sessionNames.get(row.academic_session_id)
+                  : undefined;
+                const closed = inClosedSession(row);
+                return (
+                  <option key={row.id} value={row.id} disabled={closed}>
+                    {row.name}
+                    {row.code ? ` (${row.code})` : ''}
+                    {session ? ` — ${session}` : ''}
+                    {closed ? ' (closed)' : ''}
+                    {row.is_active ? '' : ' — inactive'}
+                  </option>
+                );
+              })}
+            </SelectField>
+          </FormSpan>
+
+          <FormSpan>
+            <SelectField
+              id="academic_session_id"
+              label="Academic session"
+              value={values.academic_session_id}
+              onChange={set('academic_session_id')}
+              /* Without the list, still the current session — see the header. */
+              disabled={loadingOptions || (sessions.failed && sessionOptions.length === 0)}
+              error={fieldErrors.academic_session_id}
+              hint={
+                sessions.failed
+                  ? `The session list could not be loaded — reading it needs the separate “View academic sessions” permission${
+                      sessionOptions.length > 0 ? ', so only the current session is offered' : ''
+                    }. The structure can be created without one.`
+                  : `Optional, and starts on the current session. A fee raised from this structure takes the student’s own session first, so leaving this blank does not leave those fees unattached. Closed sessions are not offered — a closed session takes no new fee structure.${
+                      sessions.total > sessions.rows.length
+                        ? ` Showing the first ${sessions.rows.length} of ${sessions.total}, newest first.`
                         : ''
                     }`
-            }
-          >
-            {/* The empty option is an answer, not an absence — the column comment is "Null = applies
-                school-wide", and the fees list renders it as "all classes". */}
-            <option value="">
-              {loadingOptions ? 'Loading…' : classes.failed ? 'Unavailable' : 'All classes'}
-            </option>
-            {classes.rows.map((row) => {
-              const session = row.academic_session_id
-                ? sessionNames.get(row.academic_session_id)
-                : undefined;
-              const closed = inClosedSession(row);
-              return (
-                <option key={row.id} value={row.id} disabled={closed}>
-                  {row.name}
-                  {row.code ? ` (${row.code})` : ''}
-                  {session ? ` — ${session}` : ''}
-                  {closed ? ' (closed)' : ''}
-                  {row.is_active ? '' : ' — inactive'}
-                </option>
-              );
-            })}
-          </SelectField>
-
-          <SelectField
-            id="academic_session_id"
-            label="Academic session"
-            value={values.academic_session_id}
-            onChange={set('academic_session_id')}
-            /* Without the list, still the current session — see the header. */
-            disabled={loadingOptions || (sessions.failed && sessionOptions.length === 0)}
-            error={fieldErrors.academic_session_id}
-            hint={
-              sessions.failed
-                ? `The session list could not be loaded — reading it needs the separate “View academic sessions” permission${
-                    sessionOptions.length > 0 ? ', so only the current session is offered' : ''
-                  }. The structure can be created without one.`
-                : `Optional, and starts on the current session. A fee raised from this structure takes the student’s own session first, so leaving this blank does not leave those fees unattached. Closed sessions are not offered — a closed session takes no new fee structure.${
-                    sessions.total > sessions.rows.length
-                      ? ` Showing the first ${sessions.rows.length} of ${sessions.total}, newest first.`
-                      : ''
-                  }`
-            }
-          >
-            <option value="">
-              {loadingOptions
-                ? 'Loading…'
-                : sessions.failed && sessionOptions.length === 0
-                  ? 'Unavailable'
-                  : 'Not tied to a session'}
-            </option>
-            {sessionOptions
-              /* D20: `createStructure()` refuses a closed session with `SESSION_CLOSED` — see the header. */
-              .filter((session) => session.status !== CLOSED)
-              .map((session) => (
-                <option key={session.id} value={session.id}>
-                  {session.name} · {session.status}
-                  {session.is_current ? ' · current' : ''}
-                </option>
-              ))}
-          </SelectField>
+              }
+            >
+              <option value="">
+                {loadingOptions
+                  ? 'Loading…'
+                  : sessions.failed && sessionOptions.length === 0
+                    ? 'Unavailable'
+                    : 'Not tied to a session'}
+              </option>
+              {sessionOptions
+                /* D20: `createStructure()` refuses a closed session with `SESSION_CLOSED` — see the header. */
+                .filter((session) => session.status !== CLOSED)
+                .map((session) => (
+                  <option key={session.id} value={session.id}>
+                    {session.name} · {session.status}
+                    {session.is_current ? ' · current' : ''}
+                  </option>
+                ))}
+            </SelectField>
+          </FormSpan>
 
           <SelectField
             id="is_recurring"
+            width="sm"
             label="Recurrence"
             value={values.is_recurring}
             onChange={set('is_recurring')}
@@ -619,18 +630,20 @@ export default function NewFeeStructurePage() {
             <option value="true">Recurring</option>
           </SelectField>
 
-          <Field
-            id="due_day"
-            label="Due day"
-            type="number"
-            min={1}
-            max={31}
-            step={1}
-            value={values.due_day}
-            onChange={set('due_day')}
-            error={fieldErrors.due_day}
-            hint="1 to 31 — the day of the month a recurring component falls due. Recorded on the structure; the actual due date is set on each assignment."
-          />
+          <FormSpan>
+            <Field
+              id="due_day"
+              label="Due day"
+              type="number"
+              min={1}
+              max={31}
+              step={1}
+              value={values.due_day}
+              onChange={set('due_day')}
+              error={fieldErrors.due_day}
+              hint="1 to 31 — the day of the month a recurring component falls due. Recorded on the structure; the actual due date is set on each assignment."
+            />
+          </FormSpan>
         </FormSection>
 
         <FormSection
@@ -685,6 +698,7 @@ export default function NewFeeStructurePage() {
         >
           <SelectField
             id="discount_type"
+            width="sm"
             label="Discount type"
             value={values.discount_type}
             onChange={set('discount_type')}
@@ -718,6 +732,7 @@ export default function NewFeeStructurePage() {
         >
           <SelectField
             id="is_active"
+            width="sm"
             label="Status"
             value={values.is_active}
             onChange={set('is_active')}

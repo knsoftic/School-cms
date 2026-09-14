@@ -134,6 +134,7 @@ import {
   focusFirstInvalidField,
   FormActions,
   FormSection,
+  FormSpan,
   FileField,
 } from '@/components/form';
 import { useToast } from '@/components/toast';
@@ -476,6 +477,7 @@ export default function NewHomeworkPage() {
         >
           <Field
             id="title"
+            width="md"
             label="Title"
             required
             maxLength={180}
@@ -487,45 +489,49 @@ export default function NewHomeworkPage() {
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Who it is for"
           description="The class, subject and teacher this homework belongs to."
         >
-          <SelectField
-            id="class_id"
-            label="Class"
-            required
-            value={values.class_id}
-            onChange={onClassChange}
-            disabled={loadingOptions || classes.failed}
-            error={fieldErrors.class_id}
-            /* Neither branch is a caveat about the control — the first says homework cannot be set at
-               all yet, the second that the class you want may be missing from a truncated page. */
-            hint={
-              !loadingOptions && !classes.failed && classes.rows.length === 0
-                ? 'This school has no classes yet, and homework has to be set for one. Create a class first.'
-                : classes.total > classes.rows.length
-                  ? `Only the first ${classes.rows.length} of ${classes.total} classes could be listed here.`
-                  : undefined
-            }
-          >
-            <option value="">{loadingOptions ? 'Loading…' : 'Choose a class'}</option>
-            {classes.rows.map((row) => {
-              const session = row.academic_session_id
-                ? sessionNames.get(row.academic_session_id)
-                : undefined;
-              return (
-                <option key={row.id} value={row.id}>
-                  {row.name}
-                  {row.code ? ` (${row.code})` : ''}
-                  {session ? ` — ${session}` : ''}
-                  {row.is_active ? '' : ' — inactive'}
-                </option>
-              );
-            })}
-          </SelectField>
+          <FormSpan>
+            <SelectField
+              id="class_id"
+              label="Class"
+              required
+              value={values.class_id}
+              onChange={onClassChange}
+              disabled={loadingOptions || classes.failed}
+              error={fieldErrors.class_id}
+              /* Neither branch is a caveat about the control — the first says homework cannot be set at
+                 all yet, the second that the class you want may be missing from a truncated page. */
+              hint={
+                !loadingOptions && !classes.failed && classes.rows.length === 0
+                  ? 'This school has no classes yet, and homework has to be set for one. Create a class first.'
+                  : classes.total > classes.rows.length
+                    ? `Only the first ${classes.rows.length} of ${classes.total} classes could be listed here.`
+                    : undefined
+              }
+            >
+              <option value="">{loadingOptions ? 'Loading…' : 'Choose a class'}</option>
+              {classes.rows.map((row) => {
+                const session = row.academic_session_id
+                  ? sessionNames.get(row.academic_session_id)
+                  : undefined;
+                return (
+                  <option key={row.id} value={row.id}>
+                    {row.name}
+                    {row.code ? ` (${row.code})` : ''}
+                    {session ? ` — ${session}` : ''}
+                    {row.is_active ? '' : ' — inactive'}
+                  </option>
+                );
+              })}
+            </SelectField>
+          </FormSpan>
 
           <SelectField
             id="section_id"
+            width="md"
             label="Section"
             value={values.section_id}
             /* The subject is re-tested against the section's curriculum once it arrives — see above. */
@@ -550,46 +556,49 @@ export default function NewHomeworkPage() {
             ))}
           </SelectField>
 
-          <SelectField
-            id="subject_id"
-            label="Subject"
-            value={values.subject_id}
-            onChange={set('subject_id')}
-            disabled={!values.class_id || curriculum.state !== 'ready'}
-            error={fieldErrors.subject_id}
-            /* D30 — see the header. The server refuses a subject the chosen class does not teach. */
-            hint={
-              curriculum.state === 'failed'
-                ? 'The class’s subjects could not be loaded, so a subject cannot be chosen here. Reading them needs the separate “View subjects” permission. The homework can be set without one.'
-                : values.class_id && curriculum.state === 'ready' && offeredSubjects.length === 0
-                  ? 'No subject is on this class’s curriculum yet, so none can be named. Subjects are added to a class on the subject’s own screen; the homework can be set without one.'
-                  : `Optional. Only subjects on the chosen class’s curriculum are offered — one added for a single section counts only when that section is named — because the server refuses any other.${
-                      curriculum.state === 'ready' && curriculum.total > curriculum.rows.length
-                        ? ` Showing the first ${curriculum.rows.length} of ${curriculum.total}.`
-                        : ''
-                    }`
-            }
-          >
-            <option value="">
-              {!values.class_id
-                ? 'Choose a class first'
-                : curriculum.state === 'loading'
-                  ? 'Loading the class’s subjects…'
-                  : curriculum.state === 'failed'
-                    ? 'Unavailable'
-                    : 'No subject'}
-            </option>
-            {values.class_id
-              ? offeredSubjects.map((subject) => (
-                  <option key={subject.id} value={subject.id}>
-                    {subject.name} ({subject.code}){subject.is_active ? '' : ' — inactive'}
-                  </option>
-                ))
-              : null}
-          </SelectField>
+          <FormSpan>
+            <SelectField
+              id="subject_id"
+              label="Subject"
+              value={values.subject_id}
+              onChange={set('subject_id')}
+              disabled={!values.class_id || curriculum.state !== 'ready'}
+              error={fieldErrors.subject_id}
+              /* D30 — see the header. The server refuses a subject the chosen class does not teach. */
+              hint={
+                curriculum.state === 'failed'
+                  ? 'The class’s subjects could not be loaded, so a subject cannot be chosen here. Reading them needs the separate “View subjects” permission. The homework can be set without one.'
+                  : values.class_id && curriculum.state === 'ready' && offeredSubjects.length === 0
+                    ? 'No subject is on this class’s curriculum yet, so none can be named. Subjects are added to a class on the subject’s own screen; the homework can be set without one.'
+                    : `Optional. Only subjects on the chosen class’s curriculum are offered — one added for a single section counts only when that section is named — because the server refuses any other.${
+                        curriculum.state === 'ready' && curriculum.total > curriculum.rows.length
+                          ? ` Showing the first ${curriculum.rows.length} of ${curriculum.total}.`
+                          : ''
+                      }`
+              }
+            >
+              <option value="">
+                {!values.class_id
+                  ? 'Choose a class first'
+                  : curriculum.state === 'loading'
+                    ? 'Loading the class’s subjects…'
+                    : curriculum.state === 'failed'
+                      ? 'Unavailable'
+                      : 'No subject'}
+              </option>
+              {values.class_id
+                ? offeredSubjects.map((subject) => (
+                    <option key={subject.id} value={subject.id}>
+                      {subject.name} ({subject.code}){subject.is_active ? '' : ' — inactive'}
+                    </option>
+                  ))
+                : null}
+            </SelectField>
+          </FormSpan>
 
           <SelectField
             id="teacher_id"
+            width="md"
             label="Teacher"
             value={values.teacher_id}
             onChange={set('teacher_id')}
@@ -619,37 +628,41 @@ export default function NewHomeworkPage() {
             ))}
           </SelectField>
 
-          <SelectField
-            id="academic_session_id"
-            label="Academic session"
-            value={values.academic_session_id}
-            onChange={set('academic_session_id')}
-            disabled={loadingOptions || sessions.failed}
-            error={fieldErrors.academic_session_id}
-            hint={
-              sessions.failed
-                ? 'The session list could not be loaded, so a session cannot be chosen here. Reading it needs the separate “View academic sessions” permission. The homework can be set without one.'
-                : 'Optional, and not defaulted: left blank the homework belongs to no session, not to the current one. Newest first.'
-            }
-          >
-            <option value="">
-              {loadingOptions ? 'Loading…' : sessions.failed ? 'Unavailable' : 'No session'}
-            </option>
-            {sessions.rows.map((session) => (
-              <option key={session.id} value={session.id}>
-                {session.name} · {session.status}
-                {session.is_current ? ' · current' : ''}
+          <FormSpan>
+            <SelectField
+              id="academic_session_id"
+              label="Academic session"
+              value={values.academic_session_id}
+              onChange={set('academic_session_id')}
+              disabled={loadingOptions || sessions.failed}
+              error={fieldErrors.academic_session_id}
+              hint={
+                sessions.failed
+                  ? 'The session list could not be loaded, so a session cannot be chosen here. Reading it needs the separate “View academic sessions” permission. The homework can be set without one.'
+                  : 'Optional, and not defaulted: left blank the homework belongs to no session, not to the current one. Newest first.'
+              }
+            >
+              <option value="">
+                {loadingOptions ? 'Loading…' : sessions.failed ? 'Unavailable' : 'No session'}
               </option>
-            ))}
-          </SelectField>
+              {sessions.rows.map((session) => (
+                <option key={session.id} value={session.id}>
+                  {session.name} · {session.status}
+                  {session.is_current ? ' · current' : ''}
+                </option>
+              ))}
+            </SelectField>
+          </FormSpan>
         </FormSection>
 
         <FormSection
+          columns={2}
           title="Dates"
           description="When it is handed out and when it is due back."
         >
           <Field
             id="assigned_date"
+            width="sm"
             label="Assigned date"
             type="date"
             value={values.assigned_date}
@@ -660,6 +673,7 @@ export default function NewHomeworkPage() {
 
           <Field
             id="due_date"
+            width="sm"
             label="Due date"
             type="date"
             required
