@@ -9,7 +9,7 @@ name: Build frontend for Hostinger
 
 on:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - 'frontend/**'
       - 'deploy/hostinger/bundle-frontend.js'
@@ -19,7 +19,7 @@ on:
 permissions:
   contents: write
 
-# A newer push supersedes a build still running; the branch only ever holds the latest master.
+# A newer push supersedes a build still running; the branch only ever holds the latest main.
 concurrency:
   group: hostinger-frontend
   cancel-in-progress: true
@@ -86,6 +86,6 @@ jobs:
           git add -A
           git -c user.name="github-actions[bot]" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-              commit -q -m "Frontend build of ${GITHUB_SHA::7} from master"
+              commit -q -m "Frontend build of ${GITHUB_SHA::7} from main"
           git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" hostinger-frontend
           echo "Published $(git rev-parse --short HEAD) to hostinger-frontend, built from ${GITHUB_SHA::7}"

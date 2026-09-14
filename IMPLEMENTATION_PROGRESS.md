@@ -12122,6 +12122,46 @@ removes every dev dependency, the test toolchain included.
   run's 36 trail rows cleaned). The first full `npm test` after that failed **one** case — the harness's
   check that the checklist's quoted suite figures match the baseline, which still read 79, 294 and 119 —
   and after `docs/IMPLEMENTATION_CHECKLIST.md` was corrected it passed **6,043 of 6,043**, exit 0.
+
+*Session 31, after the first commit — the first real deploy to Hostinger, and what it found.* Each item
+was found in a build log the owner pasted from hPanel, reproduced here where it could be, then fixed.
+No suite gained or lost an assertion, so the baseline and the checklist figures above still hold.
+
+1. **Env template corrections** (`0330dad`). `PAYMENT_GATEWAYS` offered `online_gateway`, but no card
+   processor adapter ships, so an online payment is refused. And `MAIL_FROM` was quoted: nodemailer parses
+   a quoted value that a dashboard keeps literally as the address `"… <no-reply"@example.com>`, so every
+   email would fail. Now four recorded methods, and an unquoted sender.
+2. **The Node version** (`020a21a`). The build ran on Node 18.20.8, and Next.js 16 needs `>=20.9.0`. The
+   frontend declared no engine, and the backend's `>=18.0.0` was false: `semver` against every non-dev
+   package in both lockfiles found 5 backend packages refusing 18 and none refusing 20.9. Both now declare
+   `>=20.9.0`. Hostinger saves the Node version at an app's first deploy and ignores `engines`
+   afterwards, so the fix on the host is its setting.
+3. **Build tools as dependencies** (`475fdac`). Hostinger installs production dependencies only
+   ("added 20 packages, audited 21", against a full tree of 446). Reproduced exactly with
+   `git archive` + `npm ci --omit=dev` — 21 packages, then `Cannot find module '@tailwindcss/postcss'`.
+   `@tailwindcss/postcss`, `postcss`, `tailwindcss`, `typescript` and the three `@types` moved to
+   `dependencies`, with no version change. After: the same install builds 103 routes. The backend was
+   checked the same way: every package `src/` requires is a dependency except `redis`, which is optional
+   and lazy by design.
+4. **Hostinger cannot build Next.js 16 at all** (`b4bcd78`). The native compiler
+   `@next/swc-linux-x64-gnu` installs there and then fails to load, because the build servers' GLIBC is
+   older than it requires. The Linux binaries were confirmed present in the lockfile, which rules out a
+   lockfile made on Windows, and no Next.js version fixes the host's GLIBC. Running a build needs none of
+   it: the production build served every route, dynamic ones included, with the native compiler and both
+   Tailwind engines removed, and `next/image` is unused, so `sharp` never loads. So
+   `.github/workflows/hostinger-frontend.yml` builds on Ubuntu with Node 24,
+   `deploy/hostinger/bundle-frontend.js` assembles the app (dependencies byte-for-byte, a no-op `build`,
+   `start` = `server.js`), the workflow starts it and requires four pages to answer 200, and only then
+   force-publishes the branch **`hostinger-frontend`**, which Hostinger's web app deploys from.
+   **Verified on GitHub, not only locally:** the branch holds `ba9c5c8` by github-actions[bot],
+   2,398 files, no `node_modules`, and the API address compiled in. Hostinger offers no "Other"
+   framework; **Express** is the plain-server choice that runs an entry file and builds nothing.
+5. **`master` renamed `main`** at the owner's request. `hostinger-frontend` stays as the one generated
+   branch; the owner chose that over building into a folder on `main` or uploading by hand. The workflow
+   trigger, its commit message, the branch README and the guide now say `main`.
+
+*Still not verified:* the frontend running on Hostinger (last seen: the redeploy from
+`hostinger-frontend` was being set up), and the API not yet deployed.
 - Lint clean in both halves, `tsc` clean.
 
 *What was not verified.* **Hostinger itself** — no access to the owner's hPanel; the guide lists what
