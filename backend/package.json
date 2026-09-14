@@ -5,7 +5,7 @@
   "description": "Multi-School Management System — REST API (Node.js, Express, MySQL, Sequelize)",
   "main": "src/server.js",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.9.0"
   },
   "scripts": {
     "start": "node src/server.js",

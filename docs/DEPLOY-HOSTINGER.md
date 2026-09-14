@@ -152,6 +152,11 @@ hPanel → **Websites → Add website → Node.js app**, on `app.example.com`.
 | `NODE_ENV` | `production` |
 | `NEXT_PUBLIC_API_URL` | `https://api.example.com/api/v1` |
 
+**If the build log says `You are using Node.js 18.20.8. For Next.js, Node.js version ">=20.9.0" is
+required`**, the app was created on Node 18. Open the app's settings, set the Node.js version to **24**,
+and redeploy. The API needs 20.9 or newer as well — five of its production packages refuse 18 — so
+check its setting too. Both `package.json` files declare `"node": ">=20.9.0"`.
+
 `NEXT_PUBLIC_API_URL` is compiled into the pages **when the app is built**. Set it before the first
 deploy; after changing it, redeploy — a restart keeps the old address.
 
