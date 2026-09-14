@@ -135,30 +135,47 @@ prefix, or a wrong password, arrives instead as the database's own error — `Un
 
 ## 4. The web application — `app.example.com`
 
-hPanel → **Websites → Add website → Node.js app**, on `app.example.com`.
+**The web app is not built on Hostinger.** Next.js 16 builds with a native compiler, and on Business web
+hosting that compiler installs and then cannot load: the build servers' **GLIBC is older than it
+requires**, so `next build` fails with *"Turbopack is not supported on this platform (linux/x64) because
+native bindings are not available"*. No version of Next.js fixes an old GLIBC on the host.
+
+Running a built app needs no compiler, so the build happens on GitHub instead:
+
+1. [`.github/workflows/hostinger-frontend.yml`](../.github/workflows/hostinger-frontend.yml) runs on every
+   push to `master` that changes `frontend/`. It builds on Ubuntu with Node 24, assembles the app with
+   [`deploy/hostinger/bundle-frontend.js`](../deploy/hostinger/bundle-frontend.js), **starts it and
+   requires the pages to answer**, and only then publishes it to the branch **`hostinger-frontend`**.
+2. Hostinger deploys **that branch**. It installs packages and starts `server.js`; nothing compiles there.
+
+Check the first run under the repository's **Actions** tab: the job ends with
+`Published … to hostinger-frontend`, and the branch appears in the branch list.
+
+hPanel → **Websites → Add website → Node.js app**, on `app.example.com`, from GitHub:
 
 | Setting | Value |
 |---|---|
-| Framework | Next.js |
+| Branch | **`hostinger-frontend`** — not `master` |
+| Framework | Other (Next.js also works, provided the build command stays as below) |
 | Node.js version | **24** |
-| Root directory (GitHub only) | `frontend` |
-| Build command | `npm run build` |
+| Root directory | none — the branch *is* the app |
+| Build command | none. `npm run build` is harmless too: on this branch it prints a message and compiles nothing |
 | Entry file | `server.js` |
 
 **Environment variables** — [`deploy/hostinger/app.env.example`](../deploy/hostinger/app.env.example):
-
-| Variable | Value |
-|---|---|
-| `NODE_ENV` | `production` |
-| `NEXT_PUBLIC_API_URL` | `https://api.example.com/api/v1` |
+only `NODE_ENV=production` matters. `NEXT_PUBLIC_API_URL` is compiled into the pages
+**by GitHub Actions**, from the workflow's default (`https://school-api.knsoftic.com/api/v1`) or from a
+repository variable of that name (GitHub → Settings → Secrets and variables → Actions → Variables). To
+change it, change the variable and re-run the workflow — setting it in hPanel has no effect on pages
+already built.
 
 **If the build log says `You are using Node.js 18.20.8. For Next.js, Node.js version ">=20.9.0" is
 required`**, the app was created on Node 18. Open the app's settings, set the Node.js version to **24**,
 and redeploy. The API needs 20.9 or newer as well — five of its production packages refuse 18 — so
 check its setting too. Both `package.json` files declare `"node": ">=20.9.0"`.
 
-`NEXT_PUBLIC_API_URL` is compiled into the pages **when the app is built**. Set it before the first
-deploy; after changing it, redeploy — a restart keeps the old address.
+**If the build log mentions Turbopack, native bindings, SWC or GLIBC**, the app is building `master`
+instead of the `hostinger-frontend` branch. Change the branch in the app's settings and redeploy.
 
 `server.js` serves the built application on the port Hostinger assigns, and runs in production mode
 unless `NODE_ENV=development` is set explicitly — so a forgotten variable cannot put the dev server on

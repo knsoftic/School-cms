@@ -1,0 +1,91 @@
+# Build the web app on a current Linux and publish it, ready to run, to the `hostinger-frontend` branch —
+# the branch Hostinger's `school.knsoftic.com` app deploys from.
+#
+# Why the build cannot happen on Hostinger: its build servers' GLIBC is older than Next.js's native
+# compiler requires, so `next build` fails there. Running a built app needs no compiler. The reasoning
+# and the verification are in deploy/hostinger/bundle-frontend.js and docs/DEPLOY-HOSTINGER.md.
+
+name: Build frontend for Hostinger
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'frontend/**'
+      - 'deploy/hostinger/bundle-frontend.js'
+      - '.github/workflows/hostinger-frontend.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A newer push supersedes a build still running; the branch only ever holds the latest master.
+concurrency:
+  group: hostinger-frontend
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Compiled into the pages at build time. To point at another API, set a repository variable named
+      # NEXT_PUBLIC_API_URL (Settings → Secrets and variables → Actions → Variables) and re-run.
+      NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'https://school-api.knsoftic.com/api/v1' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Assemble the app as Hostinger runs it
+        run: node deploy/hostinger/bundle-frontend.js frontend "$RUNNER_TEMP/hostinger-frontend"
+
+      # The same install Hostinger performs — production dependencies only — then a real start. A bundle
+      # that cannot serve its pages fails here and is never published.
+      - name: Start it once and require the pages to answer
+        working-directory: ${{ runner.temp }}/hostinger-frontend
+        run: |
+          npm ci --omit=dev --no-audit --no-fund
+          PORT=3300 node server.js > server.log 2>&1 &
+          server_pid=$!
+          for attempt in $(seq 1 60); do
+            if grep -q "listening on port" server.log; then break; fi
+            sleep 1
+          done
+          cat server.log
+          failed=0
+          for route in / /login /forgot-password /super-admin; do
+            status=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:3300${route}")
+            echo "${route} -> ${status}"
+            if [ "${status}" != "200" ]; then failed=1; fi
+          done
+          kill "${server_pid}" || true
+          rm -rf node_modules server.log
+          exit "${failed}"
+
+      - name: Publish to the hostinger-frontend branch
+        working-directory: ${{ runner.temp }}/hostinger-frontend
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git init -q
+          git checkout -q -b hostinger-frontend
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Frontend build of ${GITHUB_SHA::7} from master"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" hostinger-frontend
+          echo "Published $(git rev-parse --short HEAD) to hostinger-frontend, built from ${GITHUB_SHA::7}"
