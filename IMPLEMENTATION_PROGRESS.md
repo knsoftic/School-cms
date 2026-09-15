@@ -3,7 +3,7 @@
 **Project:** Multi-School Management System (multi-tenant SaaS)
 **Source of truth:** `SRS_Multi-School-Management-System.docx` (36 sections)
 **Root:** `E:\School Managment System`
-**Last updated:** 2026-09-11 (end of session 30 — the last owner question answered and built as D38, the development database seeded)
+**Last updated:** 2026-09-14 (session 32 — an aaPanel readiness check, then `docs/DEPLOY-AAPANEL.md` and `deploy/aapanel/`, the template booted in production; no application code changed; see the end of §7's session history)
 
 ## Where this stands, in one place
 
@@ -12172,6 +12172,230 @@ delivery and a live Anthropic call**, as before.
 
 *Not committed, deliberately.* `.claude/launch.json` (port 3001, this machine) and the ignored
 `backend/.env`. **No git remote is configured**, so nothing was pushed.
+
+**Session 32 (2026-09-14) — a readiness check for aaPanel, verification only.** The owner now wants to
+deploy on **aaPanel**, which is a control panel on a VPS, so the target is the `deploy/` VPS path, not
+the Hostinger one. The first half only measured. The second half, at the owner's request ("show proper doc
+with complete guide of deployment"), wrote the aaPanel guide and its templates, described below. **No
+application code changed.**
+
+*Measured, on `265af71`:*
+
+- `npm test` from `backend/`: **6,043 of 6,043, exit 0**, 40 suites, 6 min 07 s, per-suite counts matching
+  `tests/baseline.json`. Frontend `eslint .` exit 0, `tsc --noEmit` exit 0, `next build` exit 0. Backend
+  `eslint src tests` exit 0. `npm audit --omit=dev`: **0** vulnerabilities in both halves.
+- **Linux filename case**, which this Windows machine cannot show: every relative `require`/`import`
+  (and `@/` in the frontend) across `backend/src`, `scripts`, `tests`, `deploy` and `frontend/src`
+  resolved against the exact on-disk case. **2,534 checked, 0 mismatches.**
+- **MySQL 8 DDL, statically.** The initial migration's generated `CREATE TABLE` SQL (64 tables, 354
+  indexes, 254 foreign keys) was scanned for three things MariaDB accepts and MySQL 8 refuses: a
+  `DEFAULT` on TEXT/BLOB/JSON, a utf8mb4 index key estimated over 3,072 bytes, and `ON DELETE SET NULL`
+  on a NOT NULL column. **0 found.** The raw SQL in `src/` names tables in lower case and uses the model
+  aliases (`Result`, `Subscription`) in matching case, which matters where `lower_case_table_names=0`.
+  **Not run on MySQL 8**: MariaDB 10.4 is still the only engine this code has run against.
+- **The VPS path, booted from `git archive` output** rather than the working tree, into the scratchpad.
+  The throwaway database `msms_aapanel_boot` was dropped afterwards. The backend had `npm ci --omit=dev`
+  (391 packages) and a `production.env.example`-shaped `.env`: `NODE_ENV=production`, smtp, `TRUST_PROXY=1`,
+  absolute data directories, four payment methods. Then `db:create`, `db:migrate` (64 tables / 354 / 254,
+  30.4 s) and `db:seed` (11 roles, 109 permissions, 359 grants, one owner, 7 add-ons), all under
+  production. With `src/server.js` running: `/health/ready` 200 with the database up. Preflight from
+  the listed origin 204 with credentials allowed; any other origin 403. Owner sign-in 200 with
+  `must_change_password`, no refresh token in the body, refresh cookie `HttpOnly; Secure; SameSite=Lax`
+  on `/api/v1/auth`, HSTS on. An unknown route 401 with no stack; `/docs/` 200. `cron.js` with
+  `ENABLE_CRON=true` was still alive after 12 s with 8 tasks scheduled. `npm run db:backup` wrote
+  197,813 bytes. The frontend had `npm ci --omit=dev` (46 packages) and a build with
+  `NEXT_PUBLIC_API_URL` set. `next start -H 127.0.0.1` then served `/`, `/login`, `/forgot-password`,
+  `/super-admin` and `/teacher` at 200, an unknown page at 404, with the API address compiled into the bundle.
+
+*Found, and not fixed (the owner asked for a check):*
+
+1. `deploy/env/production.env.example` still lists `online_gateway` in `PAYMENT_GATEWAYS`. `0330dad`
+   removed it from the Hostinger template only, and no adapter ships, so on a VPS an online payment would
+   be offered and then refused. *Correction, same session:* that template's own comments already say
+   "If no provider is contracted yet, remove `online_gateway` from PAYMENT_GATEWAYS". So it is documented
+   rather than wrong, and it was left as it is; the aaPanel template omits the method.
+2. `backend/src/server.js` and `frontend/server.js` call `listen(port)` with no host, so they bind every
+   interface. Only PM2's `msms-web` passes `-H 127.0.0.1`. On a VPS the firewall is the only thing keeping
+   4000 (and 3000, if `server.js` is used) private.
+3. `deploy/nginx/msms.conf` names Debian-package paths: `/var/log/nginx`, `/etc/letsencrypt/live`,
+   `/var/www/certbot`, and relies on `/etc/logrotate.d/nginx`. aaPanel builds its own nginx with its own
+   log, certificate and vhost locations. Pasted as it is, `nginx -t` fails first on those paths. It also
+   uses `http2 on;`, which needs nginx 1.25.1 or newer.
+4. `deploy/pm2/ecosystem.config.js` throws at load unless `/var/log/msms` exists, by design (`:248`).
+5. The untracked `frontend/.env.local` holds `http://localhost:4000/api/v1`. `next build` loads it
+   ("Environments: .env.local"), and in Next.js it outranks `.env.production`. A server that gets a *copy*
+   of this folder rather than a clone would build against localhost, unless the variable is exported in
+   the shell. A shell value was measured to win.
+
+*Not verified:* aaPanel, Linux, nginx, PM2 and MySQL 8 themselves; real SMTP; a live Anthropic call.
+
+*Side effect, undone:* the check's `next build` compiled `api.example.com` into the local
+`frontend/.next`. It was rebuilt without the variable and now reads `localhost:4000` again. `git status`
+was clean before and after, apart from this entry.
+
+*Second half — the aaPanel guide.* Five new files, plus README links.
+
+- `docs/DEPLOY-AAPANEL.md` covers the whole path:
+  - Ubuntu 22.04/24.04; aaPanel for nginx, the database and the firewall
+  - Node 24 from NodeSource, with PM2
+  - a dedicated `msms` user, since `deploy/logrotate/msms` already assumes that name
+  - database, clone, `.env`, migrate and seed, build, PM2 and boot start
+  - the two sites with Let's Encrypt, logrotate, first sign-in, a check table
+  - backups and the restore drill, updates and rollback, monitoring, troubleshooting
+  - aaPanel's one-process Node project as an unverified alternative
+- `deploy/aapanel/api.env.example` holds the VPS values: `PORT=4000`, `TRUST_PROXY=1`, uploads and
+  backups under `/www/msms-data`, `LOG_CONSOLE=false`, four payment methods, `MYSQLDUMP_PATH` under
+  `/www/server/mysql/bin`, and the three Hostinger keys off.
+- `deploy/aapanel/nginx-api.conf` and `nginx-app.conf` are `deploy/nginx/msms.conf` rewritten for aaPanel:
+  - its paths: `/www/wwwlogs`, `/www/server/panel/vhost/cert/<domain>/`, and the site folder as the
+    ACME webroot
+  - `listen 443 ssl http2` so it works on every nginx aaPanel offers
+  - `msms`-prefixed map, upstream and log_format names
+  - the five 12m upload prefixes and the 300s/180s timeouts kept
+  - no IPv6 listen by default
+- `deploy/aapanel/msms-web.logrotate` fills a gap in the VPS kit: `deploy/logrotate/msms` predates PM2's
+  third app, so `/var/log/msms/msms-web-{out,error}.log` were rotated by nothing. The shared file was not
+  edited, because its comments count "four" PM2 files in about twenty places. A separate file naming only
+  the two web paths avoids logrotate's duplicate-entry refusal.
+
+*Verified for the second half:*
+
+- A scratch check of the aaPanel template, in `verify-deploy.js` Part 8's style, passed 14 of 14:
+  - all **77** keys `env.js` reads, none it ignores, no secret
+  - production, port 4000, one proxy hop, no scheduler or migration flags, smtp, no `online_gateway`
+  - absolute data paths; app and API on one site
+  - both nginx upstreams, and the CORS map naming the template's origin
+  - the same five 12m prefixes and the same 300s/180s timeouts as `msms.conf` (the prefix lists were
+    printed, 5 and 5, so the comparison was not empty against empty)
+  - balanced braces
+- **Booted.** The template was filled in, changing only the blanks and this machine's paths and
+  credentials, and run in production on a throwaway database, `msms_aapanel_tpl`, dropped afterwards.
+  - `db:migrate` and `db:seed` each ran four times. A count after the third run read 65 tables, 1 user,
+    1 ledger row and 359 grants, and the fourth run's output reported the same totals with nothing
+    created.
+  - `/health/ready` 200; CORS allow and deny; owner sign-in with `HttpOnly; Secure; SameSite=Lax`; no
+    stack on an error; `/docs/` 200.
+  - The mail sender parsed unquoted; `db:backup` wrote 197,811 bytes.
+- **One defect found by booting it:** with the template's `LOG_CONSOLE=false`, `npm run db:migrate` and
+  `db:seed` succeed and print **nothing**, because production logs only to files. The guide now runs
+  both as `LOG_CONSOLE=true npm run …`. The lines it quotes are from such a run, including the second-run
+  `No pending migrations.` and `super-admin (reason=already present, id=1)`. The template was left
+  unchanged, since the API's own stdout is meant to be empty under PM2.
+- `node scripts/verify-deploy.js`: **105 of 105**, exit 0, unchanged; it does not yet know the aaPanel files.
+- `git check-ignore` on the five new files: none ignored.
+
+*Not verified:* the nginx files have not been through `nginx -t`. nginx is not installed here, and
+fetching a Windows build would be a download the owner has not approved. The guide says to run it before
+reloading. aaPanel's screens and paths, Linux, PM2, systemd, logrotate and MySQL 8 were not verified
+either. The guide's last section says so.
+
+*Not committed.* The five new files, the README links and this entry are uncommitted working-tree changes.
+
+*Third part (same day, a new session) — the guide rewritten for the owner's real aaPanel server.* The
+owner gave the server's details, writing in Roman Urdu:
+
+- web app `school.knbazaar.com` in `/www/wwwroot/school.knbazaar.com`
+- API `school-api.knbazaar.com` in `/www/wwwroot/school-api.knbazaar.com`
+- IP `187.77.138.214`
+
+They asked for the guide to follow aaPanel's way. Terminal output they pasted earlier had shown four
+things about the box:
+
+- Ubuntu `resolute`
+- an `rspamd.com` apt list returning 404, which stopped NodeSource
+- Ubuntu's own Node.js 22 installed in its place
+- Apache (`httpd`) and PM2 as root running other projects: `hunario-*` and `vyra-*`
+
+What changed:
+
+- **`docs/DEPLOY-AAPANEL.md` rewritten** for that server. Every command carries the real paths, and there
+  are no placeholders to substitute. The main changes:
+  - Each site folder holds its own clone; the web site runs `frontend/`, the API site `backend/`.
+  - aaPanel's **Reverse proxy** and SSL screens replace hand-written nginx files, so the guide works on
+    Nginx or Apache. The one addition, a 300 s proxy timeout for AI generation, is given for both.
+  - Ports are **3100/4100**, because other Node apps share the box.
+  - Step 2 recovers from the rspamd/apt failure and replaces Ubuntu's Node 22 with NodeSource's 24.
+  - Logs moved out of the web-served folders, to `/www/msms-data/logs`.
+- **`deploy/aapanel/ecosystem.config.js` added.** It names the two site folders absolutely, since the VPS
+  file assumes one checkout, and refuses to load on Linux if either clone is missing. PM2 logs are handled
+  by `pm2-logrotate`, not `/var/log/msms`.
+- **`deploy/aapanel/nginx-api.conf`, `nginx-app.conf` and `msms-web.logrotate` deleted.** They were
+  written earlier this session, never committed, and are superseded by the above. The gap that
+  `msms-web.logrotate` recorded — `deploy/logrotate/msms` not naming msms-web's files — still stands for
+  the VPS kit.
+- **`deploy/aapanel/api.env.example`** now carries the real addresses, `PORT=4100` and
+  `LOG_DIR=/www/msms-data/logs`.
+- **The published guide page**, https://claude.ai/code/artifact/b6d87a61-7b1d-4489-8b45-ed57c88774bb, was
+  republished with the same content.
+
+Mid-task the owner ran two commands out of order, and both became fixes:
+
+- They typed `pm2 describe <name>` literally, and bash read `<` as a redirect. The guide now has no `<…>`
+  placeholder in any command.
+- They ran step 6's folder move before step 4 had created `msms`. The move and `mkdir` succeeded, `chown`
+  failed, and the original files are safe in `*.aapanel-default`. Step 6's command now checks
+  `id msms` first and skips a folder that was already moved.
+
+*Verified in the third part:*
+
+- **A scratch check of the template and the ecosystem file: 14 of 14.**
+  - The template has all 77 keys `env.js` reads, none extra, and no secret, plus the real addresses, port
+    4100 and the `/www/msms-data` paths.
+  - The ecosystem file has three apps with the documented folder, script, instances, `ENABLE_CRON`,
+    `LOG_DIR` and `start -p 3100 -H 127.0.0.1`, and both scripts exist in the tree.
+  - With `process.platform` stubbed to `linux`, it throws naming the missing folder and "step 6".
+- **A production boot of the filled template** on a throwaway database, `msms_aapanel_tpl2`, dropped
+  afterwards. MariaDB had to be started first: it was down at the new session's start, and the first
+  attempt's ECONNREFUSED lines are the only content of that run's error log.
+  - Migrate applied 1 and seed created 11/109/359/1/7.
+  - `/health/ready` 200 on 4100; preflight from `https://school.knbazaar.com` 204 with credentials, from
+    `https://school.knsoftic.com` 403.
+  - Owner sign-in 200 with `HttpOnly; Secure; SameSite=Lax`, and nothing on stdout.
+  - Log files went to the absolute `LOG_DIR`; `cron.js` stayed alive 10 s writing to its own folder;
+    `db:backup` wrote 197,822 bytes.
+- **That run corrected the guide.** Migrate's last lines are `Initial schema created …`, `Migrated up …`,
+  `Applied 1 migration(s).` — three lines, not the two the guide had quoted.
+- **The step 6 loop, run in Git Bash** against a fake `wwwroot` with `id` and `chown` stubbed, in four
+  states. All four were right:
+  - no user: exit 1, nothing moved
+  - fresh: moved, recreated, 2 chowns
+  - re-run: nothing nested, 2 chowns
+  - the owner's real state: no move, 2 chowns
+
+*Not verified:* aaPanel's reverse-proxy screens and the config files they write, where the timeout lines
+go, Apache vs Nginx on this box, Linux, PM2 startup, `pm2-logrotate`, and MySQL 8.
+
+*Continued on 2026-09-15, following the owner's pasted server output.* Each fix went into the guide, the
+page, and where it applied, the PM2 file.
+
+- **Root commands run as `msms`** failed with `Permission denied` and changed nothing. The guide now says
+  how to read the prompt (`root@…#` vs `msms@…$`) and has a troubleshooting row for it. The rspamd command
+  now only matches active `*.list` / `*.sources` files, so a re-run cannot produce `.disabled.disabled`.
+  That was tested in Git Bash against the owner's state, a fresh state and a second run.
+- **Node.js 24.21.0 from NodeSource is installed.** `apt-get update` is clean.
+- **Root's `npm install -g pm2` did not create `/usr/bin/pm2`,** and `msms` got `pm2: command not found`.
+  npm's global prefix on this box is not `/usr` and not on msms's PATH; the exact folder was not captured.
+  - `msms` now gets its own PM2: `npm config set prefix ~/.npm-global` plus a PATH line.
+  - The boot command runs `/usr/bin/node /home/msms/.npm-global/lib/node_modules/pm2/bin/pm2 startup …`,
+    never root's PM2.
+  - `deploy/aapanel/ecosystem.config.js` pins `interpreter: '/usr/bin/node'` and refuses on Linux when it
+    is absent. Scratch check 6 of 6: the pinned interpreter on all three apps, and each Linux refusal with
+    the other condition satisfied.
+- **GitHub.** SSH clone failed with `Permission denied (publickey)`; the deploy key had never been added.
+  `git ls-remote` with credentials disabled showed the repository is **public**, so step 6 now clones over
+  HTTPS with `-b main`, and the deploy key is only a note for a private repository. The same call showed
+  GitHub holds only `master` (`b4bcd78`) and `hostinger-frontend`. The local `main` was one commit ahead
+  (`265af71`), and none of the aaPanel work was committed, so a clone would have lacked
+  `deploy/aapanel/`. The owner chose to commit and push `main`, having been told the repository is public
+  and the guide names the server IP.
+
+*Next action:*
+
+1. The owner continues on the server: msms's own PM2 (step 4), the HTTPS clones (step 6), then steps 7
+   onward.
+2. Encode `deploy/aapanel/` in `verify-deploy.js` the way Part 8 holds Hostinger's. That moves the suite
+   count, so re-record the baseline and correct the checklist's quoted figure in the same change.
+3. The first real deployment, worked through the guide's step 13.
 
 ### Next task — what is left, and why each item is where it is
 
