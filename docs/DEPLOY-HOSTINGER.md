@@ -53,11 +53,14 @@ two apps, `backend/` and `frontend/`, so each Hostinger app must be given one of
 
 ### Option A — GitHub, with automatic redeploys on every push
 
-Push this repository to GitHub and create each app from it in hPanel. If the setup screen offers a
-**root directory**, set it to `backend` for the API and `frontend` for the web app.
+Push this repository to GitHub and create each app from it in hPanel:
 
-If there is no root directory setting, use option B: Hostinger would build the repository's top
-folder, which is not an app.
+- **The API** from branch **`main`**, root directory **`backend`**.
+- **The web app** from branch **`hostinger-frontend`**, with no root directory — the already-built app
+  GitHub Actions publishes (step 4). Never from `main`'s `frontend/` folder: Hostinger cannot build it.
+
+If the API's setup screen offers no root directory, use option B for the API: Hostinger would otherwise
+build the repository's top folder, which is not an app.
 
 ### Option B — upload one archive per app
 
@@ -67,13 +70,21 @@ On your computer, from the repository's top folder, after committing:
 git archive --format=zip -o msms-backend.zip HEAD:backend
 ```
 
+For the web app, archive the **built** branch, not the `frontend/` source — Hostinger cannot build the
+source (step 4):
+
 ```bash
-git archive --format=zip -o msms-frontend.zip HEAD:frontend
+git fetch origin hostinger-frontend
+```
+
+```bash
+git archive --format=zip -o msms-frontend.zip FETCH_HEAD
 ```
 
 `git archive` packs **committed files only** — no `node_modules`, no local `.env`, no uploaded
-documents, no logs — and `HEAD:backend` puts that folder's contents at the archive's root, where
-Hostinger looks for `package.json`. Each archive is under 2 MB.
+documents, no logs. `HEAD:backend` puts that folder's contents at the archive's root, where Hostinger
+looks for `package.json`; the `hostinger-frontend` branch already has the app at its root. The API
+archive is under 2 MB; the built web app's is about 8 MB (30 MB unpacked).
 
 ---
 
@@ -83,7 +94,8 @@ hPanel → **Websites → Add website → Node.js app**, on `api.example.com`.
 
 | Setting | Value |
 |---|---|
-| Framework | Express (or "Other") |
+| Branch (GitHub only) | `main` |
+| Framework | Express |
 | Node.js version | **24** — the version this release was verified on |
 | Root directory (GitHub only) | `backend` |
 | Build command | none — there is nothing to build |
@@ -143,7 +155,7 @@ native bindings are not available"*. No version of Next.js fixes an old GLIBC on
 Running a built app needs no compiler, so the build happens on GitHub instead:
 
 1. [`.github/workflows/hostinger-frontend.yml`](../.github/workflows/hostinger-frontend.yml) runs on every
-   push to `master` that changes `frontend/`. It builds on Ubuntu with Node 24, assembles the app with
+   push to `main` that changes `frontend/`. It builds on Ubuntu with Node 24, assembles the app with
    [`deploy/hostinger/bundle-frontend.js`](../deploy/hostinger/bundle-frontend.js), **starts it and
    requires the pages to answer**, and only then publishes it to the branch **`hostinger-frontend`**.
 2. Hostinger deploys **that branch**. It installs packages and starts `server.js`; nothing compiles there.
@@ -155,8 +167,8 @@ hPanel → **Websites → Add website → Node.js app**, on `app.example.com`, f
 
 | Setting | Value |
 |---|---|
-| Branch | **`hostinger-frontend`** — not `master` |
-| Framework | Other (Next.js also works, provided the build command stays as below) |
+| Branch | **`hostinger-frontend`** — not `main` |
+| Framework | **Express** — Hostinger's plain Node server option, which runs the entry file and builds nothing. Hostinger offers no "Other". Next.js also works if its build command stays as below |
 | Node.js version | **24** |
 | Root directory | none — the branch *is* the app |
 | Build command | none. `npm run build` is harmless too: on this branch it prints a message and compiles nothing |
@@ -174,8 +186,14 @@ required`**, the app was created on Node 18. Open the app's settings, set the No
 and redeploy. The API needs 20.9 or newer as well — five of its production packages refuse 18 — so
 check its setting too. Both `package.json` files declare `"node": ">=20.9.0"`.
 
-**If the build log mentions Turbopack, native bindings, SWC or GLIBC**, the app is building `master`
-instead of the `hostinger-frontend` branch. Change the branch in the app's settings and redeploy.
+**If the build log mentions Turbopack, native bindings, SWC or GLIBC**, the app is building `main`
+instead of the `hostinger-frontend` branch — or the Next.js option ran its own build and ignored the build
+command. Set the branch to `hostinger-frontend`, choose **Express**, and redeploy.
+
+**The repository has two branches, and only one is for people.** `main` holds all the code; work, commits
+and pull requests go there. `hostinger-frontend` is generated: GitHub Actions replaces its whole content on
+every build, so anything committed to it by hand is lost. Do not delete it — Hostinger's web app deploys
+from it, and without it there is nothing built for Hostinger to run.
 
 `server.js` serves the built application on the port Hostinger assigns, and runs in production mode
 unless `NODE_ENV=development` is set explicitly — so a forgotten variable cannot put the dev server on
