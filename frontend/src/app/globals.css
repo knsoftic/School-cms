@@ -711,7 +711,16 @@ a {
   padding: 0.5rem var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-strong);
-  background: var(--surface-1);
+  /*
+   * `background-color`, never the `background` shorthand.
+   *
+   * `.field-select` paints its chevron with `background-image` / `background-repeat` /
+   * `background-position`. The shorthand resets those to their initials (`repeat`, `0% 0%`), so any
+   * later rule that only restores the image — the dark-theme stroke swap, for example — tiles the
+   * chevron across the whole control. Measured on New Subscription → Price while the plan was empty:
+   * a disabled select filled with repeating ∨ marks.
+   */
+  background-color: var(--surface-1);
   color: var(--ink);
   font-size: var(--text-base);
   font-family: inherit;
@@ -773,7 +782,7 @@ a {
 .field-input:disabled,
 .field-select:disabled,
 .field-textarea:disabled {
-  background: var(--surface-sunken);
+  background-color: var(--surface-sunken);
   color: var(--muted);
   cursor: not-allowed;
 }
@@ -790,18 +799,32 @@ a {
   box-shadow: 0 0 0 3px var(--danger-soft);
 }
 
-/* A select needs its own chevron once the native appearance is dropped. */
+/*
+ * A select needs its own chevron once the native appearance is dropped.
+ *
+ * Image, repeat, position and size are declared together on every rule that touches the image, so a
+ * later colour swap cannot leave `background-repeat` at its initial `repeat` and tile the mark.
+ */
 .field-select {
   appearance: none;
   padding-right: var(--space-7);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b7488' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right var(--space-2) center;
+  background-position: right var(--space-3) center;
+  background-size: 1rem 1rem;
 }
 
 :root[data-theme="dark"] .field-select,
 :root:not([data-theme="light"]) .field-select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2398a1b3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-3) center;
+  background-size: 1rem 1rem;
+}
+
+/* Disabled selects are not openable — drop the chevron so the control reads as locked, not as a menu. */
+.field-select:disabled {
+  background-image: none;
 }
 
 /*
