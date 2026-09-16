@@ -44,8 +44,10 @@ import {
   EmptyNotice,
   ErrorNotice,
   LoadingBlock,
+  MetricCard,
   PageHeader,
   RefusalNotice,
+  SectionHeading,
   StatusBadge,
 } from '@/components/table';
 
@@ -130,7 +132,7 @@ export default function ParentDashboard() {
     <div>
       <PageHeader
         title={`Welcome, ${profile?.user.name ?? 'parent'}`}
-        description="The children linked to your account."
+        description="Your children’s records in one place. Everything here is read-only."
         action={
           /*
            * The inbox — §23 addresses attendance alerts, fee reminders, receipts and results to a
@@ -143,6 +145,7 @@ export default function ParentDashboard() {
            */
           <div className="flex flex-wrap gap-2">
             <Link href="/parent/notifications" className="btn btn-secondary">
+              <Icon name="inbox" size={15} />
               Notifications
             </Link>
             {can('assignments.view') ? (
@@ -166,40 +169,35 @@ export default function ParentDashboard() {
          * the link (FR-PARENT-001 then FR-PARENT-003) — and the remedy is someone else's to apply, so
          * the message says who rather than offering an action this screen cannot take.
          */
-        <EmptyNotice>
+        <EmptyNotice title="No children linked yet" icon="users">
           No children are linked to your account yet. The school office links a parent to a student.
         </EmptyNotice>
       ) : (
         <>
-          <dl className="mb-5 grid grid-cols-2 gap-3 sm:max-w-sm">
-            <div className="rounded-md border border-border p-3">
-              <dt className="text-xs text-muted">Children</dt>
-              <dd className="mt-1 text-2xl font-semibold tabular-nums">{data.counts.children}</dd>
-            </div>
-            <div className="rounded-md border border-border p-3">
-              <dt className="text-xs text-muted">Currently enrolled</dt>
-              <dd className="mt-1 text-2xl font-semibold tabular-nums">{data.counts.activeChildren}</dd>
-            </div>
+          <dl className="mb-6 grid grid-cols-2 gap-3 sm:max-w-md">
+            <MetricCard label="Children" value={data.counts.children} icon="users" />
+            <MetricCard label="Currently enrolled" value={data.counts.activeChildren} icon="graduation" />
           </dl>
 
+          <SectionHeading>Your children</SectionHeading>
           <DataTable columns={columns} rows={data.children} rowKey={(row) => row.id} caption="Your children"
             busy={loading}
           />
 
           {records.length > 0 ? (
-            <section className="mt-8">
-              <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted">
-                Your children’s records
-              </h2>
+            <section className="mt-10">
+              <SectionHeading>Records</SectionHeading>
               <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {records.map((item) => (
                   <li key={item.href}>
-                    <Link href={item.href} className="card card-interactive block p-4">
-                      <span className="flex items-center gap-2 font-semibold text-ink">
-                        <Icon name={item.icon} size={16} className="shrink-0 text-muted-soft" />
+                    <Link href={item.href} className="card card-interactive block p-4 sm:p-5">
+                      <span className="flex items-center gap-2.5 font-semibold text-ink">
+                        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-subtle text-brand-text">
+                          <Icon name={item.icon} size={16} />
+                        </span>
                         {item.label}
                       </span>
-                      <p className="mt-1.5 text-xs leading-relaxed text-muted">{item.description}</p>
+                      <p className="mt-2 text-sm leading-relaxed text-muted">{item.description}</p>
                     </Link>
                   </li>
                 ))}
@@ -213,9 +211,8 @@ export default function ParentDashboard() {
             * linked above. What is still worth saying is that the records are read-only, and who to
             * ask when one is wrong.
             */}
-          <p className="mt-4 text-xs text-muted-soft">
-            Your children’s records are read-only here. If something looks wrong, speak to the school
-            office.
+          <p className="mt-6 text-sm text-muted-soft">
+            If something looks wrong, speak to the school office.
           </p>
         </>
       )}

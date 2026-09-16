@@ -220,7 +220,7 @@ function NavList({
   const currentHref = currentHrefFor(sections, pathname);
 
   return (
-    <div className="space-y-4 px-3 py-3">
+    <div className="space-y-5 px-2.5 py-4">
       {sections.map((section) => {
         const collapsed = collapsedHeadings.includes(section.heading);
         return (
@@ -236,17 +236,17 @@ function NavList({
               type="button"
               onClick={() => onToggleHeading?.(section.heading)}
               aria-expanded={!collapsed}
-              className="mb-1 flex w-full items-center gap-1 rounded px-2 py-0.5 text-2xs font-semibold uppercase tracking-[0.14em] text-muted-soft transition-colors hover:text-muted"
+              className="mb-1.5 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-2xs font-semibold uppercase tracking-[0.12em] text-muted-soft transition-colors hover:bg-surface-3 hover:text-muted"
             >
               <Icon
                 name="chevron-down"
                 size={12}
-                className={`transition-transform ${collapsed ? '-rotate-90' : ''}`}
+                className={`shrink-0 transition-transform ${collapsed ? '-rotate-90' : ''}`}
               />
               <span className="truncate">{section.heading}</span>
             </button>
           </h2>
-          <ul className={`space-y-px ${collapsed ? 'hidden' : ''}`}>
+          <ul className={`space-y-0.5 ${collapsed ? 'hidden' : ''}`}>
             {section.items.map((item) => {
               /* One entry is lit, and it is the most specific match — see `currentHref` above. */
               const current = item.href === currentHref;
@@ -257,18 +257,8 @@ function NavList({
                     href={item.href}
                     onClick={onNavigate}
                     aria-current={current ? 'page' : undefined}
-                    className={`group relative flex items-center gap-2.5 rounded-md py-1.5 pl-2.5 pr-2 text-sm transition-colors ${
-                      current
-                        ? 'bg-brand-subtle font-semibold text-brand-text'
-                        : 'font-medium text-ink-soft hover:bg-surface-3 hover:text-ink'
-                    }`}
+                    className="nav-link group"
                   >
-                    {current ? (
-                      <span
-                        aria-hidden
-                        className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-brand"
-                      />
-                    ) : null}
                     {item.icon ? (
                       <Icon
                         name={item.icon}
@@ -437,7 +427,7 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
       <SubscriptionNotice />
 
       <header className="app-topbar sticky top-0 z-30 h-14">
-        <div className="flex h-full items-center gap-3 px-4">
+        <div className="flex h-full items-center gap-3 px-3 sm:px-4">
           <button
             ref={triggerRef}
             type="button"
@@ -450,11 +440,11 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
             <span className="sr-only">Open navigation</span>
           </button>
 
-          <Link href={home} className="flex min-w-0">
+          <Link href={home} className="flex min-w-0 rounded-md">
             <SchoolMark key={brand.logoUrl ?? ''} brand={brand} tagline />
           </Link>
 
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
             {/*
               * The shortcut needs somewhere to be seen. A control nobody knows about helps nobody, so
               * the button carries its own keystroke — and on a phone, where there is no Ctrl, it is the
@@ -463,12 +453,12 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
             <button
               type="button"
               onClick={() => setJumpOpen(true)}
-              className="btn btn-ghost h-9 gap-2 text-muted"
+              className="btn btn-secondary h-9 gap-2 border-border bg-surface-2 text-muted shadow-none hover:bg-surface-3"
               aria-keyshortcuts="Control+K"
             >
               <Icon name="search" size={16} />
-              <span className="hidden sm:inline">Go to screen</span>
-              <kbd className="hidden rounded border border-border px-1 text-2xs font-medium lg:inline">
+              <span className="hidden sm:inline">Search</span>
+              <kbd className="hidden rounded border border-border bg-surface-1 px-1.5 py-0.5 text-2xs font-medium text-muted lg:inline">
                 Ctrl K
               </kbd>
             </button>
@@ -482,11 +472,11 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
                   ref={ref}
                   type="button"
                   {...props}
-                  className="btn btn-ghost h-9"
+                  className="btn btn-ghost h-9 pl-1.5 pr-2"
                 >
                   <span
                     aria-hidden
-                    className="flex h-6 w-6 items-center justify-center rounded-full bg-brand text-2xs font-bold text-[var(--brand-contrast)]"
+                    className="flex h-7 w-7 items-center justify-center rounded-full bg-brand text-2xs font-bold text-[var(--brand-contrast)]"
                   >
                     {initialsOf(profile.user.name)}
                   </span>
@@ -497,10 +487,10 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
                 </button>
               )}
             >
-              <div className="border-b border-border-soft px-2.5 pb-2 pt-1">
+              <div className="border-b border-border-soft px-3 pb-2.5 pt-1.5">
                 <p className="truncate text-sm font-semibold text-ink">{profile.user.name}</p>
                 <p className="truncate text-xs text-muted">{profile.user.email}</p>
-                <p className="mt-1 inline-flex rounded-full bg-surface-3 px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide text-muted">
+                <p className="mt-1.5 inline-flex rounded-md bg-brand-subtle px-2 py-0.5 text-2xs font-semibold uppercase tracking-wide text-brand-text">
                   {roleLabel}
                 </p>
               </div>
@@ -543,7 +533,7 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
         {/* Desktop rail. */}
         <nav
           aria-label="Main"
-          className="app-sidebar sticky top-14 hidden h-[calc(100vh-3.5rem)] w-60 shrink-0 overflow-y-auto md:block"
+          className="app-sidebar sticky top-14 hidden h-[calc(100vh-3.5rem)] w-64 shrink-0 overflow-y-auto md:block"
         >
           <NavList
             sections={sections}
@@ -567,7 +557,7 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
               role="dialog"
               aria-modal="true"
               aria-label="Main navigation"
-              className="animate-slide-in absolute inset-y-0 left-0 flex w-[17rem] max-w-[85vw] flex-col overflow-y-auto border-r border-border bg-surface-1 shadow-xl"
+              className="app-sidebar animate-slide-in absolute inset-y-0 left-0 flex w-[18rem] max-w-[88vw] flex-col overflow-y-auto shadow-xl"
             >
               <div className="flex h-14 items-center justify-between gap-2 border-b border-border-soft px-4">
                 <SchoolMark key={brand.logoUrl ?? ''} brand={brand} />
@@ -591,8 +581,8 @@ export function AppShell({ nav, children }: { nav: NavSection[]; children: React
           </div>
         ) : null}
 
-        <main id="main" className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8">
-          {children}
+        <main id="main" className="app-main">
+          <div className="page-frame animate-fade-in">{children}</div>
         </main>
       </div>
 

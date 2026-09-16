@@ -15,7 +15,7 @@ import { useEntitlements } from '@/lib/entitlements';
 import type { Limit } from '@/lib/entitlements';
 import { limitLabel } from '@/lib/limits';
 import { moduleLabel } from '@/lib/modules';
-import { MetricCard, PageHeader, StatusBadge } from '@/components/table';
+import { MetricCard, PageHeader, SectionHeading, StatusBadge } from '@/components/table';
 
 /**
  * The date a subscription's state turns on, in the viewer's own zone.
@@ -215,18 +215,17 @@ export default function SchoolDashboard() {
             */}
           {shortcuts.length > 0 ? (
             <section className="mb-8" aria-label="Go to">
-              <div className="mb-3 flex items-center gap-3">
-                <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">Go to</h2>
-                <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
-              </div>
+              <SectionHeading>Go to</SectionHeading>
               <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
                 {shortcuts.map((item) => (
                   <li key={item.href}>
                     <Link
                       href={item.href}
-                      className="card card-interactive flex items-center gap-2.5 px-3.5 py-3 text-sm font-medium text-ink"
+                      className="card card-interactive flex items-center gap-3 px-3.5 py-3.5 text-sm font-semibold text-ink"
                     >
-                      <Icon name={item.icon} size={16} className="shrink-0 text-muted-soft" />
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-text">
+                        <Icon name={item.icon} size={15} />
+                      </span>
                       <span className="truncate">{item.label}</span>
                     </Link>
                   </li>
@@ -236,12 +235,7 @@ export default function SchoolDashboard() {
           ) : null}
 
           <section className="mb-8" aria-label="Key limits">
-            <div className="mb-3 flex items-center gap-3">
-              <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">
-                What the plan allows
-              </h2>
-              <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
-            </div>
+            <SectionHeading>What the plan allows</SectionHeading>
             {/*
               * Every limit the snapshot carries. This was `limits.slice(0, 8)`, and the snapshot has
               * nine — the eight §11.2 plan limits and `sms_limit`, an add-on-only allowance that
@@ -262,12 +256,7 @@ export default function SchoolDashboard() {
           </section>
 
           <section className="mb-8" aria-label="Included modules">
-            <div className="mb-3 flex items-center gap-3">
-              <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">
-                Included modules
-              </h2>
-              <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
-            </div>
+            <SectionHeading>Included modules</SectionHeading>
             {/*
               * An unsubscribed school has every module off — `unsubscribedSnapshot()` returns
               * `emptyModules()` — which is the ordinary state before billing starts, and it used to
@@ -279,7 +268,7 @@ export default function SchoolDashboard() {
                 {enabled.map(([key]) => (
                   <li
                     key={key}
-                    className="rounded-full border border-teal/30 bg-teal-mist px-3 py-1 text-xs font-medium text-teal-deep"
+                    className="rounded-md border border-brand-subtle-border bg-brand-subtle px-3 py-1.5 text-xs font-semibold text-brand-text"
                   >
                     {/* §11's own names, from `lib/modules.ts` — not the key with its underscores rubbed out. */}
                     {moduleLabel(key)}

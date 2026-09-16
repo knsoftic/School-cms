@@ -129,13 +129,13 @@ export function Modal({
       onClick={onBackdrop}
       aria-labelledby={titleId}
       aria-describedby={description ? descId : undefined}
-      className={`m-auto w-[calc(100vw-2rem)] ${SIZE[size]} rounded-xl border border-border bg-surface-1 p-0 text-ink shadow-xl backdrop:bg-[var(--overlay)] ${
+      className={`m-auto w-[calc(100vw-2rem)] ${SIZE[size]} rounded-2xl border border-border bg-surface-1 p-0 text-ink shadow-xl backdrop:bg-[var(--overlay)] ${
         closing ? 'opacity-0' : 'animate-scale-in'
       } transition-opacity duration-150`}
     >
-      <div className="flex items-start gap-4 border-b border-border-soft p-5">
+      <div className="flex items-start gap-4 border-b border-border-soft px-5 py-4 sm:px-6">
         <div className="min-w-0 flex-1">
-          <h2 id={titleId} className="font-display text-lg font-semibold tracking-tight">
+          <h2 id={titleId} className="font-display text-xl font-semibold tracking-tight">
             {title}
           </h2>
           {description ? (
@@ -148,14 +148,14 @@ export function Modal({
           type="button"
           onClick={onClose}
           disabled={busy}
-          className="btn btn-ghost btn-sm btn-icon -mr-1 -mt-1"
+          className="btn btn-ghost btn-sm btn-icon -mr-1 -mt-0.5"
         >
           <Icon name="x" size={16} />
           <span className="sr-only">Close</span>
         </button>
       </div>
 
-      {children ? <div className="p-5">{children}</div> : null}
+      {children ? <div className="px-5 py-5 sm:px-6">{children}</div> : null}
 
       {footer ? (
         <div className="flex flex-wrap justify-end gap-2 border-t border-border-soft bg-surface-2 p-4">
