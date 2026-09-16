@@ -39,10 +39,12 @@ import { Icon } from '@/components/icon';
 import { useAuth } from '@/lib/auth';
 import { useEntitlements } from '@/lib/entitlements';
 import {
+  ActionTile,
   Column,
   DataTable,
   EmptyNotice,
   ErrorNotice,
+  HeaderActions,
   LoadingBlock,
   MetricCard,
   PageHeader,
@@ -143,17 +145,18 @@ export default function ParentDashboard() {
            * promises, like the four D17 added, so all six now sit together under the table — the
            * same list the nav's Records section carries.
            */
-          <div className="flex flex-wrap gap-2">
-            <Link href="/parent/notifications" className="btn btn-secondary">
-              <Icon name="inbox" size={15} />
-              Notifications
-            </Link>
+          <HeaderActions>
             {can('assignments.view') ? (
               <Link href="/school/assignments" className="btn btn-secondary">
+                <Icon name="paperclip" size={15} />
                 Assignments
               </Link>
             ) : null}
-          </div>
+            <Link href="/parent/notifications" className="btn btn-primary">
+              <Icon name="inbox" size={15} />
+              Notifications
+            </Link>
+          </HeaderActions>
         }
       />
 
@@ -174,31 +177,36 @@ export default function ParentDashboard() {
         </EmptyNotice>
       ) : (
         <>
-          <dl className="mb-6 grid grid-cols-2 gap-3 sm:max-w-md">
+          <dl className="mb-7 grid grid-cols-2 gap-3 sm:max-w-lg">
             <MetricCard label="Children" value={data.counts.children} icon="users" />
-            <MetricCard label="Currently enrolled" value={data.counts.activeChildren} icon="graduation" />
+            <MetricCard
+              label="Currently enrolled"
+              value={data.counts.activeChildren}
+              icon="graduation"
+            />
           </dl>
 
           <SectionHeading>Your children</SectionHeading>
-          <DataTable columns={columns} rows={data.children} rowKey={(row) => row.id} caption="Your children"
+          <DataTable
+            columns={columns}
+            rows={data.children}
+            rowKey={(row) => row.id}
+            caption="Your children"
             busy={loading}
           />
 
           {records.length > 0 ? (
             <section className="mt-10">
-              <SectionHeading>Records</SectionHeading>
+              <SectionHeading>Open a record</SectionHeading>
               <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {records.map((item) => (
                   <li key={item.href}>
-                    <Link href={item.href} className="card card-interactive block p-4 sm:p-5">
-                      <span className="flex items-center gap-2.5 font-semibold text-ink">
-                        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-subtle text-brand-text">
-                          <Icon name={item.icon} size={16} />
-                        </span>
-                        {item.label}
-                      </span>
-                      <p className="mt-2 text-sm leading-relaxed text-muted">{item.description}</p>
-                    </Link>
+                    <ActionTile
+                      href={item.href}
+                      label={item.label}
+                      description={item.description}
+                      icon={item.icon}
+                    />
                   </li>
                 ))}
               </ul>

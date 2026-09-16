@@ -36,10 +36,12 @@ import { useAuth } from '@/lib/auth';
 import { useEntitlements } from '@/lib/entitlements';
 import { useCollection } from '@/lib/useCollection';
 import {
+  ActionTile,
   Column,
   DataTable,
   EmptyNotice,
   ErrorNotice,
+  HeaderActions,
   LoadingBlock,
   PageHeader,
   Pagination,
@@ -193,17 +195,18 @@ export default function StudentPortal() {
            * Homework used to be a button here too. It is one of the student's own records, so it now
            * sits with the others in "Your records" below, which is what the nav's Records section lists.
            */
-          <div className="flex flex-wrap gap-2">
-            <Link href="/student/notifications" className="btn btn-secondary">
-              <Icon name="inbox" size={15} />
-              Notifications
-            </Link>
+          <HeaderActions>
             {can('assignments.submit') ? (
               <Link href="/school/assignments" className="btn btn-secondary">
+                <Icon name="paperclip" size={15} />
                 Assignments
               </Link>
             ) : null}
-          </div>
+            <Link href="/student/notifications" className="btn btn-primary">
+              <Icon name="inbox" size={15} />
+              Notifications
+            </Link>
+          </HeaderActions>
         }
       />
 
@@ -221,7 +224,11 @@ export default function StudentPortal() {
         </EmptyNotice>
       ) : (
         <>
-          <DataTable columns={columns} rows={rows} rowKey={(row) => row.id} caption="Your published results"
+          <DataTable
+            columns={columns}
+            rows={rows}
+            rowKey={(row) => row.id}
+            caption="Your published results"
             busy={loading}
           />
           {meta ? <Pagination meta={meta} onPage={setPage} /> : null}
@@ -234,15 +241,12 @@ export default function StudentPortal() {
           <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {records.map((item) => (
               <li key={item.href}>
-                <Link href={item.href} className="card card-interactive block p-4 sm:p-5">
-                  <span className="flex items-center gap-2.5 font-semibold text-ink">
-                    <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-subtle text-brand-text">
-                      <Icon name={item.icon} size={16} />
-                    </span>
-                    {item.label}
-                  </span>
-                  <p className="mt-2 text-sm leading-relaxed text-muted">{item.description}</p>
-                </Link>
+                <ActionTile
+                  href={item.href}
+                  label={item.label}
+                  description={item.description}
+                  icon={item.icon}
+                />
               </li>
             ))}
           </ul>

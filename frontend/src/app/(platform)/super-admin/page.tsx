@@ -36,7 +36,7 @@ import { useAuth } from '@/lib/auth';
 import { formatMoney } from '@/lib/money';
 import { EXPLAINED_CODES } from '@/lib/useCollection';
 import type { Refusal } from '@/lib/useCollection';
-import { ErrorNotice, LoadingBlock, MetricCard, PageHeader, RefusalNotice } from '@/components/table';
+import { ErrorNotice, LoadingBlock, MetricCard, PageHeader, RefusalNotice, SectionHeading, HeaderActions, DashboardBanner } from '@/components/table';
 
 /** One currency's share of a money figure — a row of `sumPaymentsByCurrency()`, sorted by code. */
 interface CurrencyLine {
@@ -142,10 +142,7 @@ function plural(value: number, one: string, many: string): string {
 function Band({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="mt-8 first:mt-6" aria-label={title}>
-      <div className="mb-3 flex items-center gap-3">
-        <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">{title}</h2>
-        <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
-      </div>
+      <SectionHeading>{title}</SectionHeading>
       {children}
     </section>
   );
@@ -171,7 +168,7 @@ function MoneyCard({
   href?: string;
 }) {
   return (
-    <div className={`card p-5${href ? ' card-interactive relative' : ''}`}>
+    <div className={`card p-5 sm:p-6${href ? ' card-interactive relative' : ''}`}>
       <dt className="text-2xs font-semibold uppercase tracking-[0.08em] text-muted">
         {href ? (
           <Link
@@ -184,10 +181,10 @@ function MoneyCard({
           label
         )}
       </dt>
-      <dd className="mt-2 font-display text-3xl font-semibold tabular-nums tracking-tight text-ink">
+      <dd className="mt-2.5 font-display text-3xl font-semibold tabular-nums tracking-tight text-ink">
         <PerCurrency lines={lines} />
       </dd>
-      <p className="mt-2 text-xs leading-relaxed text-muted">{footer}</p>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted">{footer}</p>
     </div>
   );
 }
@@ -272,10 +269,23 @@ export default function PlatformDashboard() {
             : 'Live figures from across every organization.'
         }`}
         action={
-          /* The platform notifications of the owner's decision D15 — payments and expiring subscriptions. */
-          <Link href="/super-admin/notifications" className="btn btn-secondary">
-            Notifications
-          </Link>
+          <HeaderActions>
+            <Link href="/super-admin/notifications" className="btn btn-secondary">
+              <Icon name="inbox" size={15} />
+              Notifications
+            </Link>
+            {can('schools.manage') ? (
+              <Link href="/super-admin/schools/new" className="btn btn-primary">
+                <Icon name="plus" size={15} />
+                Add school
+              </Link>
+            ) : can('schools.view') ? (
+              <Link href="/super-admin/schools" className="btn btn-primary">
+                <Icon name="school" size={15} />
+                View schools
+              </Link>
+            ) : null}
+          </HeaderActions>
         }
       />
 
@@ -299,30 +309,31 @@ export default function PlatformDashboard() {
             * offering them an Add button would be offering a refusal.
             */}
           {data.totalSchools === 0 ? (
-            <div className="surface mb-6 flex flex-wrap items-start gap-4 p-5">
-              <Icon name="school" size={20} className="mt-0.5 shrink-0 text-muted-soft" />
-              <div className="min-w-0 flex-1">
-                <p className="font-display text-lg font-semibold text-ink">
-                  {profile?.tenant.isPlatform === false
-                    ? 'This organization has no schools yet'
-                    : 'No schools yet'}
-                </p>
-                <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted">
-                  {profile?.tenant.isPlatform === false
-                    ? 'Every figure below counts schools in this organization, so each reads zero until one is added. Schools are created by a platform administrator.'
-                    : 'Every figure below counts schools and what happens inside them, so each reads zero until the first school is added and put on a plan.'}
-                </p>
-              </div>
-              {can('schools.manage') ? (
-                <Link href="/super-admin/schools/new" className="btn btn-primary shrink-0">
-                  Add a school
-                </Link>
-              ) : can('schools.view') ? (
-                <Link href="/super-admin/schools" className="btn btn-secondary shrink-0">
-                  View schools
-                </Link>
-              ) : null}
-            </div>
+            <DashboardBanner
+              title={
+                profile?.tenant.isPlatform === false
+                  ? 'This organization has no schools yet'
+                  : 'No schools yet'
+              }
+              icon="school"
+              tone="brand"
+              action={
+                can('schools.manage') ? (
+                  <Link href="/super-admin/schools/new" className="btn btn-primary">
+                    <Icon name="plus" size={15} />
+                    Add a school
+                  </Link>
+                ) : can('schools.view') ? (
+                  <Link href="/super-admin/schools" className="btn btn-secondary">
+                    View schools
+                  </Link>
+                ) : null
+              }
+            >
+              {profile?.tenant.isPlatform === false
+                ? 'Every figure below counts schools in this organization, so each reads zero until one is added. Schools are created by a platform administrator.'
+                : 'Every figure below counts schools and what happens inside them, so each reads zero until the first school is added and put on a plan.'}
+            </DashboardBanner>
           ) : null}
 
           <Band title="Revenue">

@@ -330,7 +330,9 @@ export function PageHeader({
           </p>
         ) : null}
       </div>
-      {action ? <div className="flex flex-wrap items-center gap-2">{action}</div> : null}
+      {action ? (
+        <div className="flex flex-wrap items-center justify-end gap-2">{action}</div>
+      ) : null}
     </div>
   );
 }
@@ -338,6 +340,128 @@ export function PageHeader({
 /** Shared section chrome used on dashboards — one label, one hairline, one job. */
 export function SectionHeading({ children }: { children: ReactNode }) {
   return <h2 className="section-label">{children}</h2>;
+}
+
+/**
+ * Header action buttons — primary first in the DOM (Enter / first focus), visually on the right.
+ * Keeps every dashboard's CTA row the same height, gap and hierarchy.
+ */
+export function HeaderActions({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex w-full flex-col-reverse gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end">
+      {children}
+    </div>
+  );
+}
+
+/** Compact “go to screen” tile used on school / platform dashboards. */
+export function ShortcutTile({
+  href,
+  label,
+  icon,
+}: {
+  href: string;
+  label: string;
+  icon: IconName;
+}) {
+  return (
+    <Link
+      href={href}
+      className="card card-interactive group flex min-h-[3.25rem] items-center gap-3 px-3.5 py-3 text-sm font-semibold text-ink"
+    >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-text transition-colors group-hover:bg-brand group-hover:text-brand-contrast">
+        <Icon name={icon} size={16} />
+      </span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <Icon
+        name="chevron-right"
+        size={15}
+        className="shrink-0 text-muted-soft transition-transform group-hover:translate-x-0.5 group-hover:text-brand"
+      />
+    </Link>
+  );
+}
+
+/** Larger action tile with a short description — parent, student and teacher dashboards. */
+export function ActionTile({
+  href,
+  label,
+  description,
+  icon,
+}: {
+  href: string;
+  label: string;
+  description: string;
+  icon: IconName;
+}) {
+  return (
+    <Link
+      href={href}
+      className="card card-interactive group flex h-full flex-col p-4 sm:p-5"
+    >
+      <span className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-text transition-colors group-hover:bg-brand group-hover:text-brand-contrast">
+          <Icon name={icon} size={18} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center justify-between gap-2">
+            <span className="font-semibold text-ink">{label}</span>
+            <Icon
+              name="chevron-right"
+              size={15}
+              className="shrink-0 text-muted-soft transition-transform group-hover:translate-x-0.5 group-hover:text-brand"
+            />
+          </span>
+          <span className="mt-1 block text-sm leading-relaxed text-muted">{description}</span>
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+/**
+ * Callout / plan / empty-state band on dashboards — icon, copy, and an optional action button.
+ */
+export function DashboardBanner({
+  title,
+  children,
+  icon = 'alert-circle',
+  action,
+  tone = 'neutral',
+}: {
+  title: string;
+  children: ReactNode;
+  icon?: IconName;
+  action?: ReactNode;
+  tone?: 'neutral' | 'brand' | 'warn';
+}) {
+  const toneClass =
+    tone === 'brand'
+      ? 'border-brand-subtle-border bg-brand-subtle/40'
+      : tone === 'warn'
+        ? 'border-warn/25 bg-warn-soft/50'
+        : 'border-border bg-surface-1';
+
+  return (
+    <div className={`surface mb-6 flex flex-wrap items-start gap-4 p-5 ${toneClass}`}>
+      <span
+        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+          tone === 'warn'
+            ? 'bg-warn-soft text-warn'
+            : tone === 'brand'
+              ? 'bg-brand-subtle text-brand-text'
+              : 'bg-surface-3 text-muted'
+        }`}
+      >
+        <Icon name={icon} size={18} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-display text-lg font-semibold text-ink">{title}</p>
+        <div className="mt-1 max-w-2xl text-sm leading-relaxed text-muted">{children}</div>
+      </div>
+      {action ? <div className="flex shrink-0 flex-wrap gap-2">{action}</div> : null}
+    </div>
+  );
 }
 
 /*

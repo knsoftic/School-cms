@@ -15,7 +15,15 @@ import { useEntitlements } from '@/lib/entitlements';
 import type { Limit } from '@/lib/entitlements';
 import { limitLabel } from '@/lib/limits';
 import { moduleLabel } from '@/lib/modules';
-import { MetricCard, PageHeader, SectionHeading, StatusBadge } from '@/components/table';
+import {
+  DashboardBanner,
+  HeaderActions,
+  MetricCard,
+  PageHeader,
+  SectionHeading,
+  ShortcutTile,
+  StatusBadge,
+} from '@/components/table';
 
 /**
  * The date a subscription's state turns on, in the viewer's own zone.
@@ -81,6 +89,10 @@ export default function SchoolDashboard() {
     return subscription.renewalMode === 'manual' ? `Period ends ${day}` : `Renews ${day}`;
   })();
 
+  const canBilling = can('subscriptions.self.view') || can('invoices.self.view');
+  const canStudents = can('students.view') && hasModule('students');
+  const canAttendance = can('attendance.view') && hasModule('attendance');
+
   const shortcuts = [
     { href: '/school/students', label: 'Students', permission: 'students.view', icon: 'graduation' as const, module: 'students' },
     { href: '/school/attendance', label: 'Attendance', permission: 'attendance.view', icon: 'clipboard' as const, module: 'attendance' },
@@ -131,7 +143,29 @@ export default function SchoolDashboard() {
     <div>
       <PageHeader
         title="School dashboard"
-        description={`Welcome back, ${profile?.user.name ?? 'administrator'}.`}
+        description={`Welcome back, ${profile?.user.name ?? 'administrator'}. Start with the work that matters today.`}
+        action={
+          <HeaderActions>
+            {can('notifications.view') ? (
+              <Link href="/school/notifications" className="btn btn-secondary">
+                <Icon name="inbox" size={15} />
+                Notifications
+              </Link>
+            ) : null}
+            {canAttendance ? (
+              <Link href="/school/attendance/mark" className="btn btn-secondary">
+                <Icon name="clipboard" size={15} />
+                Mark attendance
+              </Link>
+            ) : null}
+            {canStudents ? (
+              <Link href="/school/students/new" className="btn btn-primary">
+                <Icon name="plus" size={15} />
+                Add student
+              </Link>
+            ) : null}
+          </HeaderActions>
+        }
       />
 
       {/*
@@ -149,26 +183,26 @@ export default function SchoolDashboard() {
         * flag the provider already publishes says which situation it actually is.
         */}
       {!isSubscriptionScoped ? (
-        <div className="surface px-5 py-8 text-center">
-          <p className="font-display text-xl font-semibold text-ink">No school in scope</p>
-          <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
-            This dashboard reports on one school, and your account is not scoped to one — a platform
-            or organization sign-in covers many. Open a school from the Schools screen to see its
-            plan, limits and modules.
-          </p>
-          <Link href="/super-admin/schools" className="btn btn-secondary mt-5">
-            Go to Schools
-          </Link>
-        </div>
+        <DashboardBanner
+          title="No school in scope"
+          icon="school"
+          action={
+            <Link href="/super-admin/schools" className="btn btn-primary">
+              <Icon name="school" size={15} />
+              Go to Schools
+            </Link>
+          }
+        >
+          This dashboard reports on one school, and your account is not scoped to one — a platform or
+          organization sign-in covers many. Open a school from the Schools screen to see its plan,
+          limits and modules.
+        </DashboardBanner>
       ) : !entitlements ? (
         /* Scoped to a school but the snapshot did not arrive — a read that failed, not a state. */
-        <div className="surface px-5 py-8 text-center">
-          <p className="font-display text-xl font-semibold text-ink">Plan details unavailable</p>
-          <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
-            We could not load this school’s plan just now. Reloading usually settles it; if it does
-            not, a platform administrator can check the subscription.
-          </p>
-        </div>
+        <DashboardBanner title="Plan details unavailable" icon="alert-circle" tone="warn">
+          We could not load this school’s plan just now. Reloading usually settles it; if it does not,
+          a platform administrator can check the subscription.
+        </DashboardBanner>
       ) : (
         <>
           {/*
@@ -176,29 +210,32 @@ export default function SchoolDashboard() {
             * **the date that state turns**. It used to say the first two and leave the third in the
             * billing screen, so "Trial" carried no hint of how long is left.
             */}
-          <section className="surface mb-6 p-5">
-            <div className="flex flex-wrap items-start gap-4">
+          <section className="surface mb-7 p-5 sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">Current plan</p>
-                <h2 className="mt-1 font-display text-2xl font-semibold text-ink">
+                <p className="text-2xs font-semibold uppercase tracking-[0.12em] text-muted">
+                  Current plan
+                </p>
+                <h2 className="mt-1.5 font-display text-2xl font-semibold tracking-tight text-ink">
                   {entitlements.plan ? entitlements.plan.name : 'No plan yet'}
                 </h2>
-                <p className="mt-1 text-sm text-muted">
+                <p className="mt-1.5 text-sm leading-relaxed text-muted">
                   {entitlements.plan
                     ? `${enabled.length} of ${modules.length} modules included${renewsOn ? ` · ${renewsOn}` : ''}`
                     : 'This school is not on a plan, so no modules are included yet.'}
                 </p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2.5">
                 {/* Nullable: a school may have no subscription at all. */}
                 {entitlements.subscription ? (
                   <StatusBadge status={entitlements.subscription.state} />
                 ) : (
                   <span className="text-sm text-muted-soft">No subscription</span>
                 )}
-                {can('subscriptions.self.view') || can('invoices.self.view') ? (
+                {canBilling ? (
                   <Link href="/school/billing" className="btn btn-secondary btn-sm">
-                    Billing
+                    <Icon name="credit-card" size={14} />
+                    Manage billing
                   </Link>
                 ) : null}
               </div>
@@ -215,19 +252,11 @@ export default function SchoolDashboard() {
             */}
           {shortcuts.length > 0 ? (
             <section className="mb-8" aria-label="Go to">
-              <SectionHeading>Go to</SectionHeading>
-              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+              <SectionHeading>Quick links</SectionHeading>
+              <ul className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {shortcuts.map((item) => (
                   <li key={item.href}>
-                    <Link
-                      href={item.href}
-                      className="card card-interactive flex items-center gap-3 px-3.5 py-3.5 text-sm font-semibold text-ink"
-                    >
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-text">
-                        <Icon name={item.icon} size={15} />
-                      </span>
-                      <span className="truncate">{item.label}</span>
-                    </Link>
+                    <ShortcutTile href={item.href} label={item.label} icon={item.icon} />
                   </li>
                 ))}
               </ul>
@@ -255,7 +284,7 @@ export default function SchoolDashboard() {
             </dl>
           </section>
 
-          <section className="mb-8" aria-label="Included modules">
+          <section className="mb-2" aria-label="Included modules">
             <SectionHeading>Included modules</SectionHeading>
             {/*
               * An unsubscribed school has every module off — `unsubscribedSnapshot()` returns
@@ -283,7 +312,6 @@ export default function SchoolDashboard() {
               </p>
             )}
           </section>
-
         </>
       )}
     </div>

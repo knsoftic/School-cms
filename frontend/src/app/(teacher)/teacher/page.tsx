@@ -28,7 +28,17 @@ import type { Refusal } from '@/lib/useCollection';
 import { useClassSections, useWholeList } from '@/lib/useTimetablePickers';
 import type { ClassOption } from '@/lib/useTimetablePickers';
 import { Icon } from '@/components/icon';
-import { ErrorNotice, LoadingBlock, MetricCard, PageHeader, RefusalNotice, SectionHeading } from '@/components/table';
+import {
+  ActionTile,
+  DashboardBanner,
+  ErrorNotice,
+  HeaderActions,
+  LoadingBlock,
+  MetricCard,
+  PageHeader,
+  RefusalNotice,
+  SectionHeading,
+} from '@/components/table';
 
 interface NamedRow {
   id: number;
@@ -81,7 +91,7 @@ interface TeacherDashboard {
 
 /** The chip every assignment list on this page uses, named once so the three cannot drift apart. */
 const CHIP =
-  'rounded-full border border-teal/30 bg-teal-mist px-2.5 py-0.5 text-xs font-medium text-teal-deep';
+  'rounded-md border border-brand-subtle-border bg-brand-subtle px-2.5 py-0.5 text-xs font-semibold text-brand-text';
 
 /**
  * Where one assignment row puts the subject.
@@ -209,7 +219,23 @@ export default function TeacherDashboard() {
     <div>
       <PageHeader
         title={`Welcome, ${profile?.user.name ?? 'teacher'}`}
-        description="What you are assigned to, and where the work happens."
+        description="Your assignments and the screens where the day’s work happens."
+        action={
+          <HeaderActions>
+            {can('attendance.view') && hasModule('attendance') ? (
+              <Link href="/school/attendance" className="btn btn-secondary">
+                <Icon name="clipboard" size={15} />
+                Attendance
+              </Link>
+            ) : null}
+            {can('timetable.view') && hasModule('timetable') ? (
+              <Link href="/teacher/timetable" className="btn btn-primary">
+                <Icon name="calendar" size={15} />
+                My timetable
+              </Link>
+            ) : null}
+          </HeaderActions>
+        }
       />
 
       {refusal ? (
@@ -220,7 +246,7 @@ export default function TeacherDashboard() {
         <LoadingBlock />
       ) : !data ? null : (
         <>
-          <dl className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <dl className="mb-7 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <MetricCard label="Subjects" value={data.counts.subjects} icon="book" />
             {/*
               * The count names what it counts. `payloadClassNames` is built from the same two sets
@@ -251,28 +277,33 @@ export default function TeacherDashboard() {
           data.counts.classes === 0 &&
           data.counts.classTeacherOf === 0 &&
           data.counts.sectionTeacherOf === 0 ? (
-            <p className="mb-6 rounded-[var(--radius-lg)] border border-dashed border-border-strong bg-teal-mist/40 px-4 py-8 text-center text-sm text-muted">
+            <DashboardBanner title="Nothing assigned yet" icon="users" tone="brand">
               You have no subjects or classes assigned yet. An administrator assigns these from the
               Subjects and Classes screens.
-            </p>
+            </DashboardBanner>
           ) : (
-            <div className="mb-6 grid gap-4 sm:grid-cols-2">
+            <div className="mb-8 grid gap-4 sm:grid-cols-2">
               {subjectsTaught.length > 0 ? (
-                <section className="surface p-4">
-                  <h2 className="mb-2 text-sm font-semibold text-ink">My subjects</h2>
+                <section className="surface p-5">
+                  <h2 className="mb-3 text-sm font-semibold text-ink">My subjects</h2>
                   {/*
                     * One line per subject — matching the Subjects figure — with its classes as chips
                     * beneath. A subject taught to one section reads "Grade 5 · A"; taught to the
                     * whole class, just "Grade 5".
                     */}
-                  <ul className="space-y-2.5">
+                  <ul className="space-y-3">
                     {subjectsTaught.map((subject) => (
                       <li key={subject.id}>
-                        <p className="text-sm font-medium text-ink">
+                        <p className="text-sm font-semibold text-ink">
                           {subject.name}
-                          {subject.code ? <span className="font-normal text-muted"> ({subject.code})</span> : null}
+                          {subject.code ? (
+                            <span className="font-normal text-muted"> ({subject.code})</span>
+                          ) : null}
                         </p>
-                        <ul className="mt-1 flex flex-wrap gap-1.5" aria-label={`Where you teach ${subject.name}`}>
+                        <ul
+                          className="mt-1.5 flex flex-wrap gap-1.5"
+                          aria-label={`Where you teach ${subject.name}`}
+                        >
                           {subject.places.map((place) => (
                             <li key={place} className={CHIP}>
                               {place}
@@ -286,7 +317,10 @@ export default function TeacherDashboard() {
               ) : null}
 
               {[
-                { label: 'Class teacher of', chips: data.classTeacherOf.map((row) => ({ id: row.id, text: row.name })) },
+                {
+                  label: 'Class teacher of',
+                  chips: data.classTeacherOf.map((row) => ({ id: row.id, text: row.name })),
+                },
                 {
                   label: 'Section teacher of',
                   /*
@@ -301,8 +335,8 @@ export default function TeacherDashboard() {
               ]
                 .filter((group) => group.chips.length > 0)
                 .map((group) => (
-                  <section key={group.label} className="surface p-4">
-                    <h2 className="mb-2 text-sm font-semibold text-ink">{group.label}</h2>
+                  <section key={group.label} className="surface p-5">
+                    <h2 className="mb-3 text-sm font-semibold text-ink">{group.label}</h2>
                     <ul className="flex flex-wrap gap-2">
                       {group.chips.map((chip) => (
                         <li key={chip.id} className={CHIP}>
@@ -321,15 +355,12 @@ export default function TeacherDashboard() {
               <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {shortcuts.map((item) => (
                   <li key={item.href}>
-                    <Link href={item.href} className="card card-interactive block p-4 sm:p-5">
-                      <span className="flex items-center gap-2.5 font-semibold text-ink">
-                        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-subtle text-brand-text">
-                          <Icon name={item.icon} size={16} />
-                        </span>
-                        {item.label}
-                      </span>
-                      <p className="mt-2 text-sm leading-relaxed text-muted">{item.description}</p>
-                    </Link>
+                    <ActionTile
+                      href={item.href}
+                      label={item.label}
+                      description={item.description}
+                      icon={item.icon}
+                    />
                   </li>
                 ))}
               </ul>
