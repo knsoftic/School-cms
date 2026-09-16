@@ -600,6 +600,7 @@ stop.
 
 | Problem | Fix |
 |---|---|
+| `sudo: I'm sorry msms. I'm afraid I can't do that` | You are **already** `msms` (the prompt shows `msms@`), and `msms` may not use sudo, by design. Skip `sudo -iu msms` and run the msms commands directly. For a root command, type `exit` first. |
 | `Permission denied`, `are you root?`, or `curl: (23)` | A **root** command was run as `msms` (the prompt shows `msms@`). Type `exit` to get back to `root@`, then run it again. Nothing was changed by the failed attempt. |
 | NodeSource: `Error: Failed to run 'apt update'` | A third-party package list is broken. Run `apt-get update` and read the `Err:` line to find it, then disable that file in `/etc/apt/sources.list.d/` as step 2 does for rspamd. |
 | `node -v` shows an old version as `msms` | The PATH line from step 4 is missing. Add it to `/home/msms/.profile` and run `sudo -iu msms node -v` again. |
@@ -607,6 +608,10 @@ stop.
 | `git clone`: `Permission denied (publickey)` | The `git@github.com:` address needs a GitHub key. The repository is public, so use the `https://github.com/knsoftic/School-cms.git` address from step 6 instead; no key is needed. |
 | `git clone`: `Remote branch main not found` | Branch `main` is not on GitHub yet. Push it from the development machine, then clone again. |
 | `cp: cannot stat 'deploy/aapanel/api.env.example'` | The clone is older than the aaPanel files. Push the latest `main` to GitHub, then `git pull` in both site folders. |
+| `msms-api`, `msms-cron`, `msms-web` appear in **root's** `pm2 list` (and `sudo -iu msms pm2 list` is empty) | They were started as root. As root, run `pm2 delete msms-api msms-cron msms-web && pm2 save`, then `chown -R msms:msms /www/wwwroot/school.knbazaar.com /www/wwwroot/school-api.knbazaar.com /www/msms-data`, then start them again as `msms` (step 10). The PM2 file now refuses to start as root. |
+| Port 3100 held by a leftover `next-server` (`ss -ltnp` shows it, `msms-web` keeps restarting) | A `next-server` outlived its PM2 process. Take the pid from `ss -ltnp \| grep 3100` and confirm it is this app with `readlink /proc/PID/cwd`, which must print `/www/wwwroot/school.knbazaar.com/frontend`. Then `kill PID`, and restart `msms-web`. |
+| `EACCES` / `permission denied` in `npm ci`, `npm run build` or logs, as `msms` | Those files were created by root. As root: `chown -R msms:msms /www/wwwroot/school.knbazaar.com /www/wwwroot/school-api.knbazaar.com /www/msms-data`. Run all `npm` and `pm2` commands as `msms`. |
+| `ecosystem.config.js: do not start this as root` | Start it as `msms`: `sudo -iu msms pm2 start /www/wwwroot/school-api.knbazaar.com/deploy/aapanel/ecosystem.config.js`. |
 | `ecosystem.config.js: expected … there is no package.json there` | A site folder has no clone. Repeat step 6 for that folder. |
 | `pm2 list` shows `msms-api` restarting | `pm2 logs msms-api --err --lines 30`, then read the `Failed to start:` line. It names the setting to fix (step 7). |
 | `Access denied for user 'msms'` | The database password in `backend/.env` is wrong. Reset it in aaPanel → Databases and keep *Local server*. If it still fails, try `DB_HOST=localhost`. |

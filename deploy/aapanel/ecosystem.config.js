@@ -49,6 +49,18 @@ const NODE = '/usr/bin/node';
  * folder otherwise reaches PM2 as "Script not found", which says nothing about the cause.
  */
 if (process.platform !== 'win32') {
+  /*
+   * PM2 reads this file as whoever runs `pm2 start`. Started as root, the three apps join root's PM2 —
+   * beside this server's other projects, running the application as root, invisible to `msms`'s
+   * `pm2 list`, and brought back at boot by root's dump. That happened on this server, so it is refused.
+   */
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    throw new Error(
+      'ecosystem.config.js: do not start this as root. Start it as the msms user: '
+      + 'sudo -iu msms pm2 start /www/wwwroot/school-api.knbazaar.com/deploy/aapanel/ecosystem.config.js '
+      + '(docs/DEPLOY-AAPANEL.md, step 10).'
+    );
+  }
   if (!fs.existsSync(NODE)) {
     throw new Error(
       `ecosystem.config.js: there is no Node.js at ${NODE}. Install Node.js 24 from NodeSource first `

@@ -294,6 +294,15 @@ function createApp() {
   /* Step 10 */
   app.use(config.app.apiPrefix, buildApiRouter());
 
+  /* Root route to prevent "No route matches GET /" */
+  app.get('/', (req, res) => {
+    res.status(200).json({
+      success: true,
+      message: 'API is running',
+      version: '1.0.0'
+    });
+  });
+
   /* Step 11 — nothing may be mounted after these. */
   app.use(notFoundHandler);
   app.use(errorHandler);
