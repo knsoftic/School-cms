@@ -28,7 +28,7 @@ import type { Refusal } from '@/lib/useCollection';
 import { useClassSections, useWholeList } from '@/lib/useTimetablePickers';
 import type { ClassOption } from '@/lib/useTimetablePickers';
 import { Icon } from '@/components/icon';
-import { ErrorNotice, LoadingBlock, MetricCard, PageHeader, RefusalNotice } from '@/components/table';
+import { ErrorNotice, LoadingBlock, MetricCard, PageHeader, RefusalNotice, SectionHeading } from '@/components/table';
 
 interface NamedRow {
   id: number;
@@ -221,7 +221,7 @@ export default function TeacherDashboard() {
       ) : !data ? null : (
         <>
           <dl className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <MetricCard label="Subjects" value={data.counts.subjects} />
+            <MetricCard label="Subjects" value={data.counts.subjects} icon="book" />
             {/*
               * The count names what it counts. `payloadClassNames` is built from the same two sets
               * the service counts — the classes subjects are taught in and the classes this teacher
@@ -230,10 +230,11 @@ export default function TeacherDashboard() {
             <MetricCard
               label="Classes"
               value={data.counts.classes}
+              icon="grid"
               hint={payloadClassNames.size > 0 ? [...payloadClassNames.values()].join(', ') : undefined}
             />
-            <MetricCard label="Class teacher of" value={data.counts.classTeacherOf} />
-            <MetricCard label="Section teacher of" value={data.counts.sectionTeacherOf} />
+            <MetricCard label="Class teacher of" value={data.counts.classTeacherOf} icon="users" />
+            <MetricCard label="Section teacher of" value={data.counts.sectionTeacherOf} icon="user" />
           </dl>
 
           {/*
@@ -316,21 +317,18 @@ export default function TeacherDashboard() {
 
           {shortcuts.length > 0 ? (
             <section>
-              <div className="mb-3 flex items-center gap-3">
-                <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">
-                  Where the work happens
-                </h2>
-                <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
-              </div>
+              <SectionHeading>Where the work happens</SectionHeading>
               <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {shortcuts.map((item) => (
                   <li key={item.href}>
-                    <Link href={item.href} className="card card-interactive block p-4">
-                      <span className="flex items-center gap-2 font-semibold text-ink">
-                        <Icon name={item.icon} size={16} className="shrink-0 text-muted-soft" />
+                    <Link href={item.href} className="card card-interactive block p-4 sm:p-5">
+                      <span className="flex items-center gap-2.5 font-semibold text-ink">
+                        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-subtle text-brand-text">
+                          <Icon name={item.icon} size={16} />
+                        </span>
                         {item.label}
                       </span>
-                      <p className="mt-1.5 text-xs leading-relaxed text-muted">{item.description}</p>
+                      <p className="mt-2 text-sm leading-relaxed text-muted">{item.description}</p>
                     </Link>
                   </li>
                 ))}

@@ -103,15 +103,35 @@ async function start() {
   const { tableCount } = assertSchemaMatchesSrs();
   logger.info(`Schema matches SRS §29 (${tableCount} tables)`);
 
+  /*
+   * Start listening immediately so Hostinger's health check doesn't kill the app if DB connections
+   * or migrations take longer than 3 seconds.
+   */
+  const app = createApp();
+  const server = app.listen(config.app.port, () => {
+    logger.info(
+      `${config.app.name} listening on port ${config.app.port} ` +
+        `(${config.env}, API at ${config.app.apiPrefix})`
+    );
+  });
+
+  server.on('error', (err) => {
+    /* EADDRINUSE is the common one and its default message does not name the port. */
+    if (err.code === 'EADDRINUSE') {
+      logger.error(`Port ${config.app.port} is already in use`);
+    } else {
+      logger.error('HTTP server error', { error: err.message, code: err.code });
+    }
+    process.exit(1);
+  });
+
   await assertConnection();
   logger.info(`Database connected (${config.db.name})`);
 
   /*
    * `MIGRATE_ON_BOOT` — for a host where nobody can run `npm run db:migrate` (docs/DEPLOY-HOSTINGER.md).
    *
-   * Before `listen`, not after: a request served against a schema one migration behind is the failure
-   * this prevents, and a process that cannot migrate should not bind its port at all. A thrown error
-   * reaches `start().catch` below and exits non-zero, which the host shows as a failed start.
+   * A thrown error reaches `start().catch` below and exits non-zero, which the host shows as a failed start.
    */
   if (config.boot.migrate) {
     const migrator = require('./database/migrator');
@@ -139,24 +159,6 @@ async function start() {
   if (config.cron.inApi) {
     require('./jobs/cron').schedule({ skip: config.cron.skip });
   }
-
-  const app = createApp();
-  const server = app.listen(config.app.port, () => {
-    logger.info(
-      `${config.app.name} listening on port ${config.app.port} ` +
-        `(${config.env}, API at ${config.app.apiPrefix})`
-    );
-  });
-
-  server.on('error', (err) => {
-    /* EADDRINUSE is the common one and its default message does not name the port. */
-    if (err.code === 'EADDRINUSE') {
-      logger.error(`Port ${config.app.port} is already in use`);
-    } else {
-      logger.error('HTTP server error', { error: err.message, code: err.code });
-    }
-    process.exit(1);
-  });
 
   for (const signal of ['SIGTERM', 'SIGINT']) {
     process.on(signal, () => shutdown(server, signal, 0));

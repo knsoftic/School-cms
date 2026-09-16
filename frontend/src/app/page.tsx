@@ -120,12 +120,9 @@ export default function LandingPage() {
   return (
     <div className="min-h-screen bg-paper">
       {/* ─────────────────────────────── top bar ─────────────────────────────── */}
-      <header className="sticky top-0 z-30 border-b border-border-soft bg-paper/85 backdrop-blur-md">
+      <header className="sticky top-0 z-30 border-b border-border-soft bg-paper/90 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5 sm:px-8">
-          <p className="flex items-baseline gap-2">
-            <span className="font-display text-lg font-semibold tracking-tight text-ink">MSMS</span>
-            <span className="hidden text-xs text-muted sm:inline">Multi-School Management</span>
-          </p>
+          <p className="font-display text-xl font-semibold tracking-tight text-ink">MSMS</p>
 
           <div className="flex items-center gap-2">
             <ThemeToggle />
@@ -163,39 +160,43 @@ export default function LandingPage() {
             */}
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 -top-40 h-[28rem] bg-[radial-gradient(60%_60%_at_50%_50%,var(--brand-subtle),transparent_70%)] opacity-70"
+            className="pointer-events-none absolute inset-0 bg-[radial-gradient(55%_55%_at_50%_0%,var(--brand-subtle),transparent_70%)]"
+          />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-border to-transparent"
           />
 
-          <div className="relative mx-auto max-w-4xl px-5 py-20 text-center sm:px-8 sm:py-28">
-            <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-brand-subtle-border bg-brand-subtle px-3 py-1 text-xs font-medium text-brand-text">
-              <Icon name="building" size={13} />
-              Built for groups running more than one school
+          <div className="relative mx-auto flex min-h-[min(78vh,40rem)] max-w-4xl flex-col items-center justify-center px-5 py-20 text-center sm:px-8 sm:py-28">
+            <p className="animate-rise-in font-display text-5xl font-semibold tracking-tight text-ink sm:text-6xl">
+              MSMS
+            </p>
+            <p className="mt-3 text-sm font-semibold uppercase tracking-[0.18em] text-brand-text">
+              Multi-School Management
             </p>
 
-            <h1 className="font-display text-3xl font-semibold leading-[1.1] tracking-tight text-ink sm:text-5xl">
-              Run every school in your group
-              <span className="block text-brand-text">from one system.</span>
+            <h1 className="mt-8 max-w-3xl font-display text-2xl font-semibold leading-[1.15] tracking-tight text-ink sm:text-4xl">
+              Run every school in your group from one system.
             </h1>
 
-            <p className="mx-auto mt-6 max-w-2xl text-base leading-relaxed text-muted sm:text-lg">
-              Admissions, attendance, fees, exams, library and finance for each school — and the
-              subscriptions, invoices and payments for all of them — in one place. What each school can
-              open is decided by its own plan.
+            <p className="mx-auto mt-5 max-w-xl text-base leading-relaxed text-muted sm:text-lg">
+              Admissions, attendance, fees, exams and billing — with access decided by each school’s
+              own plan.
             </p>
 
-            <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
+            <div className="mt-9 flex w-full max-w-md flex-col items-stretch justify-center gap-3 sm:max-w-none sm:flex-row sm:items-center">
               {!loading && profile ? (
-                <Link href={dashboard} className="btn btn-primary btn-lg w-full sm:w-auto">
+                <Link href={dashboard} className="btn btn-primary btn-lg">
                   Go to dashboard
                   <Icon name="chevron-right" size={16} />
                 </Link>
               ) : (
-                <Link href="/login" className="btn btn-primary btn-lg w-full sm:w-auto">
+                <Link href="/login" className="btn btn-primary btn-lg">
                   Sign in
                   <Icon name="chevron-right" size={16} />
                 </Link>
               )}
-              <a href="#modules" className="btn btn-secondary btn-lg w-full sm:w-auto">
+              <a href="#modules" className="btn btn-secondary btn-lg">
                 See what is included
               </a>
             </div>
@@ -221,13 +222,13 @@ export default function LandingPage() {
             </p>
           </div>
 
-          <ul className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <ul className="mt-12 grid gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
             {AUDIENCES.map((item) => (
-              <li key={item.title} className="card p-5">
-                <span className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-brand-subtle text-brand-text">
-                  <Icon name={item.icon} size={17} />
+              <li key={item.title} className="animate-fade-in">
+                <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-brand-subtle text-brand-text">
+                  <Icon name={item.icon} size={18} />
                 </span>
-                <h3 className="text-sm font-semibold text-ink">{item.title}</h3>
+                <h3 className="text-base font-semibold text-ink">{item.title}</h3>
                 <p className="mt-1.5 text-sm leading-relaxed text-muted">{item.body}</p>
               </li>
             ))}
@@ -235,7 +236,7 @@ export default function LandingPage() {
         </section>
 
         {/* ─────────────────────────────── pillars ─────────────────────────────── */}
-        <section className="border-y border-border-soft bg-surface-2">
+        <section className="border-y border-border-soft bg-surface-2/70">
           <div className="mx-auto max-w-6xl px-5 py-16 sm:px-8 sm:py-24">
             <div className="max-w-2xl">
               <h2 className="font-display text-2xl font-semibold tracking-tight text-ink sm:text-3xl">
@@ -247,13 +248,13 @@ export default function LandingPage() {
               </p>
             </div>
 
-            <ul className="mt-10 grid gap-x-8 gap-y-9 sm:grid-cols-2 lg:grid-cols-3">
+            <ul className="mt-12 grid gap-x-10 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
               {PILLARS.map((item) => (
                 <li key={item.title}>
                   <span className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-paper text-brand-text">
                     <Icon name={item.icon} size={17} />
                   </span>
-                  <h3 className="text-sm font-semibold text-ink">{item.title}</h3>
+                  <h3 className="text-base font-semibold text-ink">{item.title}</h3>
                   <p className="mt-1.5 text-sm leading-relaxed text-muted">{item.body}</p>
                 </li>
               ))}
@@ -283,13 +284,17 @@ export default function LandingPage() {
             </p>
           </div>
 
-          <ul className="mt-10 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
+          <ul className="mt-10 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {MODULES.map((module) => {
               const planned = isPlanned(module.key);
               return (
                 <li
                   key={module.key}
-                  className={`flex items-center gap-2.5 text-sm ${planned ? 'text-muted' : 'text-ink-soft'}`}
+                  className={`flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-sm ${
+                    planned
+                      ? 'border-border-soft bg-surface-2 text-muted'
+                      : 'border-border bg-surface-1 text-ink-soft'
+                  }`}
                 >
                   {/*
                     * A tick means built. Planned entries take a clock — "later", where a cross would read
@@ -302,9 +307,9 @@ export default function LandingPage() {
                     size={14}
                     className={`shrink-0 ${planned ? 'text-muted-soft' : 'text-brand-text'}`}
                   />
-                  <span>{module.label}</span>
+                  <span className="min-w-0 flex-1 truncate">{module.label}</span>
                   {planned ? (
-                    <span className="rounded-full border border-border-soft px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide text-muted-soft">
+                    <span className="shrink-0 rounded-md border border-border-soft px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide text-muted-soft">
                       Planned
                     </span>
                   ) : null}
@@ -315,7 +320,7 @@ export default function LandingPage() {
         </section>
 
         {/* ─────────────────────────────── close ─────────────────────────────── */}
-        <section className="border-t border-border-soft bg-surface-2">
+        <section className="border-t border-border-soft bg-surface-2/70">
           <div className="mx-auto max-w-3xl px-5 py-16 text-center sm:px-8 sm:py-20">
             <h2 className="font-display text-2xl font-semibold tracking-tight text-ink sm:text-3xl">
               Already have an account?

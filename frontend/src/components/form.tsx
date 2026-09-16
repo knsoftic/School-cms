@@ -1234,7 +1234,7 @@ export function FilterBar({
   onClear?: () => void;
 }) {
   return (
-    <div role="search" className="mb-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
+    <div role="search" className="mb-5 flex flex-col gap-3 rounded-xl border border-border bg-surface-1 p-3 shadow-xs sm:flex-row sm:flex-wrap sm:items-end sm:gap-2.5 sm:p-3.5">
       {children}
       {onClear && activeCount > 0 ? (
         <button type="button" onClick={onClear} className="btn btn-ghost btn-sm self-start sm:self-end">
@@ -1431,14 +1431,14 @@ export function AuthCard({
 }) {
   return (
     <main id="main" className="auth-stage">
-      <div className="relative z-10 w-full max-w-[25rem]">
+      <div className="relative z-10 w-full max-w-[26rem]">
         <p className="auth-brand">
           MSMS
           <span>Multi-School Management</span>
         </p>
         <div className="auth-panel">
-          <h1 className="font-display text-xl font-semibold tracking-tight text-ink">{title}</h1>
-          {subtitle ? <p className="mt-1 text-sm leading-relaxed text-muted">{subtitle}</p> : null}
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">{title}</h1>
+          {subtitle ? <p className="mt-1.5 text-sm leading-relaxed text-muted">{subtitle}</p> : null}
           {children}
         </div>
       </div>

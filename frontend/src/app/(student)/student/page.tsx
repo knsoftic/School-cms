@@ -44,6 +44,7 @@ import {
   PageHeader,
   Pagination,
   RefusalNotice,
+  SectionHeading,
   StatusBadge,
 } from '@/components/table';
 
@@ -181,8 +182,8 @@ export default function StudentPortal() {
   return (
     <div>
       <PageHeader
-        title={`Your results, ${profile?.user.name ?? ''}`.trim()}
-        description="Results appear here once your school publishes them."
+        title={`Welcome, ${profile?.user.name ?? 'student'}`}
+        description="Your published results and school records. Marks appear here after the school releases them."
         action={
           /*
            * The two screens a student acts on and could not reach from here: the inbox §23 addresses
@@ -194,6 +195,7 @@ export default function StudentPortal() {
            */
           <div className="flex flex-wrap gap-2">
             <Link href="/student/notifications" className="btn btn-secondary">
+              <Icon name="inbox" size={15} />
               Notifications
             </Link>
             {can('assignments.submit') ? (
@@ -205,6 +207,8 @@ export default function StudentPortal() {
         }
       />
 
+      <SectionHeading>Published results</SectionHeading>
+
       {refusal ? (
         <RefusalNotice refusal={refusal} />
       ) : error ? (
@@ -212,7 +216,7 @@ export default function StudentPortal() {
       ) : loading && rows.length === 0 ? (
         <LoadingBlock />
       ) : rows.length === 0 ? (
-        <EmptyNotice>
+        <EmptyNotice title="No results yet" icon="file-text">
           No published results yet. Marks are only visible here after the school publishes the exam.
         </EmptyNotice>
       ) : (
@@ -225,20 +229,19 @@ export default function StudentPortal() {
       )}
 
       {records.length > 0 ? (
-        <section className="mt-8">
-          <div className="mb-3 flex items-center gap-3">
-            <h2 className="text-2xs font-semibold uppercase tracking-[0.14em] text-muted">Your records</h2>
-            <span aria-hidden="true" className="h-px flex-1 bg-[var(--border-soft)]" />
-          </div>
+        <section className="mt-10">
+          <SectionHeading>Your records</SectionHeading>
           <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {records.map((item) => (
               <li key={item.href}>
-                <Link href={item.href} className="card card-interactive block p-4">
-                  <span className="flex items-center gap-2 font-semibold text-ink">
-                    <Icon name={item.icon} size={16} className="shrink-0 text-muted-soft" />
+                <Link href={item.href} className="card card-interactive block p-4 sm:p-5">
+                  <span className="flex items-center gap-2.5 font-semibold text-ink">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-subtle text-brand-text">
+                      <Icon name={item.icon} size={16} />
+                    </span>
                     {item.label}
                   </span>
-                  <p className="mt-1.5 text-xs leading-relaxed text-muted">{item.description}</p>
+                  <p className="mt-2 text-sm leading-relaxed text-muted">{item.description}</p>
                 </Link>
               </li>
             ))}
@@ -252,8 +255,8 @@ export default function StudentPortal() {
         * are linked above. What is still worth saying is that those records are read-only, and who to
         * ask when one is wrong.
         */}
-      <p className="mt-4 text-xs text-muted-soft">
-        Your records are read-only. If something in them looks wrong, speak to the school office.
+      <p className="mt-6 text-sm text-muted-soft">
+        Your records are read-only. If something looks wrong, speak to the school office.
       </p>
     </div>
   );

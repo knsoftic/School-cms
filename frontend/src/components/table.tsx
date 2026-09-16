@@ -89,12 +89,12 @@ export function RefusalNotice({ refusal }: { refusal: Refusal }) {
     EXPLANATIONS[refusal.code] ?? 'Your account does not have permission to view this.';
 
   return (
-    <div role="status" className="surface flex flex-col items-center px-6 py-12 text-center">
-      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-warn-soft text-warn">
-        <Icon name="lock" size={20} />
+    <div role="status" className="surface flex flex-col items-center px-6 py-14 text-center">
+      <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-warn-soft text-warn">
+        <Icon name="lock" size={22} />
       </span>
-      <p className="mt-4 max-w-md text-sm font-semibold text-ink">{explanation}</p>
-      <p className="mt-1.5 max-w-md text-xs leading-relaxed text-muted">{refusal.message}</p>
+      <p className="mt-4 max-w-md text-base font-semibold text-ink">{explanation}</p>
+      <p className="mt-1.5 max-w-md text-sm leading-relaxed text-muted">{refusal.message}</p>
     </div>
   );
 }
@@ -103,13 +103,13 @@ export function ErrorNotice({ message, onRetry }: { message: string; onRetry: ()
   return (
     <div
       role="alert"
-      className="surface flex flex-col items-center border-danger/25 px-6 py-12 text-center"
+      className="surface flex flex-col items-center border-danger/25 px-6 py-14 text-center"
     >
-      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-danger-soft text-danger">
-        <Icon name="alert-circle" size={20} />
+      <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-danger-soft text-danger">
+        <Icon name="alert-circle" size={22} />
       </span>
-      <p className="mt-4 text-sm font-semibold text-ink">Something went wrong</p>
-      <p className="mt-1.5 max-w-md text-xs leading-relaxed text-muted">{message}</p>
+      <p className="mt-4 text-base font-semibold text-ink">Something went wrong</p>
+      <p className="mt-1.5 max-w-md text-sm leading-relaxed text-muted">{message}</p>
       <button type="button" onClick={onRetry} className="btn btn-secondary mt-5">
         <Icon name="refresh" size={15} />
         Try again
@@ -137,11 +137,11 @@ export function EmptyNotice({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center rounded-xl border border-dashed border-border-strong bg-surface-2 px-6 py-14 text-center">
-      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-surface-3 text-muted">
-        <Icon name={icon} size={20} />
+    <div className="flex flex-col items-center rounded-xl border border-dashed border-border-strong bg-surface-2/80 px-6 py-16 text-center">
+      <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-surface-1 text-muted shadow-xs">
+        <Icon name={icon} size={22} />
       </span>
-      {title ? <p className="mt-4 text-sm font-semibold text-ink">{title}</p> : null}
+      {title ? <p className="mt-4 text-base font-semibold text-ink">{title}</p> : null}
       {children ? (
         <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-muted">{children}</p>
       ) : null}
@@ -239,11 +239,11 @@ export function DataTable<T>({ columns, rows, rowKey, caption, busy = false }: D
        * Cards below `md`. The same rows and the same `Column[]` — a second hand-written mobile
        * layout is how the two drift apart, so there is only one description of what a row contains.
        */}
-      <ul className="space-y-2 md:hidden" aria-label={caption}>
+      <ul className="space-y-2.5 md:hidden" aria-label={caption}>
         {rows.map((row) => (
-          <li key={rowKey(row)} className="surface p-3.5">
-            <div className="text-sm font-semibold text-ink">{heading.cell(row)}</div>
-            <dl className="mt-2.5 grid grid-cols-[minmax(0,auto)_1fr] gap-x-4 gap-y-1.5">
+          <li key={rowKey(row)} className="surface p-4">
+            <div className="text-base font-semibold text-ink">{heading.cell(row)}</div>
+            <dl className="mt-3 grid grid-cols-[minmax(0,auto)_1fr] gap-x-4 gap-y-2">
               {rest.map((column) => (
                 <div key={column.key} className="contents">
                   <dt className="text-2xs font-semibold uppercase tracking-[0.08em] text-muted-soft">
@@ -319,18 +319,25 @@ export function PageHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+    <div className="mb-7 flex flex-wrap items-start justify-between gap-4 border-b border-border-soft pb-5">
       <div className="min-w-0">
-        <h1 className="font-display text-2xl font-semibold tracking-tight text-ink sm:text-3xl">
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-ink sm:text-[1.75rem]">
           {title}
         </h1>
         {description ? (
-          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted">{description}</p>
+          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted sm:text-base">
+            {description}
+          </p>
         ) : null}
       </div>
       {action ? <div className="flex flex-wrap items-center gap-2">{action}</div> : null}
     </div>
   );
+}
+
+/** Shared section chrome used on dashboards — one label, one hairline, one job. */
+export function SectionHeading({ children }: { children: ReactNode }) {
+  return <h2 className="section-label">{children}</h2>;
 }
 
 /*
@@ -394,7 +401,7 @@ export function StatusBadge({ status, tone: override }: { status: string; tone?:
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${tone.pill}`}
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-0.5 text-xs font-semibold capitalize ${tone.pill}`}
     >
       <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone.dot}`} />
       {status.replace(/_/g, ' ')}
@@ -426,7 +433,7 @@ export function MetricCard({
   breakdown?: ReactNode;
 }) {
   return (
-    <div className={`card p-4${href ? ' card-interactive relative' : ''}`}>
+    <div className={`card p-4 sm:p-5${href ? ' card-interactive relative' : ''}`}>
       <div className="flex items-start justify-between gap-2">
         <dt className="text-2xs font-semibold uppercase tracking-[0.08em] text-muted">
           {href ? (
@@ -440,9 +447,13 @@ export function MetricCard({
             label
           )}
         </dt>
-        {icon ? <Icon name={icon} size={15} className="text-muted-soft" /> : null}
+        {icon ? (
+          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-subtle text-brand-text">
+            <Icon name={icon} size={14} />
+          </span>
+        ) : null}
       </div>
-      <dd className="mt-2 font-display text-2xl font-semibold tabular-nums tracking-tight text-ink">
+      <dd className="mt-2.5 font-display text-2xl font-semibold tabular-nums tracking-tight text-ink sm:text-[1.75rem]">
         {value}
       </dd>
       {breakdown ? <div className="mt-1.5 text-xs tabular-nums text-muted">{breakdown}</div> : null}
