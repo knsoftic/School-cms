@@ -453,33 +453,71 @@ const BUILDERS = Object.freeze({
 /* ══════════════════════ FR-REPORT-002 — the export ══════════════════════ */
 
 /**
- * A report's tabular form, for Excel.
+ * A report's tabular form, for Excel and PDF.
  *
  * Every report is a handful of named maps and a few scalars, so the generic shape is one sheet of
  * `{ section, key, value }` rows plus a header block. That is deliberately plain: §22 says nothing
  * about layout, and inventing a house style for seven reports would be inventing a requirement.
+ *
+ * ## It must recurse — the Expense report is two levels deep
+ *
+ * `finance.report()` answers `{ income: { total, by_category: { salaries, … } }, expense: { … },
+ * net_balance }`. A one-level walk pushed `by_category` itself into a cell, where Excel and PDF
+ * rendered `[object Object]` and the category breakdown — the point of the report — was lost. The
+ * screen already walked recursively; the exporters share this function, so they must too. Nested
+ * keys carry the path (`by_category.salaries`) so a reader can match the workbook to the screen.
  */
 function toRows(report) {
   const rows = [];
-  const push = (section, key, value) => rows.push({ section, key, value });
+  const push = (section, key, value) => {
+    rows.push({
+      section,
+      key,
+      value: value === null || value === undefined ? '' : value,
+    });
+  };
 
-  for (const [key, value] of Object.entries(report)) {
+  const walk = (section, prefix, value) => {
     if (value === null || value === undefined) {
-      push('summary', key, '');
-    } else if (Array.isArray(value)) {
+      push(section, prefix, '');
+      return;
+    }
+
+    if (Array.isArray(value)) {
       value.forEach((entry, i) => {
         if (entry && typeof entry === 'object') {
-          for (const [k, v] of Object.entries(entry)) push(key, `${i + 1}.${k}`, v === null ? '' : v);
+          for (const [k, v] of Object.entries(entry)) {
+            walk(prefix, `${i + 1}.${k}`, v);
+          }
         } else {
-          push(key, String(i + 1), entry);
+          walk(prefix, String(i + 1), entry);
         }
       });
-    } else if (typeof value === 'object') {
-      for (const [k, v] of Object.entries(value)) push(key, k, v === null ? '' : v);
-    } else {
-      push('summary', key, value);
+      return;
     }
-  }
+
+    if (typeof value === 'object') {
+      /*
+       * Dates are objects in JS. A report window sometimes carries a real Date; stringify it once
+       * rather than walking its enumerable nothingness into empty rows.
+       */
+      if (value instanceof Date) {
+        push(section, prefix, Number.isNaN(value.getTime()) ? '' : value.toISOString().slice(0, 10));
+        return;
+      }
+
+      for (const [k, v] of Object.entries(value)) {
+        /* Top-level keys become sections; anything deeper extends the key path. */
+        if (section === 'summary') walk(prefix, k, v);
+        else walk(section, `${prefix}.${k}`, v);
+      }
+      return;
+    }
+
+    push(section, prefix, value);
+  };
+
+  for (const [key, value] of Object.entries(report)) walk('summary', key, value);
   return rows;
 }
 
@@ -510,6 +548,30 @@ async function toExcel(report) {
 }
 
 /**
+ * The date window a printed page should show, if the report carries one.
+ *
+ * Attendance and Expense put `from`/`to` at the top level (they reuse §16 / §18 payloads). Student,
+ * Fee, Teacher and Subscription put the same facts under `window`. Reading only the top level left
+ * most PDF subtitles blank even when the JSON named a window.
+ */
+function windowSubtitle(report) {
+  const from = report.from ?? report.window?.from ?? null;
+  const to = report.to ?? report.window?.to ?? null;
+  if (from == null && to == null) return null;
+
+  const day = (value) => {
+    if (value == null || value === '') return null;
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10);
+    }
+    const text = String(value);
+    return text.length >= 10 ? text.slice(0, 10) : text;
+  };
+
+  return `${day(from) || 'start'} to ${day(to) || 'today'}`;
+}
+
+/**
  * The same report, as a PDF — SRS §22, FR-REPORT-002; Phase 5.4.
  *
  * Deliberately fed by `toRows()`, the identical flattening `toExcel()` uses. Two exporters walking
@@ -526,7 +588,7 @@ async function toExcel(report) {
 function toPdf(report) {
   const scope = [
     report.school && report.school.name ? report.school.name : null,
-    report.from || report.to ? `${report.from || 'start'} to ${report.to || 'today'}` : null,
+    windowSubtitle(report),
   ].filter(Boolean).join('  |  ');
 
   return renderTable({

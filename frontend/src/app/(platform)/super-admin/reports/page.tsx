@@ -57,6 +57,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api, saveFile } from '@/lib/apiClient';
 import { useAuth } from '@/lib/auth';
+import { formatAmountWithCode } from '@/lib/money';
 import { Field, SelectField } from '@/components/form';
 import {
   Column,
@@ -104,6 +105,11 @@ interface ReportSpec {
  * Named here rather than fetched, because there is no endpoint that lists them — `REPORT_TYPES` is a
  * backend constant with no route exposing it. An eighth report would have to be added here too, and
  * that is a real maintenance cost worth stating rather than hiding.
+ *
+ * Filters match `reports.validation.js`. Class / section / exam / session pickers need school-scoped
+ * list endpoints a platform caller can feed once a school is chosen; those stay on the school Reports
+ * screen. Every filter that is a date, a closed vocabulary or a free-text code is offered here so a
+ * Super Admin can narrow a report the same way a Principal can.
  */
 const REPORTS: ReportSpec[] = [
   {
@@ -113,6 +119,16 @@ const REPORTS: ReportSpec[] = [
     summary: 'Enrolment, status and class distribution',
     permissions: ['reports.view', 'students.view'],
     needsSchool: true,
+    params: [
+      { key: 'from', label: 'Admitted from', kind: 'date' },
+      { key: 'to', label: 'Admitted to', kind: 'date' },
+      {
+        key: 'status',
+        label: 'Status',
+        kind: 'select',
+        options: ['active', 'promoted', 'transferred', 'left', 'graduated', 'inactive'],
+      },
+    ],
   },
   {
     type: 'attendance',
@@ -139,6 +155,8 @@ const REPORTS: ReportSpec[] = [
     permissions: ['reports.view', 'fees.view'],
     needsSchool: true,
     params: [
+      { key: 'from', label: 'From', kind: 'date' },
+      { key: 'to', label: 'To', kind: 'date' },
       {
         key: 'currency',
         label: 'Currency',
@@ -151,18 +169,25 @@ const REPORTS: ReportSpec[] = [
     type: 'expense',
     path: '/reports/expenses',
     label: 'Expenses',
-    summary: 'Recorded spending by category',
+    summary: 'Income, spending and net balance by category',
     permissions: ['reports.view', 'finance.view'],
     needsSchool: true,
     params: [
-      { key: 'currency', label: 'Currency', kind: 'text', hint: 'As above — §18 refuses a window holding two.' },
+      { key: 'from', label: 'From', kind: 'date' },
+      { key: 'to', label: 'To', kind: 'date' },
+      {
+        key: 'currency',
+        label: 'Currency',
+        kind: 'text',
+        hint: 'Required when the window holds more than one currency — §18 refuses to add them.',
+      },
     ],
   },
   {
     type: 'exam',
     path: '/reports/exams',
     label: 'Exams',
-    summary: 'Results and pass rates',
+    summary: 'Results and pass rates for generated result cards',
     permissions: ['reports.view', 'exams.view'],
     needsSchool: true,
   },
@@ -170,9 +195,20 @@ const REPORTS: ReportSpec[] = [
     type: 'teacher',
     path: '/reports/teachers',
     label: 'Teachers',
-    summary: 'Headcount, subjects and workload',
+    summary: 'Headcount by status and designation',
     permissions: ['reports.view', 'teachers.view'],
     needsSchool: true,
+    params: [
+      { key: 'from', label: 'Joined from', kind: 'date' },
+      { key: 'to', label: 'Joined to', kind: 'date' },
+      {
+        key: 'is_active',
+        label: 'Active',
+        kind: 'select',
+        options: ['true', 'false'],
+        hint: 'Leave blank for every teacher; true / false narrows to the active flag.',
+      },
+    ],
   },
   {
     type: 'subscription',
@@ -181,6 +217,16 @@ const REPORTS: ReportSpec[] = [
     summary: 'Platform-wide, and the only one that takes no school',
     permissions: ['reports.subscription.view'],
     needsSchool: false,
+    params: [
+      { key: 'from', label: 'Created from', kind: 'date' },
+      { key: 'to', label: 'Created to', kind: 'date' },
+      {
+        key: 'state',
+        label: 'State',
+        kind: 'text',
+        hint: 'Exact subscription state, e.g. active or trial.',
+      },
+    ],
   },
 ];
 
@@ -259,6 +305,9 @@ const MONEY_FIGURES: Record<string, RegExp> = {
  * So the walk recurses, and the key carries the path (`by_category.salaries`). Arrays keep their
  * 1-based index for the same reason they did before: a reader counting rows in the workbook and on
  * the screen should see the same numbering.
+ *
+ * Money figures carry their currency code when the payload names one — `1,200.00 USD` — matching the
+ * school Reports screen so a platform export and an on-screen figure cannot disagree about units.
  */
 function toRows(report: AnyReport): FlatRow[] {
   const rows: FlatRow[] = [];
@@ -266,16 +315,18 @@ function toRows(report: AnyReport): FlatRow[] {
   /* The payload names its own report — the same discriminator the Subscription branch reads. */
   const money = typeof report.type === 'string' ? MONEY_FIGURES[report.type] : undefined;
   const isMoney = (section: string, key: string) => (money ? money.test(`${section}:${key}`) : false);
+  const currency = typeof report.currency === 'string' ? report.currency : null;
 
   const push = (section: string, key: string, value: unknown) => {
-    /*
-     * Money to two decimal places. `String(1250.5)` is `"1250.5"`, which in a column of amounts
-     * reads as five cents rather than fifty; the server rounds these to the currency scale before
-     * sending them, and dropping a digit here undoes that.
-     */
-    const formatted =
-      typeof value === 'number' && isMoney(section, key) ? value.toFixed(2) : value;
-    rows.push({ section, key, value: formatted as string | number | boolean });
+    let formatted: string | number | boolean;
+    if (typeof value === 'number' && isMoney(section, key)) {
+      formatted = formatAmountWithCode(value, currency);
+    } else if (value === null || value === undefined) {
+      formatted = '';
+    } else {
+      formatted = value as string | number | boolean;
+    }
+    rows.push({ section, key, value: formatted });
   };
 
   const walk = (section: string, prefix: string, value: unknown) => {

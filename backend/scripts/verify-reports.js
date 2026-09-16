@@ -784,6 +784,27 @@ async function verifyHttp() {
       [true, true, true, true]);
     check('  naming where the number came from', expViaReports.delegated_to, 'finance.report');
 
+    /*
+     * Excel/PDF share `toRows()`. A one-level walk used to push `by_category` as an object, and both
+     * exporters rendered `[object Object]` — so the category breakdown the Expense report exists to
+     * show was lost the moment anyone exported. The walk now recurses; these assert the leaves land
+     * as numbers under a dotted key, not as an object cell.
+     */
+    const expenseFlat = service.toRows(expViaReports);
+    check('FR-REPORT-002 — Expense toRows expands by_category into leaf rows',
+      expenseFlat.some((r) => r.section === 'expense' && r.key === 'by_category.salaries'
+        && Number(r.value) === 150), true);
+    check('  and the other category leaf too',
+      expenseFlat.some((r) => r.section === 'expense' && r.key === 'by_category.other_expenses'
+        && Number(r.value) === 300), true);
+    check('  and never leaves a nested object in a cell',
+      expenseFlat.filter((r) => r.value !== null && typeof r.value === 'object').map((r) => r.key),
+      []);
+    check('  income categories expand the same way',
+      expenseFlat.some((r) => r.section === 'income' && r.key === 'by_category.other_income'
+        && Number(r.value) === 900),
+      true);
+
     /* ── 5. Exam Report ── */
 
     const exams = dataOf(await expectOk('/reports/exams', { token: teacher }, 200)).report;

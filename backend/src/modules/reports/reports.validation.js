@@ -22,8 +22,9 @@
  * *un-exported* form: the report itself, which is what the endpoint returns when nothing is exported.
  * That keeps the frozen constant honest without pretending §22 named a fourth format.
  *
- * Of the three §22 does name, only `excel` is accepted today. See the service header for why, stated
- * as a deferral rather than a silence.
+ * Of the three §22 does name, `excel` and `pdf` are accepted; `print` stays refused because there is
+ * no view engine here — FR-REPORT-002's print is the browser's `window.print()` over the rendered
+ * report. See the service header.
  */
 
 const Joi = require('joi');
