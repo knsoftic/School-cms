@@ -1,0 +1,3 @@
+module.exports=[21935,a=>{"use strict";let b=new Intl.NumberFormat("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});function c(a){if(null==a||""===a)return"—";let c="number"==typeof a?a:Number(a);return Number.isFinite(c)?b.format(c):String(a)}a.s(["formatAmountWithCode",0,function(a,b){let d=c(a);return"—"!==d&&b?`${d} ${b}`:d},"formatCodeWithAmount",0,function(a,b){let d=c(b);return"—"===d?d:a?`${a} ${d}`:d},"formatMoney",0,c])}];
+
+//# sourceMappingURL=src_lib_money_ts_0_8jyfn._.js.map

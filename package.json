@@ -1,0 +1,29 @@
+{
+  "name": "msms-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-School Management System — Next.js dashboard (SRS §3, §33)",
+  "scripts": {
+    "build": "echo \"Built by GitHub Actions (.github/workflows/hostinger-frontend.yml) - nothing to compile here.\"",
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "next": "16.3.4",
+    "postcss": "^8.5.6",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.4"
+  }
+}

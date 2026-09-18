@@ -1,0 +1,419 @@
+{
+  "app": {
+    "[project]/src/app/(auth)/change-password/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(auth)/forgot-password/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(auth)/login/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(auth)/reset-password/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(auth)/verify-email/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(parent)/parent/attendance/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(parent)/parent/fees/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(parent)/parent/homework/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(parent)/parent/notifications/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(parent)/parent/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(parent)/parent/record/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(parent)/parent/results/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(parent)/parent/timetable/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/addons/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/addons/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/coupons/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/coupons/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/coupons/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/invoices/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/invoices/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/invoices/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/logs/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/notifications/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/organizations/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/organizations/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/payments/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/payments/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/plans/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/plans/features/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/plans/limits/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/plans/modules/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/plans/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/plans/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/principals/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/principals/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/quotations/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/reports/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/schools/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/schools/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/schools/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/settings/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/subscriptions/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/subscriptions/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/subscriptions/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/taxes/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/users/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(platform)/super-admin/users/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/ai/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/assignments/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/attendance/mark/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/attendance/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/billing/invoices/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/billing/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/classes/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/classes/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/classes/sections/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/documents/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/exams/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/exams/grade-scales/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/exams/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/exams/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/fees/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/fees/structures/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/finance/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/homework/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/homework/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/library/books/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/library/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/logs/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/notifications/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/parents/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/parents/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/reports/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/results/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/settings/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/staff/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/staff/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/staff/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/students/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/students/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/students/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/subjects/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/subjects/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/subjects/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/teachers/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/teachers/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/teachers/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/timetable/[id]/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/timetable/new/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(school)/school/timetable/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(student)/student/attendance/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(student)/student/fees/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(student)/student/homework/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(student)/student/notifications/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(student)/student/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(student)/student/record/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(student)/student/timetable/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(teacher)/teacher/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/(teacher)/teacher/timetable/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/_not-found/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ],
+    "[project]/src/app/page": [
+      "static/media/03bda585a99c6450-s.p.32sris142tqlb.woff2",
+      "static/media/f7aa21714c1c53f8-s.p.0-95eo-012xnf.woff2"
+    ]
+  },
+  "appUsingSizeAdjust": true,
+  "pages": {},
+  "pagesUsingSizeAdjust": false
+}

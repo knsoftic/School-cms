@@ -1,0 +1,27 @@
+1:"$Sreact.fragment"
+2:I[47257,["/_next/static/chunks/3w1jndmznj847.js"],"ClientPageRoot"]
+3:I[52683,["/_next/static/chunks/3w1jndmznj847.js","/_next/static/chunks/2s6ryv8dgmdqw.js"],"default"]
+6:I[97367,["/_next/static/chunks/3w1jndmznj847.js"],"OutletBoundary"]
+7:"$Sreact.suspense"
+b:I[97367,["/_next/static/chunks/3w1jndmznj847.js"],"ViewportBoundary"]
+c:I[97367,["/_next/static/chunks/3w1jndmznj847.js"],"MetadataBoundary"]
+e:I[41148,["/_next/static/chunks/3w1jndmznj847.js"],"ThemeProvider"]
+f:I[62164,["/_next/static/chunks/3w1jndmznj847.js"],"ToastProvider"]
+10:I[72299,["/_next/static/chunks/3w1jndmznj847.js"],"AuthProvider"]
+11:I[16912,["/_next/static/chunks/3w1jndmznj847.js"],"EntitlementProvider"]
+12:I[39756,["/_next/static/chunks/3w1jndmznj847.js"],"default"]
+13:I[37457,["/_next/static/chunks/3w1jndmznj847.js"],"default"]
+14:I[22016,["/_next/static/chunks/3w1jndmznj847.js","/_next/static/chunks/22i43cg4l4-dq.js"],""]
+:HL["/_next/static/chunks/3-61bx2obd4-k.css","style"]
+a:X
+0:{"buildId":"JEr-oRGbQEU7jZ-1ssKMR","data":[{"rsc":["$","$1","c",{"children":[["$","$L2",null,{"Component":"$3","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@4","$@5"]}}],[["$","script","script-0",{"src":"/_next/static/chunks/2s6ryv8dgmdqw.js","async":true}]],["$","$L6",null,{"children":["$","$7",null,{"name":"Next.MetadataOutlet","children":"$@8"}]}]]}],"isPartial":"$@9","staleTime":"$a","varyParams":null},{"rsc":["$","$1","h",{"children":[null,["$","$Lb",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}],["$","meta","2",{"name":"theme-color","content":"#f8f9fb","media":"(prefers-color-scheme: light)"}],["$","meta","3",{"name":"theme-color","content":"#0d1117","media":"(prefers-color-scheme: dark)"}]]}],["$","div",null,{"hidden":true,"children":["$","$Lc",null,{"children":["$","$7",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"MSMS — Multi-School Management System"}],["$","meta","1",{"name":"description","content":"Run every school in your group from one place — admissions, attendance, fees, exams and billing."}]]}]}]}],["$","meta",null,{"name":"next-size-adjust","content":""}]]}],"isPartial":"$@d","staleTime":"$a","varyParams":null},{"rsc":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/3-61bx2obd4-k.css","precedence":"next"}],["$","script","script-0",{"src":"/_next/static/chunks/3w1jndmznj847.js","async":true}]],["$","html",null,{"lang":"en","className":"fraunces_8f8d718c-module__HPcqWW__variable figtree_1b354ea6-module__zwG2HG__variable","suppressHydrationWarning":true,"children":[["$","head",null,{"children":["$","script",null,{"src":"/theme-init.js"}]}],["$","body",null,{"className":"min-h-screen","children":[["$","a",null,{"href":"#main","className":"sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-surface-1 focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:shadow-lg focus:outline focus:outline-2 focus:outline-[var(--focus-ring)]","children":"Skip to content"}],["$","$Le",null,{"children":["$","$Lf",null,{"children":["$","$L10",null,{"children":["$","$L11",null,{"children":["$","$L12",null,{"parallelRouterKey":"children","template":["$","$L13",null,{}],"notFound":[["$","main",null,{"id":"main","className":"flex min-h-screen flex-col items-center justify-center bg-paper px-5 py-16 text-center","children":[["$","span",null,{"className":"flex h-14 w-14 items-center justify-center rounded-full border border-border bg-surface-2 text-muted","children":["$","svg",null,{"width":24,"height":24,"viewBox":"0 0 24 24","fill":"none","stroke":"currentColor","strokeWidth":2,"strokeLinecap":"round","strokeLinejoin":"round","className":"shrink-0 ","aria-hidden":true,"focusable":"false","children":[null,["$","path",null,{"d":"M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM21 21l-4.35-4.35"}]]}]}],["$","p",null,{"className":"mt-6 text-xs font-semibold uppercase tracking-widest text-muted-soft","children":"Error 404"}],["$","h1",null,{"className":"mt-2 font-display text-2xl font-semibold tracking-tight text-ink sm:text-3xl","children":"We could not find that page"}],["$","p",null,{"className":"mx-auto mt-3 max-w-md text-sm leading-relaxed text-muted","children":"The address may have been mistyped, or the page may have moved. Nothing has gone wrong with your account."}],["$","div",null,{"className":"mt-8 flex flex-col items-center gap-3 sm:flex-row","children":[["$","$L14",null,{"href":"/","className":"btn btn-primary w-full sm:w-auto","children":"Go to the home page"}],["$","$L14",null,{"href":"/login","className":"btn btn-secondary w-full sm:w-auto","children":"Sign in"}]]}]]}],[]]}]}]}]}]}]]}]]}]]}],"isPartial":"$@15","staleTime":"$a","varyParams":null}],"isUpgradeableISRFallback":false,"a":"$@16","rootVaryParams":null,"needsRuntimeRequest":"$@17"}
+4:{}
+5:"$0:data:0:rsc:props:children:0:props:serverProvidedParams:params"
+8:null
+a:300
+17:true
+a:C
+16:0
+d:"$undefined"
+15:"$undefined"
+9:"$undefined"

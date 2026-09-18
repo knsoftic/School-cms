@@ -1,0 +1,36 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/(school)/layout,_N_T_/(school)/school/layout,_N_T_/(school)/school/billing/layout,_N_T_/(school)/school/billing/page,_N_T_/school/billing"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/!KHNjaG9vbCk/school/billing/__PAGE__"
+  ],
+  "prefetchHints": {
+    "hints": 64,
+    "slots": {
+      "children": {
+        "hints": 96,
+        "slots": {
+          "children": {
+            "hints": 96,
+            "slots": {
+              "children": {
+                "hints": 96,
+                "slots": {
+                  "children": {
+                    "hints": 160,
+                    "slots": null
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

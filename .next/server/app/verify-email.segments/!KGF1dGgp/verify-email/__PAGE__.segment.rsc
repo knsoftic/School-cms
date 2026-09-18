@@ -1,0 +1,36 @@
+1:"$Sreact.fragment"
+2:I[47257,["/_next/static/chunks/3w1jndmznj847.js"],"ClientPageRoot"]
+3:I[39298,["/_next/static/chunks/3w1jndmznj847.js","/_next/static/chunks/30k-ibfc74-xi.js","/_next/static/chunks/325mrcw-ou61g.js"],"default"]
+6:I[97367,["/_next/static/chunks/3w1jndmznj847.js"],"OutletBoundary"]
+7:"$Sreact.suspense"
+b:I[97367,["/_next/static/chunks/3w1jndmznj847.js"],"ViewportBoundary"]
+c:I[97367,["/_next/static/chunks/3w1jndmznj847.js"],"MetadataBoundary"]
+e:I[39756,["/_next/static/chunks/3w1jndmznj847.js"],"default"]
+f:I[37457,["/_next/static/chunks/3w1jndmznj847.js"],"default"]
+12:I[22016,["/_next/static/chunks/3w1jndmznj847.js","/_next/static/chunks/22i43cg4l4-dq.js"],""]
+14:I[41148,["/_next/static/chunks/3w1jndmznj847.js"],"ThemeProvider"]
+15:I[62164,["/_next/static/chunks/3w1jndmznj847.js"],"ToastProvider"]
+16:I[72299,["/_next/static/chunks/3w1jndmznj847.js"],"AuthProvider"]
+17:I[16912,["/_next/static/chunks/3w1jndmznj847.js"],"EntitlementProvider"]
+:HL["/_next/static/chunks/3-61bx2obd4-k.css","style"]
+a:X
+11:X
+11:C
+0:{"buildId":"JEr-oRGbQEU7jZ-1ssKMR","data":[{"rsc":["$","$1","c",{"children":[["$","$L2",null,{"Component":"$3","serverProvidedParams":{"searchParams":{},"params":{},"promises":["$@4","$@5"]}}],[["$","script","script-0",{"src":"/_next/static/chunks/30k-ibfc74-xi.js","async":true}],["$","script","script-1",{"src":"/_next/static/chunks/325mrcw-ou61g.js","async":true}]],["$","$L6",null,{"children":["$","$7",null,{"name":"Next.MetadataOutlet","children":"$@8"}]}]]}],"isPartial":"$@9","staleTime":"$a","varyParams":null},{"rsc":["$","$1","h",{"children":[null,["$","$Lb",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}],["$","meta","2",{"name":"theme-color","content":"#f8f9fb","media":"(prefers-color-scheme: light)"}],["$","meta","3",{"name":"theme-color","content":"#0d1117","media":"(prefers-color-scheme: dark)"}]]}],["$","div",null,{"hidden":true,"children":["$","$Lc",null,{"children":["$","$7",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"MSMS — Multi-School Management System"}],["$","meta","1",{"name":"description","content":"Run every school in your group from one place — admissions, attendance, fees, exams and billing."}]]}]}]}],["$","meta",null,{"name":"next-size-adjust","content":""}]]}],"isPartial":"$@d","staleTime":"$a","varyParams":null},{"rsc":["$","$1","c",{"children":[null,["$","$Le",null,{"parallelRouterKey":"children","template":["$","$Lf",null,{}]}]]}],"isPartial":"$@10","staleTime":"$a","varyParams":"$11"},{"rsc":["$","$1","c",{"children":[null,["$","$Le",null,{"parallelRouterKey":"children","template":["$","$Lf",null,{}],"notFound":[["$","main",null,{"id":"main","className":"flex min-h-screen flex-col items-center justify-center bg-paper px-5 py-16 text-center","children":[["$","span",null,{"className":"flex h-14 w-14 items-center justify-center rounded-full border border-border bg-surface-2 text-muted","children":["$","svg",null,{"width":24,"height":24,"viewBox":"0 0 24 24","fill":"none","stroke":"currentColor","strokeWidth":2,"strokeLinecap":"round","strokeLinejoin":"round","className":"shrink-0 ","aria-hidden":true,"focusable":"false","children":[null,["$","path",null,{"d":"M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM21 21l-4.35-4.35"}]]}]}],["$","p",null,{"className":"mt-6 text-xs font-semibold uppercase tracking-widest text-muted-soft","children":"Error 404"}],["$","h1",null,{"className":"mt-2 font-display text-2xl font-semibold tracking-tight text-ink sm:text-3xl","children":"We could not find that page"}],["$","p",null,{"className":"mx-auto mt-3 max-w-md text-sm leading-relaxed text-muted","children":"The address may have been mistyped, or the page may have moved. Nothing has gone wrong with your account."}],["$","div",null,{"className":"mt-8 flex flex-col items-center gap-3 sm:flex-row","children":[["$","$L12",null,{"href":"/","className":"btn btn-primary w-full sm:w-auto","children":"Go to the home page"}],["$","$L12",null,{"href":"/login","className":"btn btn-secondary w-full sm:w-auto","children":"Sign in"}]]}]]}],[]]}]]}],"isPartial":"$@13","staleTime":"$a","varyParams":"$11"},{"rsc":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/chunks/3-61bx2obd4-k.css","precedence":"next"}],["$","script","script-0",{"src":"/_next/static/chunks/3w1jndmznj847.js","async":true}]],["$","html",null,{"lang":"en","className":"fraunces_8f8d718c-module__HPcqWW__variable figtree_1b354ea6-module__zwG2HG__variable","suppressHydrationWarning":true,"children":[["$","head",null,{"children":["$","script",null,{"src":"/theme-init.js"}]}],["$","body",null,{"className":"min-h-screen","children":[["$","a",null,{"href":"#main","className":"sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-surface-1 focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:shadow-lg focus:outline focus:outline-2 focus:outline-[var(--focus-ring)]","children":"Skip to content"}],["$","$L14",null,{"children":["$","$L15",null,{"children":["$","$L16",null,{"children":["$","$L17",null,{"children":["$","$Le",null,{"parallelRouterKey":"children","template":["$","$Lf",null,{}],"notFound":[["$","main",null,{"id":"main","className":"flex min-h-screen flex-col items-center justify-center bg-paper px-5 py-16 text-center","children":[["$","span",null,{"className":"flex h-14 w-14 items-center justify-center rounded-full border border-border bg-surface-2 text-muted","children":["$","svg",null,{"width":24,"height":24,"viewBox":"0 0 24 24","fill":"none","stroke":"currentColor","strokeWidth":2,"strokeLinecap":"round","strokeLinejoin":"round","className":"shrink-0 ","aria-hidden":true,"focusable":"false","children":[null,"$L18"]}]}],"$L19","$L1a","$L1b","$L1c"]}],[]]}]}]}]}]}]]}]]}]]}],"isPartial":"$@1d","staleTime":"$a","varyParams":null}],"isUpgradeableISRFallback":false,"a":"$@1e","rootVaryParams":null,"needsRuntimeRequest":"$@1f"}
+4:{}
+5:"$0:data:0:rsc:props:children:0:props:serverProvidedParams:params"
+8:null
+18:["$","path",null,{"d":"M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM21 21l-4.35-4.35"}]
+19:["$","p",null,{"className":"mt-6 text-xs font-semibold uppercase tracking-widest text-muted-soft","children":"Error 404"}]
+1a:["$","h1",null,{"className":"mt-2 font-display text-2xl font-semibold tracking-tight text-ink sm:text-3xl","children":"We could not find that page"}]
+1b:["$","p",null,{"className":"mx-auto mt-3 max-w-md text-sm leading-relaxed text-muted","children":"The address may have been mistyped, or the page may have moved. Nothing has gone wrong with your account."}]
+1c:["$","div",null,{"className":"mt-8 flex flex-col items-center gap-3 sm:flex-row","children":[["$","$L12",null,{"href":"/","className":"btn btn-primary w-full sm:w-auto","children":"Go to the home page"}],["$","$L12",null,{"href":"/login","className":"btn btn-secondary w-full sm:w-auto","children":"Sign in"}]]}]
+a:300
+1f:true
+a:C
+1e:0
+d:"$undefined"
+10:"$undefined"
+13:"$undefined"
+1d:"$undefined"
+9:"$undefined"

@@ -1,0 +1,3 @@
+{
+  "/(platform)/super-admin/plans/[id]/page": "app/(platform)/super-admin/plans/[id]/page.js"
+}
