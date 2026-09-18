@@ -29,9 +29,35 @@ export default function LoginPage() {
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
-    setSubmitting(true);
     setError(null);
     setFieldErrors({});
+
+    /*
+     * The two blank fields are caught here rather than by the round trip that used to catch them.
+     *
+     * The form is `noValidate`, so nothing stopped an empty submit reaching the API: measured in the
+     * browser against the deployed site, pressing Sign in with both fields empty sent
+     * `POST /auth/login → 422` and painted the messages from the response. It worked, but it spent a
+     * request and the network's latency to say something the page already knew, and it put a failed
+     * call in the console on a page a signed-out user is expected to be on.
+     *
+     * The strings are the backend's own, so the wording does not fork: `auth.validation.js` labels
+     * the field `identifier` with `Email or username`, and a 422 for a blank pair renders exactly
+     * these two sentences. Anything subtler than "blank" — an address that is not an address, an
+     * unknown account, a wrong password — is still the server's to answer, and is left to it. This
+     * guard only removes the case where no credential was supplied at all.
+     */
+    const blank: Record<string, string> = {};
+    if (!identifier.trim()) blank.identifier = 'Email or username is required';
+    if (!password) blank.password = 'Password is required';
+
+    if (Object.keys(blank).length > 0) {
+      setFieldErrors(blank);
+      focusFirstInvalidField();
+      return;
+    }
+
+    setSubmitting(true);
 
     try {
       const result = await login(identifier, password);

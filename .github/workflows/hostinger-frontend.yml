@@ -31,7 +31,18 @@ jobs:
     env:
       # Compiled into the pages at build time. To point at another API, set a repository variable named
       # NEXT_PUBLIC_API_URL (Settings → Secrets and variables → Actions → Variables) and re-run.
-      NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'https://school-api.knsoftic.com/api/v1' }}
+      #
+      # The fallback is `schoolapi`, not `school-api`. It was the hyphenated spelling until this line was
+      # measured against the running deployment: from a page on https://school.knsoftic.com, a `no-cors`
+      # fetch of `https://schoolapi.knsoftic.com/api/v1/health` returns an opaque response — the host is
+      # there, and it is the host the live pages call — while the same fetch of
+      # `https://school-api.knsoftic.com/api/v1/health` fails outright, because that name does not
+      # resolve. The site survived only because the repository variable is set and wins over this default.
+      #
+      # That made the wrong spelling invisible and the failure it causes silent: unset or rename the
+      # variable and this default takes over, the build still succeeds, the deploy still publishes, and
+      # every page ships compiled to call a host that does not exist. Nothing fails until a browser tries.
+      NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'https://schoolapi.knsoftic.com/api/v1' }}
 
     steps:
       - uses: actions/checkout@v4

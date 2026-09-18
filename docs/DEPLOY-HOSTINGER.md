@@ -176,7 +176,7 @@ hPanel → **Websites → Add website → Node.js app**, on `app.example.com`, f
 
 **Environment variables** — [`deploy/hostinger/app.env.example`](../deploy/hostinger/app.env.example):
 only `NODE_ENV=production` matters. `NEXT_PUBLIC_API_URL` is compiled into the pages
-**by GitHub Actions**, from the workflow's default (`https://school-api.knsoftic.com/api/v1`) or from a
+**by GitHub Actions**, from the workflow's default (`https://schoolapi.knsoftic.com/api/v1`) or from a
 repository variable of that name (GitHub → Settings → Secrets and variables → Actions → Variables). To
 change it, change the variable and re-run the workflow — setting it in hPanel has no effect on pages
 already built.

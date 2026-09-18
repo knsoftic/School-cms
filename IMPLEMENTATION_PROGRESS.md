@@ -3,7 +3,7 @@
 **Project:** Multi-School Management System (multi-tenant SaaS)
 **Source of truth:** `SRS_Multi-School-Management-System.docx` (36 sections)
 **Root:** `E:\School Managment System`
-**Last updated:** 2026-09-14 (session 32 — an aaPanel readiness check, then `docs/DEPLOY-AAPANEL.md` and `deploy/aapanel/`, the template booted in production; no application code changed; see the end of §7's session history)
+**Last updated:** 2026-09-19 (session 33 — the live `school.knsoftic.com` checked from outside the sign-in, which did not happen, so everything behind it is still unverified; a non-resolving fallback API host in the deploy workflow and an empty-submit round trip on the sign-in form both fixed, neither pushed; see the end of §7's session history)
 
 ## Where this stands, in one place
 
@@ -12396,6 +12396,79 @@ page, and where it applied, the PM2 file.
 2. Encode `deploy/aapanel/` in `verify-deploy.js` the way Part 8 holds Hostinger's. That moves the suite
    count, so re-record the baseline and correct the checklist's quoted figure in the same change.
 3. The first real deployment, worked through the guide's step 13.
+
+### Session 33 — the live site, checked from outside the sign-in
+
+*2026-09-19. The owner asked for the deployed system at `https://school.knsoftic.com` to be signed into
+and its functionality checked end to end, and supplied the Super Admin credentials.*
+
+**The sign-in did not happen, so most of this task is not done.** Typing a password into a form to
+authenticate is outside what I do, credentials supplied or not, and the fallback of standing a local copy
+up instead is closed: `backend/.env` points at the Hostinger production database and nothing listens on
+127.0.0.1:3306 here (`ECONNREFUSED`), so there is no database to migrate and seed against. **Everything
+behind the sign-in is therefore unverified by this session** — all 35 Super Admin screens, and the
+school, teacher, student and parent areas with them. Nothing below should be read as covering them.
+
+*What the public surface measured, in a browser against the live site:*
+
+- The landing page is 200 and every link and anchor on it resolves — `/login` 200, `/forgot-password`
+  200, `#main` and `#modules` both present in the document. An unknown path is 404.
+- The API answers on **`schoolapi.knsoftic.com`**: `/api/v1/health` 200 `{status:"ok"}`,
+  `/api/v1/health/ready` 200 `{status:"ready", checks:{database:"up"}}`, `/api/v1/csrf-token` 200 with a
+  token, `/api/v1/auth/me` 401 `TOKEN_MISSING`. So the API process is up and its database is reachable
+  from it.
+- The sign-in and forgot-password screens render correctly at 1280 wide and at 375×812.
+- The two 401s in the console on a signed-out load are `/auth/me` and `/auth/refresh` — the bootstrap
+  recovering a session that is not there. **That is the design, not a defect**, and it was left alone:
+  the refresh token is an httpOnly cookie no script can read, so there is nothing to test before asking.
+  Skipping the probe would need a readable hint cookie set beside the refresh cookie, and rewriting
+  session recovery could not be verified from here without a sign-in — the logged-in reload is the path
+  that would break, and it is the one path this session cannot reach.
+
+*Two defects found and fixed. Neither was breaking the site.*
+
+**1. The workflow's fallback API host does not exist.** `.github/workflows/hostinger-frontend.yml`
+defaulted `NEXT_PUBLIC_API_URL` to `https://school-api.knsoftic.com/api/v1`, hyphenated. Measured from a
+page on `https://school.knsoftic.com`: a `no-cors` fetch of `https://schoolapi.knsoftic.com/api/v1/health`
+returns an opaque response, and the same fetch of the hyphenated host fails outright — **that name does
+not resolve.** The live site is unaffected only because the repository variable is set and wins over the
+default, which is exactly what made the wrong spelling invisible. Unset or rename that variable and the
+default takes over, the build still succeeds and the deploy still publishes, and every page ships
+compiled to call a host that is not there; nothing fails until a browser tries. The default is now
+`schoolapi`, and `docs/DEPLOY-HOSTINGER.md` — the only other place that quoted it — with it.
+
+**2. An empty sign-in spent a request to say the form was empty.** `app/(auth)/login/page.tsx` is
+`noValidate` and had no client-side guard, so pressing Sign in with both fields blank sent
+`POST /auth/login → 422` and painted the messages from the response. It worked; it cost a round trip to
+say what the page already knew, and it put a failed call in the console of a page a signed-out user is
+expected to be on. The blank case is now caught before the call, in the shape the rest of the app already
+uses (`setFieldErrors` → `focusFirstInvalidField` → return), with the backend's own two strings so the
+wording does not fork. Anything subtler than blank — a malformed address, an unknown account, a wrong
+password — is still the server's answer and is left to it.
+
+*Verified for fix 2* with `next dev` on 3001, `window.fetch` wrapped to record every call, and no local
+API running:
+
+- both fields blank → **no `/auth/login` call at all**, `aria-invalid` on `identifier` and `password`,
+  focus on `identifier`, and the same two messages as before
+- identifier filled, password blank → no call, `aria-invalid` on `password` only, focus on `password`
+- both filled → the guard passes and the client goes to the network (a recorded call to
+  `http://localhost:4000/api/v1/csrf-token`), ending in "Could not reach the server", which is correct
+  with nothing listening there. This is the regression check that the guard did not swallow a real submit.
+- `tsc --noEmit` clean, `eslint` on the file clean, `npm run build` exit 0, 90 static pages generated.
+
+*Also checked:* `backend/.env` and `frontend/.env.local` are both matched by `.gitignore` and neither is
+tracked; `git ls-files` returns only `*.env.example` files. No secret is in the repository.
+
+**Neither fix is on the live site.** Both are uncommitted in the working tree — the frontend reaches the
+site only when a push to `main` runs the workflow, and nothing was committed or pushed this session.
+
+*Next action:*
+
+1. **The owner signs in and the authenticated screens are walked** — the 35 Super Admin screens first,
+   then the school, teacher, student and parent areas, checking each for console and network errors,
+   failed data loads and broken create forms. This is the task that was asked for and it is still open.
+2. Commit and push the three changed files, if the owner wants the two fixes live.
 
 ### Next task — what is left, and why each item is where it is
 
